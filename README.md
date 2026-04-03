@@ -64,6 +64,8 @@ databricks-claude --otel --otel-table main.catalog.table "summarize this PR"
 | `--otel-table` | `main.claude_telemetry.claude_otel_metrics` | UC table for OTEL metrics |
 | `--upstream` | auto-discovered | Override the AI Gateway URL |
 | `--version` | | Print version and exit |
+| `--print-env` | | Print resolved configuration (token redacted) and exit. Use to verify auth setup without starting the proxy. |
+| `--help`, `-h` | | Print wrapper flags and the full `claude --help` output, then exit. |
 
 All other flags and args are forwarded to `claude`.
 
@@ -83,6 +85,31 @@ If workspace ID resolution fails, it falls back to `<host>/serving-endpoints/ant
 2. `DATABRICKS_CONFIG_PROFILE` environment variable
 3. `DATABRICKS_CONFIG_PROFILE` in `~/.claude/settings.json` env block
 4. `DEFAULT`
+
+## Debugging
+
+### Verify your auth setup
+
+Run `--print-env` to see the resolved configuration without starting the proxy. The token is redacted so it's safe to share output for debugging.
+
+```bash
+databricks-claude --print-env
+```
+
+Example output:
+
+```
+profile:   DEFAULT
+host:      https://adb-1234567890123456.7.azuredatabricks.net
+upstream:  https://1234567890123456.ai-gateway.cloud.databricks.com/anthropic
+token:     dapi******************************** (redacted)
+```
+
+If the token shows as empty or the upstream URL looks wrong, check your Databricks CLI profile with `databricks auth env`.
+
+### View full usage
+
+`databricks-claude --help` (or `-h`) prints the wrapper's own flags followed by the complete `claude --help` output, so you see everything in one place.
 
 ## Development
 
