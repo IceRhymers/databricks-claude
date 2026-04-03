@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -17,7 +19,12 @@ func main() {
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
-	profile, verbose, version, otel, otelTable, upstream, claudeArgs := parseArgs(os.Args[1:])
+	profile, verbose, version, showHelp, printEnv, otel, otelTable, upstream, claudeArgs := parseArgs(os.Args[1:])
+
+	if showHelp {
+		handleHelp(upstream)
+		os.Exit(0)
+	}
 
 	if version {
 		fmt.Printf("databricks-claude %s\n", Version)
@@ -150,6 +157,13 @@ func main() {
 		ucTable = otelTable
 	}
 
+	// --- Print env and exit if requested ---
+	if printEnv {
+		anthropicModel := os.Getenv("ANTHROPIC_MODEL")
+		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, anthropicModel, upstream, otel || otelConfigured)
+		os.Exit(0)
+	}
+
 	// --- Start proxy ---
 	proxyConfig := &ProxyConfig{
 		InferenceUpstream: inferenceUpstream,
@@ -234,13 +248,15 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 // databricks-claude owns: --profile, --verbose, --version, --otel, --otel-table.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) (profile string, verbose bool, version bool, otel bool, otelTable string, upstream string, claudeArgs []string) {
+func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelTable string, upstream string, claudeArgs []string) {
 	otelTable = "main.claude_telemetry.claude_otel_metrics" // default
 
 	knownFlags := map[string]bool{
 		"--profile":    true,
 		"--verbose":    true,
 		"--version":    true,
+		"--help":       true,
+		"--print-env":  true,
 		"--otel":       true,
 		"--otel-table": true,
 		"--upstream":   true,
@@ -254,6 +270,13 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, otel 
 		if arg == "--" {
 			claudeArgs = append(claudeArgs, args[i+1:]...)
 			return
+		}
+
+		// Special case: -h is a short flag for --help.
+		if arg == "-h" {
+			showHelp = true
+			i++
+			continue
 		}
 
 		// Check if it's a known databricks-claude flag.
@@ -293,6 +316,10 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, otel 
 					verbose = true
 				case "--version":
 					version = true
+				case "--help":
+					showHelp = true
+				case "--print-env":
+					printEnv = true
 				case "--otel":
 					otel = true
 				}
@@ -306,4 +333,78 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, otel 
 		i++
 	}
 	return
+}
+
+// handleHelp prints the databricks-claude help message and appends claude's own --help output.
+func handleHelp(upstreamBinary string) {
+	fmt.Printf(`databricks-claude v%s — Databricks AI Gateway proxy for Claude Code
+
+Transparently proxies the Claude Code CLI with Databricks AI Gateway authentication
+injected via environment variables.
+
+Usage:
+  databricks-claude [databricks-claude flags] [claude flags] [claude args]
+
+Databricks-Claude Flags:
+  --profile string      Databricks config profile (default "DEFAULT")
+  --upstream string     Path to claude binary (default: auto-discovered)
+  --print-env           Print resolved configuration and exit (token redacted)
+  --verbose             Enable verbose logging
+  --otel                Enable OpenTelemetry tracing
+  --otel-table string   Unity Catalog table for OTEL spans
+  --version             Print version and exit
+  --help, -h            Show this help message
+
+────────────────────────────────────────────────────────────────────────────────
+Claude CLI Options:
+`, Version)
+
+	// Determine which binary to run for --help passthrough.
+	claudeBin := upstreamBinary
+	if claudeBin == "" {
+		if p, err := exec.LookPath("claude"); err == nil {
+			claudeBin = p
+		}
+	}
+
+	if claudeBin == "" {
+		fmt.Println("(claude binary not found on PATH — install from https://claude.ai/code)")
+		return
+	}
+
+	var buf bytes.Buffer
+	cmd := exec.Command(claudeBin, "--help")
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	_ = cmd.Run()
+	fmt.Print(buf.String())
+}
+
+// handlePrintEnv prints resolved configuration with the token redacted.
+func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, anthropicModel, upstreamBinary string, otelEnabled bool) {
+	// Redact token.
+	redacted := "**** (redacted)"
+	if strings.HasPrefix(token, "dapi-") {
+		redacted = "dapi-***"
+	}
+
+	// Resolve upstream binary path for display.
+	binaryPath := upstreamBinary
+	if binaryPath == "" {
+		if p, err := exec.LookPath("claude"); err == nil {
+			binaryPath = p
+		} else {
+			binaryPath = "(not found)"
+		}
+	}
+
+	fmt.Printf(`databricks-claude configuration:
+  Profile:              %s
+  DATABRICKS_HOST:      %s
+  ANTHROPIC_BASE_URL:   %s
+  ANTHROPIC_AUTH_TOKEN: %s
+  ANTHROPIC_MODEL:      %s
+  Upstream binary:      %s
+  OTEL enabled:         %v
+`, profile, databricksHost, anthropicBaseURL, redacted, anthropicModel, binaryPath, otelEnabled)
 }
