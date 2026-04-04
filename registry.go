@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -167,6 +168,9 @@ func (r *SessionRegistry) writeLocked(sessions []Session) error {
 }
 
 // isProcessAlive checks whether a process with the given PID exists.
+// EPERM means the process exists but we lack permission to signal it — alive.
+// ESRCH means no such process — dead.
 func isProcessAlive(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
