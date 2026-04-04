@@ -47,8 +47,14 @@ databricks-claude "explain this codebase"
 # With a specific Databricks CLI profile:
 databricks-claude --profile my-workspace "write tests for auth.py"
 
-# Verbose logging:
+# Verbose logging (debug output to stderr):
 databricks-claude --verbose "fix the bug in main.go"
+
+# Log to file:
+databricks-claude --log-file /tmp/dc.log "fix the bug in main.go"
+
+# Both stderr and file:
+databricks-claude -v --log-file /tmp/dc.log "fix the bug in main.go"
 
 # With OTEL telemetry:
 databricks-claude --otel --otel-table main.catalog.table "summarize this PR"
@@ -59,7 +65,8 @@ databricks-claude --otel --otel-table main.catalog.table "summarize this PR"
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--profile` | `DEFAULT` | Databricks CLI profile |
-| `--verbose` | `false` | Log to `~/.claude/logs/databricks-claude.log` |
+| `--verbose`, `-v` | `false` | Enable debug logging to stderr |
+| `--log-file` | | Write debug logs to a file (combinable with `--verbose`) |
 | `--otel` | `false` | Enable OTEL telemetry proxying |
 | `--otel-table` | `main.claude_telemetry.claude_otel_metrics` | UC table for OTEL metrics |
 | `--upstream` | auto-discovered | Override the AI Gateway URL |
