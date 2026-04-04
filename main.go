@@ -178,10 +178,13 @@ func main() {
 		ucTable = otelTable
 	}
 
+	// Derive logs table name from metrics table name.
+	otelLogsTable := deriveLogsTable(ucTable)
+
 	// --- Print env and exit if requested ---
 	if printEnv {
 		anthropicModel := os.Getenv("ANTHROPIC_MODEL")
-		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, anthropicModel, upstream, otel || otelConfigured)
+		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, anthropicModel, upstream, otel || otelConfigured, ucTable, otelLogsTable)
 		os.Exit(0)
 	}
 
@@ -189,7 +192,8 @@ func main() {
 	proxyConfig := &ProxyConfig{
 		InferenceUpstream: inferenceUpstream,
 		OTELUpstream:      otelUpstream,
-		UCTable:           ucTable,
+		UCMetricsTable:    ucTable,
+		UCLogsTable:       otelLogsTable,
 		TokenProvider:     tp,
 		Verbose:           verbose,
 	}
@@ -423,7 +427,7 @@ Claude CLI Options:
 }
 
 // handlePrintEnv prints resolved configuration with the token redacted.
-func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, anthropicModel, upstreamBinary string, otelEnabled bool) {
+func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, anthropicModel, upstreamBinary string, otelEnabled bool, otelMetricsTable, otelLogsTable string) {
 	// Redact token.
 	redacted := "**** (redacted)"
 	if strings.HasPrefix(token, "dapi-") {
@@ -449,4 +453,22 @@ func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, anthropicM
   Upstream binary:      %s
   OTEL enabled:         %v
 `, profile, databricksHost, anthropicBaseURL, redacted, anthropicModel, binaryPath, otelEnabled)
+
+	if otelEnabled {
+		fmt.Printf(`  OTEL metrics table:   %s
+  OTEL logs table:      %s
+  OTEL metric interval: 10000ms
+  OTEL logs interval:   5000ms
+`, otelMetricsTable, otelLogsTable)
+	}
+}
+
+// deriveLogsTable derives the OTEL logs table name from the metrics table name.
+// If the metrics table ends with "_otel_metrics", replace that suffix with "_otel_logs".
+// Otherwise, append "_otel_logs" as a sibling.
+func deriveLogsTable(metricsTable string) string {
+	if strings.HasSuffix(metricsTable, "_otel_metrics") {
+		return strings.TrimSuffix(metricsTable, "_otel_metrics") + "_otel_logs"
+	}
+	return metricsTable + "_otel_logs"
 }

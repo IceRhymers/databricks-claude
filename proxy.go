@@ -15,7 +15,8 @@ import (
 type ProxyConfig struct {
 	InferenceUpstream string
 	OTELUpstream      string
-	UCTable           string
+	UCMetricsTable    string
+	UCLogsTable       string
 	TokenProvider     *TokenProvider
 	Verbose           bool
 }
@@ -101,7 +102,13 @@ func NewProxyServer(config *ProxyConfig) http.Handler {
 			}
 			req.Header.Set("Authorization", "Bearer "+token)
 			req.Header.Set("x-api-key", token)
-			req.Header.Set("X-Databricks-UC-Table-Name", config.UCTable)
+
+			// Pick the correct UC table based on whether this is a logs or metrics request.
+			ucTable := config.UCMetricsTable
+			if strings.Contains(req.URL.Path, "/v1/logs") {
+				ucTable = config.UCLogsTable
+			}
+			req.Header.Set("X-Databricks-UC-Table-Name", ucTable)
 
 			// Strip the /otel prefix and prepend the upstream base path.
 			stripped := strings.TrimPrefix(req.URL.Path, "/otel")

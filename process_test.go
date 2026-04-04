@@ -466,6 +466,53 @@ func TestFullSetup_CreatesSettingsIfMissing(t *testing.T) {
 	}
 }
 
+func TestFullSetup_OTELWritesAllTwelveKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	writeJSON(t, path, map[string]interface{}{"env": map[string]interface{}{}})
+
+	sm := NewSettingsManager(path)
+	cfg := FullSetupConfig{
+		ProxyURL:    "http://127.0.0.1:54321",
+		Token:       "tok",
+		Host:        "https://dbc.example.com",
+		Profile:     "p",
+		OTELEnabled: true,
+		OTELTable:   "main.claude_telemetry.claude_otel_metrics",
+	}
+	if err := sm.FullSetup(cfg); err != nil {
+		t.Fatalf("FullSetup: %v", err)
+	}
+
+	doc := readJSON(t, path)
+	env := doc["env"].(map[string]interface{})
+
+	otelChecks := map[string]string{
+		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": cfg.ProxyURL + "/otel/v1/metrics",
+		"OTEL_EXPORTER_OTLP_METRICS_HEADERS":  "content-type=application/x-protobuf",
+		"CLAUDE_CODE_ENABLE_TELEMETRY":         "1",
+		"OTEL_METRICS_EXPORTER":                "otlp",
+		"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL":  "http/protobuf",
+		"OTEL_METRIC_EXPORT_INTERVAL":           "10000",
+		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT":     cfg.ProxyURL + "/otel/v1/logs",
+		"OTEL_EXPORTER_OTLP_LOGS_HEADERS":      "content-type=application/x-protobuf",
+		"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL":     "http/protobuf",
+		"OTEL_LOGS_EXPORTER":                   "otlp",
+		"OTEL_LOGS_EXPORT_INTERVAL":            "5000",
+		"CLAUDE_OTEL_UC_TABLE":                 "main.claude_telemetry.claude_otel_metrics",
+	}
+	if len(otelChecks) != 12 {
+		t.Fatalf("expected 12 OTEL checks, got %d", len(otelChecks))
+	}
+	for k, want := range otelChecks {
+		if got, ok := env[k]; !ok {
+			t.Errorf("missing OTEL key %s", k)
+		} else if got != want {
+			t.Errorf("%s = %v, want %v", k, got, want)
+		}
+	}
+}
+
 func TestSignalForwarding(t *testing.T) {
 	// Start a child that sleeps; we'll kill it with SIGINT via ForwardSignals.
 	cmd := exec.Command("/bin/sleep", "60")

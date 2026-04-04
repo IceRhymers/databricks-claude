@@ -103,6 +103,12 @@ var inferenceKeys = []string{
 var otelKeys = []string{
 	"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
 	"OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+	"OTEL_METRIC_EXPORT_INTERVAL",
+	"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+	"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+	"OTEL_LOGS_EXPORTER",
+	"OTEL_LOGS_EXPORT_INTERVAL",
 }
 
 // fullSetupInferenceKeys lists the env keys written by FullSetup (non-OTEL).
@@ -127,6 +133,13 @@ var fullSetupOTELKeys = []string{
 	"CLAUDE_CODE_ENABLE_TELEMETRY",
 	"OTEL_METRICS_EXPORTER",
 	"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+	"OTEL_METRIC_EXPORT_INTERVAL",
+	"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+	"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+	"OTEL_LOGS_EXPORTER",
+	"OTEL_LOGS_EXPORT_INTERVAL",
+	"CLAUDE_OTEL_UC_TABLE",
 }
 
 // FullSetupConfig holds all parameters for FullSetup.
@@ -198,6 +211,13 @@ func (sm *SettingsManager) FullSetup(config FullSetupConfig) error {
 		env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
 		env["OTEL_METRICS_EXPORTER"] = "otlp"
 		env["OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"] = "http/protobuf"
+		env["OTEL_METRIC_EXPORT_INTERVAL"] = "10000"
+		env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = config.ProxyURL + "/otel/v1/logs"
+		env["OTEL_EXPORTER_OTLP_LOGS_HEADERS"] = "content-type=application/x-protobuf"
+		env["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] = "http/protobuf"
+		env["OTEL_LOGS_EXPORTER"] = "otlp"
+		env["OTEL_LOGS_EXPORT_INTERVAL"] = "5000"
+		env["CLAUDE_OTEL_UC_TABLE"] = config.OTELTable
 	}
 
 	return sm.writeSettings(doc)

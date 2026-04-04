@@ -351,7 +351,7 @@ func captureStdout(fn func()) string {
 
 func TestHandlePrintEnv_DapiTokenRedacted(t *testing.T) {
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "dapi-abc123secret", "", "", false)
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "dapi-abc123secret", "", "", false, "", "")
 	})
 	if !strings.Contains(out, "dapi-***") {
 		t.Errorf("expected dapi token to appear as 'dapi-***', got:\n%s", out)
@@ -363,7 +363,7 @@ func TestHandlePrintEnv_DapiTokenRedacted(t *testing.T) {
 
 func TestHandlePrintEnv_NonDapiTokenRedacted(t *testing.T) {
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "eyJhbGciOiJSUzI1NiJ9", "", "", false)
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "eyJhbGciOiJSUzI1NiJ9", "", "", false, "", "")
 	})
 	if !strings.Contains(out, "**** (redacted)") {
 		t.Errorf("expected non-dapi token to appear as '**** (redacted)', got:\n%s", out)
@@ -376,7 +376,7 @@ func TestHandlePrintEnv_NonDapiTokenRedacted(t *testing.T) {
 func TestHandlePrintEnv_ContainsDatabricksHost(t *testing.T) {
 	host := "https://dbc-abc123.cloud.databricks.com"
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", host, "https://gw.example.com", "tok", "", "", false)
+		handlePrintEnv("DEFAULT", host, "https://gw.example.com", "tok", "", "", false, "", "")
 	})
 	if !strings.Contains(out, host) {
 		t.Errorf("expected output to contain DATABRICKS_HOST %q, got:\n%s", host, out)
@@ -386,7 +386,7 @@ func TestHandlePrintEnv_ContainsDatabricksHost(t *testing.T) {
 func TestHandlePrintEnv_ContainsAnthropicBaseURL(t *testing.T) {
 	baseURL := "https://gateway.example.com/anthropic"
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", baseURL, "tok", "", "", false)
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", baseURL, "tok", "", "", false, "", "")
 	})
 	if !strings.Contains(out, baseURL) {
 		t.Errorf("expected output to contain ANTHROPIC_BASE_URL %q, got:\n%s", baseURL, out)
@@ -395,7 +395,7 @@ func TestHandlePrintEnv_ContainsAnthropicBaseURL(t *testing.T) {
 
 func TestHandlePrintEnv_EmptyTokenRedacted(t *testing.T) {
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "", "", "", false)
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "", "", "", false, "", "")
 	})
 	// Empty string does not start with "dapi-" so it should show as **** (redacted)
 	if !strings.Contains(out, "**** (redacted)") {
@@ -463,5 +463,65 @@ func TestHandleHelp_ContainsVersion(t *testing.T) {
 	// Version variable is "dev" by default in tests.
 	if !strings.Contains(out, fmt.Sprintf("databricks-claude v%s", Version)) {
 		t.Errorf("expected help output to contain version string, got:\n%s", out)
+	}
+}
+
+// --- deriveLogsTable tests ---
+
+func TestOTELTableDerivation(t *testing.T) {
+	tests := []struct {
+		name    string
+		metrics string
+		want    string
+	}{
+		{
+			name:    "standard suffix replacement",
+			metrics: "main.claude_telemetry.claude_otel_metrics",
+			want:    "main.claude_telemetry.claude_otel_logs",
+		},
+		{
+			name:    "custom table without _otel_metrics suffix",
+			metrics: "mycatalog.myschema.custom",
+			want:    "mycatalog.myschema.custom_otel_logs",
+		},
+		{
+			name:    "only _otel_metrics",
+			metrics: "_otel_metrics",
+			want:    "_otel_logs",
+		},
+		{
+			name:    "empty string",
+			metrics: "",
+			want:    "_otel_logs",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := deriveLogsTable(tc.metrics)
+			if got != tc.want {
+				t.Errorf("deriveLogsTable(%q) = %q, want %q", tc.metrics, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- handlePrintEnv OTEL fields test ---
+
+func TestHandlePrintEnv_OTELFields(t *testing.T) {
+	out := captureStdout(func() {
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "tok", "", "", true, "main.telemetry.claude_otel_metrics", "main.telemetry.claude_otel_logs")
+	})
+	checks := []string{
+		"OTEL enabled:         true",
+		"OTEL metrics table:   main.telemetry.claude_otel_metrics",
+		"OTEL logs table:      main.telemetry.claude_otel_logs",
+		"OTEL metric interval: 10000ms",
+		"OTEL logs interval:   5000ms",
+	}
+	for _, c := range checks {
+		if !strings.Contains(out, c) {
+			t.Errorf("expected output to contain %q, got:\n%s", c, out)
+		}
 	}
 }
