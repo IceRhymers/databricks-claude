@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,17 +17,24 @@ import (
 
 // SettingsManager reads, patches, and restores ~/.claude/settings.json.
 type SettingsManager struct {
-	settingsPath    string
-	origValues      map[string]interface{} // saved originals for restore
-	otelKeysPersistent bool                // when true, Restore skips OTEL keys
-	mu              sync.Mutex
+	settingsPath       string
+	origValues         map[string]interface{} // saved originals for restore
+	otelKeysPersistent bool                   // when true, Restore skips OTEL keys
+	mu                 sync.Mutex
+	lock               *FileLock
+	registry           *SessionRegistry
 }
 
 // NewSettingsManager creates a SettingsManager for the given settings.json path.
+// It initializes a FileLock at ~/.claude/.settings.lock and a SessionRegistry
+// at ~/.claude/.sessions.json (derived from the settings.json directory).
 func NewSettingsManager(path string) *SettingsManager {
+	dir := filepath.Dir(path)
 	return &SettingsManager{
 		settingsPath: path,
 		origValues:   make(map[string]interface{}),
+		lock:         NewFileLock(filepath.Join(dir, ".settings.lock")),
+		registry:     NewSessionRegistry(filepath.Join(dir, ".sessions.json")),
 	}
 }
 
@@ -159,6 +167,11 @@ type FullSetupConfig struct {
 // all keys it will write, then writes all Databricks/Claude proxy values.
 // Restore() will undo everything FullSetup wrote.
 func (sm *SettingsManager) FullSetup(config FullSetupConfig) error {
+	if err := sm.lock.Lock(); err != nil {
+		return fmt.Errorf("acquire file lock: %w", err)
+	}
+	defer sm.lock.Unlock()
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -220,7 +233,16 @@ func (sm *SettingsManager) FullSetup(config FullSetupConfig) error {
 		env["CLAUDE_OTEL_UC_TABLE"] = config.OTELTable
 	}
 
-	return sm.writeSettings(doc)
+	if err := sm.writeSettings(doc); err != nil {
+		return err
+	}
+
+	// Register this session in the registry so other sessions know we're alive.
+	if err := sm.registry.Register(os.Getpid(), config.ProxyURL); err != nil {
+		log.Printf("databricks-claude: warning: failed to register session: %v", err)
+	}
+
+	return nil
 }
 
 // restoreFullSetupKeys restores keys written by FullSetup. It handles the nil
@@ -256,6 +278,11 @@ func (sm *SettingsManager) restoreFullSetupKeys(env map[string]interface{}) {
 // overwrite, then writes proxy values. Returns an error if settings.json does
 // not exist.
 func (sm *SettingsManager) SaveAndOverwrite(proxyURL string) error {
+	if err := sm.lock.Lock(); err != nil {
+		return fmt.Errorf("acquire file lock: %w", err)
+	}
+	defer sm.lock.Unlock()
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
@@ -298,15 +325,46 @@ func (sm *SettingsManager) SaveAndOverwrite(proxyURL string) error {
 		env["OTEL_EXPORTER_OTLP_METRICS_HEADERS"] = "content-type=application/x-protobuf"
 	}
 
-	return sm.writeSettings(doc)
+	if err := sm.writeSettings(doc); err != nil {
+		return err
+	}
+
+	// Register this session in the registry so other sessions know we're alive.
+	if err := sm.registry.Register(os.Getpid(), proxyURL); err != nil {
+		log.Printf("databricks-claude: warning: failed to register session: %v", err)
+	}
+
+	return nil
 }
 
 // Restore writes the original values back to settings.json. Keys that did not
 // exist in the original are removed. When otelKeysPersistent is true, keys in
 // otelKeys are skipped entirely (left as-is in settings.json).
+//
+// Smart handoff: if other live sessions exist, Restore hands off
+// ANTHROPIC_BASE_URL to the most recent survivor instead of restoring the
+// original upstream. Only the last session standing restores originals.
 func (sm *SettingsManager) Restore() error {
+	if err := sm.lock.Lock(); err != nil {
+		return fmt.Errorf("acquire file lock: %w", err)
+	}
+	defer sm.lock.Unlock()
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+
+	// Unregister ourselves from the session registry.
+	if err := sm.registry.Unregister(os.Getpid()); err != nil {
+		log.Printf("databricks-claude: warning: failed to unregister session: %v", err)
+	}
+
+	// Check for other live sessions.
+	live, err := sm.registry.LiveSessions()
+	if err != nil {
+		log.Printf("databricks-claude: warning: failed to read live sessions: %v", err)
+		// Fall through to full restore on error.
+		live = nil
+	}
 
 	doc, err := sm.readSettings()
 	if err != nil {
@@ -315,28 +373,41 @@ func (sm *SettingsManager) Restore() error {
 
 	env := getEnvBlock(doc)
 
-	// Build set of OTEL keys to skip when persistent mode is on.
-	skipOTEL := map[string]bool{}
-	if sm.otelKeysPersistent {
-		for _, k := range otelKeys {
-			skipOTEL[k] = true
+	if len(live) > 0 {
+		// Other sessions still alive — hand off ANTHROPIC_BASE_URL to the
+		// most recent survivor so it keeps working.
+		survivor, sErr := sm.registry.MostRecentLive()
+		if sErr == nil && survivor != nil {
+			env["ANTHROPIC_BASE_URL"] = survivor.ProxyURL
+			log.Printf("databricks-claude: handing off ANTHROPIC_BASE_URL to surviving session (PID %d, %s)", survivor.PID, survivor.ProxyURL)
 		}
-	}
+		// Leave all other keys as-is — the surviving session owns them.
+	} else {
+		// Last session — restore original values.
 
-	allKeys := append(inferenceKeys, otelKeys...)
-	for _, k := range allKeys {
-		if skipOTEL[k] {
-			continue
+		// Build set of OTEL keys to skip when persistent mode is on.
+		skipOTEL := map[string]bool{}
+		if sm.otelKeysPersistent {
+			for _, k := range otelKeys {
+				skipOTEL[k] = true
+			}
 		}
-		if orig, had := sm.origValues[k]; had {
-			env[k] = orig
-		} else {
-			delete(env, k)
-		}
-	}
 
-	// Also restore any keys written by FullSetup (nil sentinel = delete).
-	sm.restoreFullSetupKeys(env)
+		allKeys := append(inferenceKeys, otelKeys...)
+		for _, k := range allKeys {
+			if skipOTEL[k] {
+				continue
+			}
+			if orig, had := sm.origValues[k]; had {
+				env[k] = orig
+			} else {
+				delete(env, k)
+			}
+		}
+
+		// Also restore any keys written by FullSetup (nil sentinel = delete).
+		sm.restoreFullSetupKeys(env)
+	}
 
 	return sm.writeSettings(doc)
 }
@@ -344,6 +415,11 @@ func (sm *SettingsManager) Restore() error {
 // ClearOTELKeys explicitly removes all OTEL keys from settings.json. This is
 // used by --no-otel to ensure OTEL configuration is fully removed.
 func (sm *SettingsManager) ClearOTELKeys() error {
+	if err := sm.lock.Lock(); err != nil {
+		return fmt.Errorf("acquire file lock: %w", err)
+	}
+	defer sm.lock.Unlock()
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
