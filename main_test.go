@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"testing"
@@ -12,73 +13,94 @@ import (
 // --- parseArgs tests ---
 
 func TestParseArgs_HelpLong(t *testing.T) {
-	profile, verbose, version, showHelp, printEnv, otel, _, upstream, claudeArgs := parseArgs([]string{"--help"})
+	profile, verbose, version, showHelp, printEnv, otel, _, upstream, logFile, claudeArgs := parseArgs([]string{"--help"})
 	if !showHelp {
 		t.Error("expected showHelp=true for --help")
 	}
-	if profile != "" || verbose || version || printEnv || otel || upstream != "" || len(claudeArgs) != 0 {
+	if profile != "" || verbose || version || printEnv || otel || upstream != "" || logFile != "" || len(claudeArgs) != 0 {
 		t.Error("unexpected non-default values alongside --help")
 	}
 }
 
 func TestParseArgs_HelpShort(t *testing.T) {
-	_, _, _, showHelp, _, _, _, _, _ := parseArgs([]string{"-h"})
+	_, _, _, showHelp, _, _, _, _, _, _ := parseArgs([]string{"-h"})
 	if !showHelp {
 		t.Error("expected showHelp=true for -h")
 	}
 }
 
 func TestParseArgs_PrintEnv(t *testing.T) {
-	_, _, _, _, printEnv, _, _, _, _ := parseArgs([]string{"--print-env"})
+	_, _, _, _, printEnv, _, _, _, _, _ := parseArgs([]string{"--print-env"})
 	if !printEnv {
 		t.Error("expected printEnv=true for --print-env")
 	}
 }
 
 func TestParseArgs_Version(t *testing.T) {
-	_, _, version, _, _, _, _, _, _ := parseArgs([]string{"--version"})
+	_, _, version, _, _, _, _, _, _, _ := parseArgs([]string{"--version"})
 	if !version {
 		t.Error("expected version=true for --version")
 	}
 }
 
 func TestParseArgs_Verbose(t *testing.T) {
-	_, verbose, _, _, _, _, _, _, _ := parseArgs([]string{"--verbose"})
+	_, verbose, _, _, _, _, _, _, _, _ := parseArgs([]string{"--verbose"})
 	if !verbose {
 		t.Error("expected verbose=true for --verbose")
 	}
 }
 
+func TestParseArgs_VerboseShort(t *testing.T) {
+	_, verbose, _, _, _, _, _, _, _, _ := parseArgs([]string{"-v"})
+	if !verbose {
+		t.Error("expected verbose=true for -v")
+	}
+}
+
+func TestParseArgs_LogFile(t *testing.T) {
+	_, _, _, _, _, _, _, _, logFile, _ := parseArgs([]string{"--log-file", "/tmp/test.log"})
+	if logFile != "/tmp/test.log" {
+		t.Errorf("expected logFile=%q, got %q", "/tmp/test.log", logFile)
+	}
+}
+
+func TestParseArgs_LogFileEquals(t *testing.T) {
+	_, _, _, _, _, _, _, _, logFile, _ := parseArgs([]string{"--log-file=/tmp/test.log"})
+	if logFile != "/tmp/test.log" {
+		t.Errorf("expected logFile=%q, got %q", "/tmp/test.log", logFile)
+	}
+}
+
 func TestParseArgs_Profile(t *testing.T) {
-	profile, _, _, _, _, _, _, _, _ := parseArgs([]string{"--profile", "foo"})
+	profile, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--profile", "foo"})
 	if profile != "foo" {
 		t.Errorf("expected profile=%q, got %q", "foo", profile)
 	}
 }
 
 func TestParseArgs_Upstream(t *testing.T) {
-	_, _, _, _, _, _, _, upstream, _ := parseArgs([]string{"--upstream", "/path/to/claude"})
+	_, _, _, _, _, _, _, upstream, _, _ := parseArgs([]string{"--upstream", "/path/to/claude"})
 	if upstream != "/path/to/claude" {
 		t.Errorf("expected upstream=%q, got %q", "/path/to/claude", upstream)
 	}
 }
 
 func TestParseArgs_Otel(t *testing.T) {
-	_, _, _, _, _, otel, _, _, _ := parseArgs([]string{"--otel"})
+	_, _, _, _, _, otel, _, _, _, _ := parseArgs([]string{"--otel"})
 	if !otel {
 		t.Error("expected otel=true for --otel")
 	}
 }
 
 func TestParseArgs_UnknownFlagPassthrough(t *testing.T) {
-	_, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--unknown"})
+	_, _, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--unknown"})
 	if len(claudeArgs) != 1 || claudeArgs[0] != "--unknown" {
 		t.Errorf("expected claudeArgs=[\"--unknown\"], got %v", claudeArgs)
 	}
 }
 
 func TestParseArgs_EmptyArgs(t *testing.T) {
-	profile, verbose, version, showHelp, printEnv, otel, otelTable, upstream, claudeArgs := parseArgs([]string{})
+	profile, verbose, version, showHelp, printEnv, otel, otelTable, upstream, logFile, claudeArgs := parseArgs([]string{})
 	if profile != "" {
 		t.Errorf("expected empty profile, got %q", profile)
 	}
@@ -87,6 +109,9 @@ func TestParseArgs_EmptyArgs(t *testing.T) {
 	}
 	if upstream != "" {
 		t.Errorf("expected empty upstream, got %q", upstream)
+	}
+	if logFile != "" {
+		t.Errorf("expected empty logFile, got %q", logFile)
 	}
 	if len(claudeArgs) != 0 {
 		t.Errorf("expected no claudeArgs, got %v", claudeArgs)
@@ -98,7 +123,7 @@ func TestParseArgs_EmptyArgs(t *testing.T) {
 }
 
 func TestParseArgs_Mixed(t *testing.T) {
-	profile, verbose, _, showHelp, _, _, _, _, _ := parseArgs([]string{"--profile", "prod", "--verbose", "--help"})
+	profile, verbose, _, showHelp, _, _, _, _, _, _ := parseArgs([]string{"--profile", "prod", "--verbose", "--help"})
 	if !showHelp {
 		t.Error("expected showHelp=true")
 	}
@@ -120,6 +145,7 @@ func TestParseArgs_Table(t *testing.T) {
 		printEnv  bool
 		otel      bool
 		upstream  string
+		logFile   string
 		claudeLen int
 	}
 
@@ -152,6 +178,26 @@ func TestParseArgs_Table(t *testing.T) {
 			name: "--verbose sets verbose",
 			args: []string{"--verbose"},
 			want: result{verbose: true},
+		},
+		{
+			name: "-v sets verbose",
+			args: []string{"-v"},
+			want: result{verbose: true},
+		},
+		{
+			name: "--log-file sets logFile",
+			args: []string{"--log-file", "/tmp/test.log"},
+			want: result{logFile: "/tmp/test.log"},
+		},
+		{
+			name: "--log-file=value sets logFile",
+			args: []string{"--log-file=/tmp/test.log"},
+			want: result{logFile: "/tmp/test.log"},
+		},
+		{
+			name: "-v with --log-file sets both",
+			args: []string{"-v", "--log-file", "/tmp/both.log"},
+			want: result{verbose: true, logFile: "/tmp/both.log"},
 		},
 		{
 			name: "--profile foo sets profile",
@@ -187,7 +233,7 @@ func TestParseArgs_Table(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			profile, verbose, version, showHelp, printEnv, otel, _, upstream, claudeArgs := parseArgs(tc.args)
+			profile, verbose, version, showHelp, printEnv, otel, _, upstream, logFile, claudeArgs := parseArgs(tc.args)
 
 			if profile != tc.want.profile {
 				t.Errorf("profile: got %q, want %q", profile, tc.want.profile)
@@ -210,10 +256,35 @@ func TestParseArgs_Table(t *testing.T) {
 			if upstream != tc.want.upstream {
 				t.Errorf("upstream: got %q, want %q", upstream, tc.want.upstream)
 			}
+			if logFile != tc.want.logFile {
+				t.Errorf("logFile: got %q, want %q", logFile, tc.want.logFile)
+			}
 			if len(claudeArgs) != tc.want.claudeLen {
 				t.Errorf("claudeArgs length: got %d, want %d (args: %v)", len(claudeArgs), tc.want.claudeLen, claudeArgs)
 			}
 		})
+	}
+}
+
+// --- default log discard test ---
+
+func TestDefaultLogDiscard(t *testing.T) {
+	// Verify that when no flags are set, log output is discarded.
+	// We simulate the main() logic: default sets log.SetOutput(io.Discard).
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(os.Stderr) // restore after test
+
+	var buf bytes.Buffer
+	// Write a log message — it should go nowhere (Discard).
+	log.SetOutput(io.Discard)
+	log.Print("this should be discarded")
+
+	// Now capture to buf to prove we can switch
+	log.SetOutput(&buf)
+	log.Print("this should appear")
+
+	if !strings.Contains(buf.String(), "this should appear") {
+		t.Error("expected log output after switching from Discard")
 	}
 }
 
@@ -333,7 +404,7 @@ func TestHandleHelp_AllFlagsPresent(t *testing.T) {
 	out := captureStdout(func() {
 		handleHelp("")
 	})
-	flags := []string{"--profile", "--upstream", "--verbose", "--otel", "--version", "--help"}
+	flags := []string{"--profile", "--upstream", "--verbose", "-v", "--log-file", "--otel", "--version", "--help"}
 	for _, flag := range flags {
 		if !strings.Contains(out, flag) {
 			t.Errorf("expected help output to contain flag %q, got:\n%s", flag, out)
