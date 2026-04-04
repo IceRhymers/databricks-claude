@@ -20,7 +20,7 @@ func main() {
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
-	profile, verbose, version, showHelp, printEnv, otel, otelTable, upstream, logFile, claudeArgs := parseArgs(os.Args[1:])
+	profile, verbose, version, showHelp, printEnv, otel, otelTable, upstream, logFile, noOtel, claudeArgs := parseArgs(os.Args[1:])
 
 	if showHelp {
 		handleHelp(upstream)
@@ -30,6 +30,20 @@ func main() {
 	if version {
 		fmt.Printf("databricks-claude %s\n", Version)
 		os.Exit(0)
+	}
+
+	// --no-otel: clear persisted OTEL keys and proceed without OTEL this session.
+	if noOtel {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatalf("databricks-claude: cannot determine home dir: %v", err)
+		}
+		sm := NewSettingsManager(filepath.Join(homeDir, ".claude", "settings.json"))
+		if err := sm.ClearOTELKeys(); err != nil {
+			log.Fatalf("databricks-claude: failed to clear OTEL keys: %v", err)
+		}
+		fmt.Fprintln(os.Stderr, "databricks-claude: OTEL keys cleared — OTEL disabled for future sessions")
+		// Continue without OTEL — otel remains false for the rest of this run.
 	}
 
 	// --- Resolve config from settings.json ---
@@ -189,6 +203,9 @@ func main() {
 	// --- Patch settings.json ---
 	sm := NewSettingsManager(settingsPath)
 	otelEnabled := otel || otelConfigured
+	if otelEnabled {
+		sm.SetOTELPersistent(true)
+	}
 	if needsFullSetup {
 		if err := sm.FullSetup(FullSetupConfig{
 			ProxyURL:    proxyURL,
@@ -252,10 +269,10 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 }
 
 // parseArgs separates databricks-claude flags from claude flags.
-// databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-table.
+// databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-table, --no-otel.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelTable string, upstream string, logFile string, claudeArgs []string) {
+func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelTable string, upstream string, logFile string, noOtel bool, claudeArgs []string) {
 	otelTable = "main.claude_telemetry.claude_otel_metrics" // default
 
 	knownFlags := map[string]bool{
@@ -265,6 +282,7 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 		"--help":       true,
 		"--print-env":  true,
 		"--otel":       true,
+		"--no-otel":    true,
 		"--otel-table": true,
 		"--upstream":   true,
 		"--log-file":   true,
@@ -342,6 +360,8 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 					printEnv = true
 				case "--otel":
 					otel = true
+				case "--no-otel":
+					noOtel = true
 				}
 				i++
 				continue
@@ -372,6 +392,7 @@ Databricks-Claude Flags:
   --verbose, -v         Enable debug logging to stderr
   --log-file string     Write debug logs to a file (combinable with --verbose)
   --otel                Enable OpenTelemetry tracing
+  --no-otel             Clear persisted OTEL keys and disable OTEL for future sessions
   --otel-table string   Unity Catalog table for OTEL spans
   --version             Print version and exit
   --help, -h            Show this help message
