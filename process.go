@@ -16,9 +16,10 @@ import (
 
 // SettingsManager reads, patches, and restores ~/.claude/settings.json.
 type SettingsManager struct {
-	settingsPath string
-	origValues   map[string]interface{} // saved originals for restore
-	mu           sync.Mutex
+	settingsPath    string
+	origValues      map[string]interface{} // saved originals for restore
+	otelKeysPersistent bool                // when true, Restore skips OTEL keys
+	mu              sync.Mutex
 }
 
 // NewSettingsManager creates a SettingsManager for the given settings.json path.
@@ -27,6 +28,15 @@ func NewSettingsManager(path string) *SettingsManager {
 		settingsPath: path,
 		origValues:   make(map[string]interface{}),
 	}
+}
+
+// SetOTELPersistent controls whether Restore skips OTEL keys. When true,
+// Restore will not touch any keys in otelKeys or fullSetupOTELKeys, leaving
+// them in settings.json as-is. Use ClearOTELKeys to explicitly remove them.
+func (sm *SettingsManager) SetOTELPersistent(v bool) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.otelKeysPersistent = v
 }
 
 // readSettings reads and parses settings.json, returning the full document.
@@ -193,11 +203,23 @@ func (sm *SettingsManager) FullSetup(config FullSetupConfig) error {
 	return sm.writeSettings(doc)
 }
 
-// restoreFullSetup restores keys written by FullSetup. It handles the nil
-// sentinel (absent before FullSetup) by deleting the key.
+// restoreFullSetupKeys restores keys written by FullSetup. It handles the nil
+// sentinel (absent before FullSetup) by deleting the key. When
+// otelKeysPersistent is true, keys in fullSetupOTELKeys are skipped.
 func (sm *SettingsManager) restoreFullSetupKeys(env map[string]interface{}) {
+	// Build set of OTEL keys to skip when persistent mode is on.
+	skipOTEL := map[string]bool{}
+	if sm.otelKeysPersistent {
+		for _, k := range fullSetupOTELKeys {
+			skipOTEL[k] = true
+		}
+	}
+
 	allKeys := append(fullSetupInferenceKeys, fullSetupOTELKeys...)
 	for _, k := range allKeys {
+		if skipOTEL[k] {
+			continue
+		}
 		orig, tracked := sm.origValues[k]
 		if !tracked {
 			continue
@@ -260,7 +282,8 @@ func (sm *SettingsManager) SaveAndOverwrite(proxyURL string) error {
 }
 
 // Restore writes the original values back to settings.json. Keys that did not
-// exist in the original are removed.
+// exist in the original are removed. When otelKeysPersistent is true, keys in
+// otelKeys are skipped entirely (left as-is in settings.json).
 func (sm *SettingsManager) Restore() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -272,8 +295,19 @@ func (sm *SettingsManager) Restore() error {
 
 	env := getEnvBlock(doc)
 
+	// Build set of OTEL keys to skip when persistent mode is on.
+	skipOTEL := map[string]bool{}
+	if sm.otelKeysPersistent {
+		for _, k := range otelKeys {
+			skipOTEL[k] = true
+		}
+	}
+
 	allKeys := append(inferenceKeys, otelKeys...)
 	for _, k := range allKeys {
+		if skipOTEL[k] {
+			continue
+		}
 		if orig, had := sm.origValues[k]; had {
 			env[k] = orig
 		} else {
@@ -283,6 +317,31 @@ func (sm *SettingsManager) Restore() error {
 
 	// Also restore any keys written by FullSetup (nil sentinel = delete).
 	sm.restoreFullSetupKeys(env)
+
+	return sm.writeSettings(doc)
+}
+
+// ClearOTELKeys explicitly removes all OTEL keys from settings.json. This is
+// used by --no-otel to ensure OTEL configuration is fully removed.
+func (sm *SettingsManager) ClearOTELKeys() error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	doc, err := sm.readSettings()
+	if err != nil {
+		return err
+	}
+
+	env := getEnvBlock(doc)
+	allOTEL := append(otelKeys, fullSetupOTELKeys...)
+	seen := map[string]bool{}
+	for _, k := range allOTEL {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		delete(env, k)
+	}
 
 	return sm.writeSettings(doc)
 }
