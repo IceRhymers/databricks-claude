@@ -33,7 +33,8 @@ func TestProxy_InjectsAuthHeader(t *testing.T) {
 	cfg := &ProxyConfig{
 		InferenceUpstream: upstream.URL,
 		OTELUpstream:      upstream.URL,
-		UCTable:           "main.t.m",
+		UCMetricsTable:    "main.t.m",
+		UCLogsTable:       "main.t.l",
 		TokenProvider:     warmToken("test-token-123"),
 	}
 	handler := NewProxyServer(cfg)
@@ -59,7 +60,8 @@ func TestProxy_InjectsCustomHeaders(t *testing.T) {
 	cfg := &ProxyConfig{
 		InferenceUpstream: upstream.URL,
 		OTELUpstream:      upstream.URL,
-		UCTable:           "main.t.m",
+		UCMetricsTable:    "main.t.m",
+		UCLogsTable:       "main.t.l",
 		TokenProvider:     warmToken("tok"),
 	}
 	handler := NewProxyServer(cfg)
@@ -92,7 +94,8 @@ func TestProxy_RoutesDefaultToInference(t *testing.T) {
 	cfg := &ProxyConfig{
 		InferenceUpstream: inference.URL,
 		OTELUpstream:      otel.URL,
-		UCTable:           "main.t.m",
+		UCMetricsTable:    "main.t.m",
+		UCLogsTable:       "main.t.l",
 		TokenProvider:     warmToken("tok"),
 	}
 	handler := NewProxyServer(cfg)
@@ -124,7 +127,8 @@ func TestProxy_RoutesOTELPath(t *testing.T) {
 	cfg := &ProxyConfig{
 		InferenceUpstream: inference.URL,
 		OTELUpstream:      otel.URL,
-		UCTable:           "main.t.m",
+		UCMetricsTable:    "main.t.m",
+		UCLogsTable:       "main.t.l",
 		TokenProvider:     warmToken("tok"),
 	}
 	handler := NewProxyServer(cfg)
@@ -152,7 +156,8 @@ func TestProxy_PathAlgebra_Inference(t *testing.T) {
 	cfg := &ProxyConfig{
 		InferenceUpstream: upstream.URL + "/anthropic",
 		OTELUpstream:      upstream.URL,
-		UCTable:           "main.t.m",
+		UCMetricsTable:    "main.t.m",
+		UCLogsTable:       "main.t.l",
 		TokenProvider:     warmToken("tok"),
 	}
 	handler := NewProxyServer(cfg)
@@ -181,7 +186,8 @@ func TestProxy_PathAlgebra_OTEL(t *testing.T) {
 	cfg := &ProxyConfig{
 		InferenceUpstream: upstream.URL,
 		OTELUpstream:      upstream.URL + "/api/2.0/otel",
-		UCTable:           "main.t.m",
+		UCMetricsTable:    "main.t.m",
+		UCLogsTable:       "main.t.l",
 		TokenProvider:     warmToken("tok"),
 	}
 	handler := NewProxyServer(cfg)
@@ -210,7 +216,8 @@ func TestProxy_PreservesRequestBody(t *testing.T) {
 	cfg := &ProxyConfig{
 		InferenceUpstream: upstream.URL,
 		OTELUpstream:      upstream.URL,
-		UCTable:           "main.t.m",
+		UCMetricsTable:    "main.t.m",
+		UCLogsTable:       "main.t.l",
 		TokenProvider:     warmToken("tok"),
 	}
 	handler := NewProxyServer(cfg)
@@ -272,7 +279,8 @@ func TestProxy_SSEStreaming(t *testing.T) {
 	cfg := &ProxyConfig{
 		InferenceUpstream: upstream.URL,
 		OTELUpstream:      upstream.URL,
-		UCTable:           "main.t.m",
+		UCMetricsTable:    "main.t.m",
+		UCLogsTable:       "main.t.l",
 		TokenProvider:     warmToken("tok"),
 	}
 	handler := NewProxyServer(cfg)
@@ -298,5 +306,59 @@ func TestProxy_SSEStreaming(t *testing.T) {
 	want := "data: chunk\n\n"
 	if !strings.Contains(string(body), want) {
 		t.Errorf("response body %q does not contain %q", string(body), want)
+	}
+}
+
+// TestProxy_OTELTableName_Metrics verifies that /otel/v1/metrics gets the metrics table header.
+func TestProxy_OTELTableName_Metrics(t *testing.T) {
+	var gotTable string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTable = r.Header.Get("X-Databricks-UC-Table-Name")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &ProxyConfig{
+		InferenceUpstream: upstream.URL,
+		OTELUpstream:      upstream.URL,
+		UCMetricsTable:    "main.telemetry.claude_otel_metrics",
+		UCLogsTable:       "main.telemetry.claude_otel_logs",
+		TokenProvider:     warmToken("tok"),
+	}
+	handler := NewProxyServer(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/otel/v1/metrics", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if gotTable != "main.telemetry.claude_otel_metrics" {
+		t.Errorf("got table %q, want %q", gotTable, "main.telemetry.claude_otel_metrics")
+	}
+}
+
+// TestProxy_OTELTableName_Logs verifies that /otel/v1/logs gets the logs table header.
+func TestProxy_OTELTableName_Logs(t *testing.T) {
+	var gotTable string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTable = r.Header.Get("X-Databricks-UC-Table-Name")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &ProxyConfig{
+		InferenceUpstream: upstream.URL,
+		OTELUpstream:      upstream.URL,
+		UCMetricsTable:    "main.telemetry.claude_otel_metrics",
+		UCLogsTable:       "main.telemetry.claude_otel_logs",
+		TokenProvider:     warmToken("tok"),
+	}
+	handler := NewProxyServer(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/otel/v1/logs", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if gotTable != "main.telemetry.claude_otel_logs" {
+		t.Errorf("got table %q, want %q", gotTable, "main.telemetry.claude_otel_logs")
 	}
 }
