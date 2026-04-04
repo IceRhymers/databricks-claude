@@ -232,6 +232,47 @@ func TestSettingsManager_HandlesOTEL(t *testing.T) {
 	if rEnv["OTEL_EXPORTER_OTLP_METRICS_HEADERS"] != "Authorization=Bearer original-otel-token" {
 		t.Errorf("restored OTEL headers = %v", rEnv["OTEL_EXPORTER_OTLP_METRICS_HEADERS"])
 	}
+
+	t.Run("persistent mode: OTEL keys left in settings after Restore", func(t *testing.T) {
+		dir2 := t.TempDir()
+		path2 := filepath.Join(dir2, "settings.json")
+		writeJSON(t, path2, map[string]interface{}{
+			"env": map[string]interface{}{
+				"ANTHROPIC_BASE_URL":                  "https://upstream.example.com",
+				"ANTHROPIC_AUTH_TOKEN":                 "original-token",
+				"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "https://otel.example.com/v1/metrics",
+				"OTEL_EXPORTER_OTLP_METRICS_HEADERS":  "Authorization=Bearer original-otel-token",
+			},
+		})
+
+		sm2 := NewSettingsManager(path2)
+		sm2.SetOTELPersistent(true)
+		if err := sm2.SaveAndOverwrite("http://127.0.0.1:9999"); err != nil {
+			t.Fatalf("SaveAndOverwrite: %v", err)
+		}
+		if err := sm2.Restore(); err != nil {
+			t.Fatalf("Restore: %v", err)
+		}
+
+		restored2 := readJSON(t, path2)
+		rEnv2 := restored2["env"].(map[string]interface{})
+
+		// OTEL keys must remain (not restored to originals, left as proxy values).
+		if _, exists := rEnv2["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"]; !exists {
+			t.Error("expected OTEL_EXPORTER_OTLP_METRICS_ENDPOINT to remain in settings (persistent mode)")
+		}
+		if _, exists := rEnv2["OTEL_EXPORTER_OTLP_METRICS_HEADERS"]; !exists {
+			t.Error("expected OTEL_EXPORTER_OTLP_METRICS_HEADERS to remain in settings (persistent mode)")
+		}
+
+		// Inference keys must still be restored normally.
+		if rEnv2["ANTHROPIC_BASE_URL"] != "https://upstream.example.com" {
+			t.Errorf("ANTHROPIC_BASE_URL = %v, want https://upstream.example.com", rEnv2["ANTHROPIC_BASE_URL"])
+		}
+		if rEnv2["ANTHROPIC_AUTH_TOKEN"] != "original-token" {
+			t.Errorf("ANTHROPIC_AUTH_TOKEN = %v, want original-token", rEnv2["ANTHROPIC_AUTH_TOKEN"])
+		}
+	})
 }
 
 func TestFullSetup_WritesAllKeys(t *testing.T) {
@@ -480,5 +521,124 @@ func TestChildExitCode(t *testing.T) {
 
 	if exitCode != 42 {
 		t.Errorf("exit code = %d, want 42", exitCode)
+	}
+}
+
+func TestSettingsManager_OTELPersistsAcrossRestore(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	writeJSON(t, path, map[string]interface{}{
+		"env": map[string]interface{}{
+			"ANTHROPIC_BASE_URL":                  "https://upstream.example.com",
+			"ANTHROPIC_AUTH_TOKEN":                 "original-token",
+			"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "https://otel.example.com/v1/metrics",
+			"OTEL_EXPORTER_OTLP_METRICS_HEADERS":  "Authorization=Bearer original-otel-token",
+		},
+	})
+
+	sm := NewSettingsManager(path)
+	sm.SetOTELPersistent(true)
+
+	if err := sm.SaveAndOverwrite("http://127.0.0.1:9999"); err != nil {
+		t.Fatalf("SaveAndOverwrite: %v", err)
+	}
+	if err := sm.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	doc := readJSON(t, path)
+	env := doc["env"].(map[string]interface{})
+
+	// OTEL keys must remain in settings.json after Restore.
+	if _, exists := env["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"]; !exists {
+		t.Error("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT should remain in settings.json when otelKeysPersistent=true")
+	}
+	if _, exists := env["OTEL_EXPORTER_OTLP_METRICS_HEADERS"]; !exists {
+		t.Error("OTEL_EXPORTER_OTLP_METRICS_HEADERS should remain in settings.json when otelKeysPersistent=true")
+	}
+}
+
+func TestSettingsManager_InferenceKeysStillRestore(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	writeJSON(t, path, map[string]interface{}{
+		"env": map[string]interface{}{
+			"ANTHROPIC_BASE_URL":   "https://real-upstream.example.com",
+			"ANTHROPIC_AUTH_TOKEN": "original-token",
+		},
+	})
+
+	sm := NewSettingsManager(path)
+	sm.SetOTELPersistent(true)
+
+	if err := sm.SaveAndOverwrite("http://127.0.0.1:9999"); err != nil {
+		t.Fatalf("SaveAndOverwrite: %v", err)
+	}
+
+	// Verify proxy values were written.
+	patched := readJSON(t, path)
+	pEnv := patched["env"].(map[string]interface{})
+	if pEnv["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:9999" {
+		t.Fatalf("expected proxy URL in settings, got %v", pEnv["ANTHROPIC_BASE_URL"])
+	}
+
+	if err := sm.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	doc := readJSON(t, path)
+	env := doc["env"].(map[string]interface{})
+
+	// ANTHROPIC_BASE_URL must be restored to original even with otelKeysPersistent=true.
+	if env["ANTHROPIC_BASE_URL"] != "https://real-upstream.example.com" {
+		t.Errorf("ANTHROPIC_BASE_URL = %v, want https://real-upstream.example.com", env["ANTHROPIC_BASE_URL"])
+	}
+	if env["ANTHROPIC_AUTH_TOKEN"] != "original-token" {
+		t.Errorf("ANTHROPIC_AUTH_TOKEN = %v, want original-token", env["ANTHROPIC_AUTH_TOKEN"])
+	}
+}
+
+func TestSettingsManager_ClearOTELKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	writeJSON(t, path, map[string]interface{}{
+		"env": map[string]interface{}{
+			"ANTHROPIC_BASE_URL":                  "https://upstream.example.com",
+			"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://127.0.0.1:9999/otel/v1/metrics",
+			"OTEL_EXPORTER_OTLP_METRICS_HEADERS":  "content-type=application/x-protobuf",
+			"CLAUDE_CODE_ENABLE_TELEMETRY":         "1",
+			"OTEL_METRICS_EXPORTER":                "otlp",
+			"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL":  "http/protobuf",
+		},
+	})
+
+	sm := NewSettingsManager(path)
+	if err := sm.ClearOTELKeys(); err != nil {
+		t.Fatalf("ClearOTELKeys: %v", err)
+	}
+
+	doc := readJSON(t, path)
+	env := doc["env"].(map[string]interface{})
+
+	// All OTEL keys must be removed.
+	otelKeysAll := []string{
+		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+		"CLAUDE_CODE_ENABLE_TELEMETRY",
+		"OTEL_METRICS_EXPORTER",
+		"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+	}
+	for _, k := range otelKeysAll {
+		if _, exists := env[k]; exists {
+			t.Errorf("ClearOTELKeys: key %s should have been removed", k)
+		}
+	}
+
+	// Non-OTEL keys must be untouched.
+	if env["ANTHROPIC_BASE_URL"] != "https://upstream.example.com" {
+		t.Errorf("ANTHROPIC_BASE_URL should be unchanged, got %v", env["ANTHROPIC_BASE_URL"])
 	}
 }
