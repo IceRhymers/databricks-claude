@@ -123,6 +123,24 @@ func NewProxyServer(config *ProxyConfig) http.Handler {
 				log.Printf("databricks-claude: otel → %s %s%s", req.Method, req.URL.Host, req.URL.Path)
 			}
 		},
+		ModifyResponse: func(resp *http.Response) error {
+			if config.Verbose || resp.StatusCode >= 400 {
+				body, err := io.ReadAll(resp.Body)
+				if err == nil {
+					snippet := string(body)
+					if len(snippet) > 500 {
+						snippet = snippet[:500] + "..."
+					}
+					if resp.StatusCode >= 400 {
+						log.Printf("databricks-claude: otel upstream error %d: %s", resp.StatusCode, snippet)
+					} else {
+						log.Printf("databricks-claude: otel ← %d (%d bytes)", resp.StatusCode, len(body))
+					}
+					resp.Body = io.NopCloser(bytes.NewReader(body))
+				}
+			}
+			return nil
+		},
 		FlushInterval: -1,
 	}
 

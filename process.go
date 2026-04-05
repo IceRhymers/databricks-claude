@@ -325,6 +325,17 @@ func (sm *SettingsManager) SaveAndOverwrite(proxyURL string) error {
 			delete(sm.origValues, "ANTHROPIC_BASE_URL")
 		}
 	}
+	// Same stale-localhost check for OTEL endpoints (crash leftover).
+	if orig, ok := sm.origValues["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"]; ok {
+		if s, ok := orig.(string); ok && strings.HasPrefix(s, "http://127.0.0.1") {
+			delete(sm.origValues, "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
+		}
+	}
+	if orig, ok := sm.origValues["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"]; ok {
+		if s, ok := orig.(string); ok && strings.HasPrefix(s, "http://127.0.0.1") {
+			delete(sm.origValues, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
+		}
+	}
 
 	// Write inference proxy values.
 	env["ANTHROPIC_BASE_URL"] = proxyURL

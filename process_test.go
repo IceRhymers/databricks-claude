@@ -806,3 +806,105 @@ func TestSettingsManager_ClearOTELKeys(t *testing.T) {
 		t.Errorf("ANTHROPIC_BASE_URL should be unchanged, got %v", env["ANTHROPIC_BASE_URL"])
 	}
 }
+
+func TestSettingsManager_ClearsStaleOTELMetricsEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	// Simulate a crash where OTEL metrics endpoint was left pointing to localhost.
+	original := map[string]interface{}{
+		"env": map[string]interface{}{
+			"ANTHROPIC_BASE_URL":                  "http://127.0.0.1:8888",
+			"ANTHROPIC_AUTH_TOKEN":                 "stale-token",
+			"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://127.0.0.1:8888/otel/v1/metrics",
+			"OTEL_EXPORTER_OTLP_METRICS_HEADERS":  "content-type=application/x-protobuf",
+		},
+	}
+	writeJSON(t, path, original)
+
+	sm := NewSettingsManager(path)
+	if err := sm.SaveAndOverwrite("http://127.0.0.1:9999"); err != nil {
+		t.Fatalf("SaveAndOverwrite: %v", err)
+	}
+
+	// Restore should remove the stale OTEL metrics endpoint (not restore the dead localhost value).
+	if err := sm.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	restored := readJSON(t, path)
+	rEnv := restored["env"].(map[string]interface{})
+	if _, exists := rEnv["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"]; exists {
+		t.Errorf("expected OTEL_EXPORTER_OTLP_METRICS_ENDPOINT to be removed after stale-localhost restore, got %v", rEnv["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"])
+	}
+	if _, exists := rEnv["ANTHROPIC_BASE_URL"]; exists {
+		t.Errorf("expected ANTHROPIC_BASE_URL to be removed after stale-localhost restore, got %v", rEnv["ANTHROPIC_BASE_URL"])
+	}
+}
+
+func TestSettingsManager_ClearsStaleOTELLogsEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	// Simulate a crash where OTEL logs endpoint was left pointing to localhost.
+	original := map[string]interface{}{
+		"env": map[string]interface{}{
+			"ANTHROPIC_BASE_URL":                "http://127.0.0.1:8888",
+			"ANTHROPIC_AUTH_TOKEN":               "stale-token",
+			"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT":  "http://127.0.0.1:8888/otel/v1/logs",
+			"OTEL_EXPORTER_OTLP_LOGS_HEADERS":   "content-type=application/x-protobuf",
+		},
+	}
+	writeJSON(t, path, original)
+
+	sm := NewSettingsManager(path)
+	if err := sm.SaveAndOverwrite("http://127.0.0.1:9999"); err != nil {
+		t.Fatalf("SaveAndOverwrite: %v", err)
+	}
+
+	// Restore should remove the stale OTEL logs endpoint.
+	if err := sm.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	restored := readJSON(t, path)
+	rEnv := restored["env"].(map[string]interface{})
+	if _, exists := rEnv["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"]; exists {
+		t.Errorf("expected OTEL_EXPORTER_OTLP_LOGS_ENDPOINT to be removed after stale-localhost restore, got %v", rEnv["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"])
+	}
+}
+
+func TestSettingsManager_StaleOTELPreservesRealUpstream(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	// Mix: real upstream OTEL endpoint + stale localhost inference URL.
+	// Only the stale localhost values should be cleared; real upstreams preserved.
+	original := map[string]interface{}{
+		"env": map[string]interface{}{
+			"ANTHROPIC_BASE_URL":                  "http://127.0.0.1:8888",
+			"ANTHROPIC_AUTH_TOKEN":                 "stale-token",
+			"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "https://otel.example.com/v1/metrics",
+			"OTEL_EXPORTER_OTLP_METRICS_HEADERS":  "Authorization=Bearer real-token",
+		},
+	}
+	writeJSON(t, path, original)
+
+	sm := NewSettingsManager(path)
+	if err := sm.SaveAndOverwrite("http://127.0.0.1:9999"); err != nil {
+		t.Fatalf("SaveAndOverwrite: %v", err)
+	}
+
+	if err := sm.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	restored := readJSON(t, path)
+	rEnv := restored["env"].(map[string]interface{})
+
+	// Real OTEL endpoint should be restored (not stale localhost).
+	if rEnv["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] != "https://otel.example.com/v1/metrics" {
+		t.Errorf("expected real OTEL endpoint to be restored, got %v", rEnv["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"])
+	}
+	// Stale inference URL should be cleared.
+	if _, exists := rEnv["ANTHROPIC_BASE_URL"]; exists {
+		t.Errorf("expected ANTHROPIC_BASE_URL to be removed, got %v", rEnv["ANTHROPIC_BASE_URL"])
+	}
+}

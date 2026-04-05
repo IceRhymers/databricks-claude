@@ -20,7 +20,7 @@ func main() {
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
-	profile, verbose, version, showHelp, printEnv, otel, otelTable, upstream, logFile, noOtel, claudeArgs := parseArgs(os.Args[1:])
+	profile, verbose, version, showHelp, printEnv, otel, otelTable, otelTableSet, upstream, logFile, noOtel, claudeArgs := parseArgs(os.Args[1:])
 
 	if showHelp {
 		handleHelp(upstream)
@@ -119,6 +119,11 @@ func main() {
 		otelConfigured = true
 		otelEndpoint = v
 	}
+	// If OTEL endpoint is stale localhost (crash leftover), clear the URL but
+	// keep otelConfigured=true so OTEL re-enables with the new proxy URL.
+	if otelEndpoint != "" && strings.HasPrefix(otelEndpoint, "http://127.0.0.1") {
+		otelEndpoint = ""
+	}
 
 	ucTable := ""
 	if v, ok := env["CLAUDE_OTEL_UC_TABLE"].(string); ok {
@@ -174,7 +179,9 @@ func main() {
 	}
 
 	// OTEL table: --otel-table flag overrides settings.json value.
-	if ucTable == "" {
+	if otelTableSet {
+		ucTable = otelTable
+	} else if ucTable == "" {
 		ucTable = otelTable
 	}
 
@@ -218,7 +225,7 @@ func main() {
 			Profile:     resolvedProfile,
 			UpstreamURL: inferenceUpstream,
 			OTELEnabled: otelEnabled,
-			OTELTable:   otelTable,
+			OTELTable:   ucTable,
 		}); err != nil {
 			log.Fatalf("databricks-claude: failed to write settings.json: %v", err)
 		}
@@ -277,7 +284,7 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 // databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-table, --no-otel.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelTable string, upstream string, logFile string, noOtel bool, claudeArgs []string) {
+func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelTable string, otelTableSet bool, upstream string, logFile string, noOtel bool, claudeArgs []string) {
 	otelTable = "main.claude_telemetry.claude_otel_metrics" // default
 
 	knownFlags := map[string]bool{
@@ -337,9 +344,11 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 				case "--otel-table":
 					if value != "" {
 						otelTable = value
+						otelTableSet = true
 					} else if i+1 < len(args) {
 						i++
 						otelTable = args[i]
+						otelTableSet = true
 					}
 				case "--upstream":
 					if value != "" {
