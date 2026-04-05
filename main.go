@@ -229,12 +229,6 @@ func main() {
 			log.Fatalf("databricks-claude: failed to patch settings.json: %v", err)
 		}
 	}
-	defer func() {
-		if err := sm.Restore(); err != nil {
-			log.Printf("databricks-claude: warning: failed to restore settings.json: %v", err)
-		}
-	}()
-
 	// --- Log startup info ---
 	log.Printf("databricks-claude: proxy listening on %s, profile=%s, upstream=%s",
 		listener.Addr().String(), resolvedProfile, inferenceUpstream)
@@ -245,7 +239,14 @@ func main() {
 		log.Printf("databricks-claude: child error: %v", err)
 	}
 
-	// Restore happens via defer above before os.Exit.
+	// Restore settings.json explicitly before exit. This MUST be a direct call,
+	// not a defer — os.Exit skips all deferred functions and would leave
+	// settings.json pointing at our now-dead proxy, breaking any surviving
+	// concurrent sessions.
+	if err := sm.Restore(); err != nil {
+		log.Printf("databricks-claude: warning: failed to restore settings.json: %v", err)
+	}
+
 	os.Exit(exitCode)
 }
 
