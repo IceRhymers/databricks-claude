@@ -209,9 +209,21 @@ func (sm *SettingsManager) FullSetup(config FullSetupConfig) error {
 	// Write inference/Databricks keys.
 	env["ANTHROPIC_BASE_URL"] = config.ProxyURL
 	env["ANTHROPIC_AUTH_TOKEN"] = "proxy-managed" // proxy injects real token per-request
-	env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = "databricks-claude-opus-4-6"
-	env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = "databricks-claude-sonnet-4-5"
-	env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = "databricks-claude-haiku-4-5"
+
+	// Model keys: preserve user-configured values, only write defaults for absent keys.
+	modelDefaults := map[string]string{
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":   "databricks-claude-opus-4-6",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": "databricks-claude-sonnet-4-6",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  "databricks-claude-haiku-4-5",
+	}
+	for k, def := range modelDefaults {
+		if v, exists := env[k]; exists {
+			log.Printf("databricks-claude: preserving user-configured %s=%v", k, v)
+		} else {
+			env[k] = def
+		}
+	}
+
 	env["ANTHROPIC_CUSTOM_HEADERS"] = "x-databricks-use-coding-agent-mode: true"
 	env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
 	env["DATABRICKS_HOST"] = config.Host
