@@ -298,7 +298,7 @@ func TestFullSetup_WritesAllKeys(t *testing.T) {
 		"ANTHROPIC_BASE_URL":                     cfg.ProxyURL,
 		"ANTHROPIC_AUTH_TOKEN":                    "proxy-managed",
 		"ANTHROPIC_DEFAULT_OPUS_MODEL":            "databricks-claude-opus-4-6",
-		"ANTHROPIC_DEFAULT_SONNET_MODEL":          "databricks-claude-sonnet-4-5",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL":          "databricks-claude-sonnet-4-6",
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL":           "databricks-claude-haiku-4-5",
 		"ANTHROPIC_CUSTOM_HEADERS":                "x-databricks-use-coding-agent-mode: true",
 		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":  "1",
@@ -510,6 +510,123 @@ func TestFullSetup_OTELWritesAllTwelveKeys(t *testing.T) {
 		} else if got != want {
 			t.Errorf("%s = %v, want %v", k, got, want)
 		}
+	}
+}
+
+func TestFullSetup_PreservesUserModelOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	writeJSON(t, path, map[string]interface{}{
+		"env": map[string]interface{}{
+			"ANTHROPIC_DEFAULT_OPUS_MODEL":   "my-custom-opus",
+			"ANTHROPIC_DEFAULT_SONNET_MODEL": "my-custom-sonnet",
+			"ANTHROPIC_DEFAULT_HAIKU_MODEL":  "my-custom-haiku",
+		},
+	})
+
+	sm := NewSettingsManager(path)
+	if err := sm.FullSetup(FullSetupConfig{
+		ProxyURL: "http://127.0.0.1:54321",
+		Token:    "tok",
+		Host:     "https://dbc.example.com",
+		Profile:  "p",
+	}); err != nil {
+		t.Fatalf("FullSetup: %v", err)
+	}
+
+	doc := readJSON(t, path)
+	env := doc["env"].(map[string]interface{})
+
+	// User-configured model values must survive FullSetup.
+	if env["ANTHROPIC_DEFAULT_OPUS_MODEL"] != "my-custom-opus" {
+		t.Errorf("ANTHROPIC_DEFAULT_OPUS_MODEL = %v, want my-custom-opus", env["ANTHROPIC_DEFAULT_OPUS_MODEL"])
+	}
+	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "my-custom-sonnet" {
+		t.Errorf("ANTHROPIC_DEFAULT_SONNET_MODEL = %v, want my-custom-sonnet", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
+	}
+	if env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] != "my-custom-haiku" {
+		t.Errorf("ANTHROPIC_DEFAULT_HAIKU_MODEL = %v, want my-custom-haiku", env["ANTHROPIC_DEFAULT_HAIKU_MODEL"])
+	}
+
+	// Non-model keys must still be written normally.
+	if env["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:54321" {
+		t.Errorf("ANTHROPIC_BASE_URL = %v, want proxy URL", env["ANTHROPIC_BASE_URL"])
+	}
+}
+
+func TestFullSetup_PreservesUserModelOverrides_PartialOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	// Only opus is user-configured; sonnet and haiku are absent.
+	writeJSON(t, path, map[string]interface{}{
+		"env": map[string]interface{}{
+			"ANTHROPIC_DEFAULT_OPUS_MODEL": "my-custom-opus",
+		},
+	})
+
+	sm := NewSettingsManager(path)
+	if err := sm.FullSetup(FullSetupConfig{
+		ProxyURL: "http://127.0.0.1:54321",
+		Token:    "tok",
+		Host:     "https://dbc.example.com",
+		Profile:  "p",
+	}); err != nil {
+		t.Fatalf("FullSetup: %v", err)
+	}
+
+	doc := readJSON(t, path)
+	env := doc["env"].(map[string]interface{})
+
+	// User override preserved.
+	if env["ANTHROPIC_DEFAULT_OPUS_MODEL"] != "my-custom-opus" {
+		t.Errorf("ANTHROPIC_DEFAULT_OPUS_MODEL = %v, want my-custom-opus", env["ANTHROPIC_DEFAULT_OPUS_MODEL"])
+	}
+	// Absent keys get defaults.
+	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "databricks-claude-sonnet-4-6" {
+		t.Errorf("ANTHROPIC_DEFAULT_SONNET_MODEL = %v, want databricks-claude-sonnet-4-6", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
+	}
+	if env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] != "databricks-claude-haiku-4-5" {
+		t.Errorf("ANTHROPIC_DEFAULT_HAIKU_MODEL = %v, want databricks-claude-haiku-4-5", env["ANTHROPIC_DEFAULT_HAIKU_MODEL"])
+	}
+}
+
+func TestFullSetup_PreservesUserModelOverrides_RestoreLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	writeJSON(t, path, map[string]interface{}{
+		"env": map[string]interface{}{
+			"ANTHROPIC_DEFAULT_OPUS_MODEL":   "my-custom-opus",
+			"ANTHROPIC_DEFAULT_SONNET_MODEL": "my-custom-sonnet",
+		},
+	})
+
+	sm := NewSettingsManager(path)
+	if err := sm.FullSetup(FullSetupConfig{
+		ProxyURL: "http://127.0.0.1:54321",
+		Token:    "tok",
+		Host:     "https://dbc.example.com",
+		Profile:  "p",
+	}); err != nil {
+		t.Fatalf("FullSetup: %v", err)
+	}
+
+	if err := sm.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	doc := readJSON(t, path)
+	env := doc["env"].(map[string]interface{})
+
+	// User overrides must be restored.
+	if env["ANTHROPIC_DEFAULT_OPUS_MODEL"] != "my-custom-opus" {
+		t.Errorf("restored ANTHROPIC_DEFAULT_OPUS_MODEL = %v, want my-custom-opus", env["ANTHROPIC_DEFAULT_OPUS_MODEL"])
+	}
+	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "my-custom-sonnet" {
+		t.Errorf("restored ANTHROPIC_DEFAULT_SONNET_MODEL = %v, want my-custom-sonnet", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
+	}
+	// Haiku was absent — FullSetup wrote the default, Restore must remove it.
+	if _, exists := env["ANTHROPIC_DEFAULT_HAIKU_MODEL"]; exists {
+		t.Errorf("ANTHROPIC_DEFAULT_HAIKU_MODEL should be removed by Restore (was absent originally), got %v", env["ANTHROPIC_DEFAULT_HAIKU_MODEL"])
 	}
 }
 
