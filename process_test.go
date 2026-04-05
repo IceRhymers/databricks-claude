@@ -466,19 +466,20 @@ func TestFullSetup_CreatesSettingsIfMissing(t *testing.T) {
 	}
 }
 
-func TestFullSetup_OTELWritesAllTwelveKeys(t *testing.T) {
+func TestFullSetup_OTELWritesAllThirteenKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	writeJSON(t, path, map[string]interface{}{"env": map[string]interface{}{}})
 
 	sm := NewSettingsManager(path)
 	cfg := FullSetupConfig{
-		ProxyURL:    "http://127.0.0.1:54321",
-		Token:       "tok",
-		Host:        "https://dbc.example.com",
-		Profile:     "p",
-		OTELEnabled: true,
-		OTELTable:   "main.claude_telemetry.claude_otel_metrics",
+		ProxyURL:         "http://127.0.0.1:54321",
+		Token:            "tok",
+		Host:             "https://dbc.example.com",
+		Profile:          "p",
+		OTELEnabled:      true,
+		OTELMetricsTable: "main.claude_telemetry.claude_otel_metrics",
+		OTELLogsTable:    "main.claude_telemetry.claude_otel_logs",
 	}
 	if err := sm.FullSetup(cfg); err != nil {
 		t.Fatalf("FullSetup: %v", err)
@@ -499,10 +500,11 @@ func TestFullSetup_OTELWritesAllTwelveKeys(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL":     "http/protobuf",
 		"OTEL_LOGS_EXPORTER":                   "otlp",
 		"OTEL_LOGS_EXPORT_INTERVAL":            "5000",
-		"CLAUDE_OTEL_UC_TABLE":                 "main.claude_telemetry.claude_otel_metrics",
+		"CLAUDE_OTEL_UC_METRICS_TABLE":         "main.claude_telemetry.claude_otel_metrics",
+		"CLAUDE_OTEL_UC_LOGS_TABLE":            "main.claude_telemetry.claude_otel_logs",
 	}
-	if len(otelChecks) != 12 {
-		t.Fatalf("expected 12 OTEL checks, got %d", len(otelChecks))
+	if len(otelChecks) != 13 {
+		t.Fatalf("expected 13 OTEL checks, got %d", len(otelChecks))
 	}
 	for k, want := range otelChecks {
 		if got, ok := env[k]; !ok {

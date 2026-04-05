@@ -147,7 +147,8 @@ var fullSetupOTELKeys = []string{
 	"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
 	"OTEL_LOGS_EXPORTER",
 	"OTEL_LOGS_EXPORT_INTERVAL",
-	"CLAUDE_OTEL_UC_TABLE",
+	"CLAUDE_OTEL_UC_METRICS_TABLE",
+	"CLAUDE_OTEL_UC_LOGS_TABLE",
 }
 
 // FullSetupConfig holds all parameters for FullSetup.
@@ -159,8 +160,9 @@ type FullSetupConfig struct {
 	UpstreamURL string // AI Gateway URL (stored for restore)
 
 	// OTEL (optional)
-	OTELEnabled bool
-	OTELTable   string // default: "main.claude_telemetry.claude_otel_metrics"
+	OTELEnabled      bool
+	OTELMetricsTable string // default: "main.claude_telemetry.claude_otel_metrics"
+	OTELLogsTable    string // default: derived from metrics table
 }
 
 // FullSetup reads settings.json (creating it if missing), saves originals for
@@ -242,7 +244,8 @@ func (sm *SettingsManager) FullSetup(config FullSetupConfig) error {
 		env["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] = "http/protobuf"
 		env["OTEL_LOGS_EXPORTER"] = "otlp"
 		env["OTEL_LOGS_EXPORT_INTERVAL"] = "5000"
-		env["CLAUDE_OTEL_UC_TABLE"] = config.OTELTable
+		env["CLAUDE_OTEL_UC_METRICS_TABLE"] = config.OTELMetricsTable
+		env["CLAUDE_OTEL_UC_LOGS_TABLE"] = config.OTELLogsTable
 	}
 
 	if err := sm.writeSettings(doc); err != nil {

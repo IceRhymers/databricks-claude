@@ -20,7 +20,7 @@ func main() {
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
-	profile, verbose, version, showHelp, printEnv, otel, otelTable, otelTableSet, upstream, logFile, noOtel, claudeArgs := parseArgs(os.Args[1:])
+	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, claudeArgs := parseArgs(os.Args[1:])
 
 	if showHelp {
 		handleHelp(upstream)
@@ -125,9 +125,13 @@ func main() {
 		otelEndpoint = ""
 	}
 
-	ucTable := ""
-	if v, ok := env["CLAUDE_OTEL_UC_TABLE"].(string); ok {
-		ucTable = v
+	ucMetricsTable := ""
+	if v, ok := env["CLAUDE_OTEL_UC_METRICS_TABLE"].(string); ok {
+		ucMetricsTable = v
+	}
+	ucLogsTable := ""
+	if v, ok := env["CLAUDE_OTEL_UC_LOGS_TABLE"].(string); ok {
+		ucLogsTable = v
 	}
 
 	// --- Seed token cache ---
@@ -178,20 +182,25 @@ func main() {
 		otelUpstream = inferenceUpstream
 	}
 
-	// OTEL table: --otel-table flag overrides settings.json value.
-	if otelTableSet {
-		ucTable = otelTable
-	} else if ucTable == "" {
-		ucTable = otelTable
+	// OTEL metrics table: --otel-metrics-table flag overrides settings.json value.
+	if otelMetricsTableSet {
+		ucMetricsTable = otelMetricsTable
+	} else if ucMetricsTable == "" {
+		ucMetricsTable = otelMetricsTable
 	}
 
-	// Derive logs table name from metrics table name.
-	otelLogsTable := deriveLogsTable(ucTable)
+	// OTEL logs table: --otel-logs-table flag overrides settings.json value.
+	// Falls back to deriveLogsTable() when neither flag nor persisted value exists.
+	if otelLogsTableSet {
+		ucLogsTable = otelLogsTable
+	} else if ucLogsTable == "" {
+		ucLogsTable = deriveLogsTable(ucMetricsTable)
+	}
 
 	// --- Print env and exit if requested ---
 	if printEnv {
 		anthropicModel := os.Getenv("ANTHROPIC_MODEL")
-		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, anthropicModel, upstream, otel || otelConfigured, ucTable, otelLogsTable)
+		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, anthropicModel, upstream, otel || otelConfigured, ucMetricsTable, ucLogsTable)
 		os.Exit(0)
 	}
 
@@ -199,8 +208,8 @@ func main() {
 	proxyConfig := &ProxyConfig{
 		InferenceUpstream: inferenceUpstream,
 		OTELUpstream:      otelUpstream,
-		UCMetricsTable:    ucTable,
-		UCLogsTable:       otelLogsTable,
+		UCMetricsTable:    ucMetricsTable,
+		UCLogsTable:       ucLogsTable,
 		TokenProvider:     tp,
 		Verbose:           verbose,
 	}
@@ -224,8 +233,9 @@ func main() {
 			Host:        databricksHost,
 			Profile:     resolvedProfile,
 			UpstreamURL: inferenceUpstream,
-			OTELEnabled: otelEnabled,
-			OTELTable:   ucTable,
+			OTELEnabled:     otelEnabled,
+			OTELMetricsTable: ucMetricsTable,
+			OTELLogsTable:    ucLogsTable,
 		}); err != nil {
 			log.Fatalf("databricks-claude: failed to write settings.json: %v", err)
 		}
@@ -281,23 +291,24 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 }
 
 // parseArgs separates databricks-claude flags from claude flags.
-// databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-table, --no-otel.
+// databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-metrics-table, --otel-logs-table, --no-otel.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelTable string, otelTableSet bool, upstream string, logFile string, noOtel bool, claudeArgs []string) {
-	otelTable = "main.claude_telemetry.claude_otel_metrics" // default
+func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, claudeArgs []string) {
+	otelMetricsTable = "main.claude_telemetry.claude_otel_metrics" // default
 
 	knownFlags := map[string]bool{
-		"--profile":    true,
-		"--verbose":    true,
-		"--version":    true,
-		"--help":       true,
-		"--print-env":  true,
-		"--otel":       true,
-		"--no-otel":    true,
-		"--otel-table": true,
-		"--upstream":   true,
-		"--log-file":   true,
+		"--profile":            true,
+		"--verbose":            true,
+		"--version":            true,
+		"--help":               true,
+		"--print-env":          true,
+		"--otel":               true,
+		"--no-otel":            true,
+		"--otel-metrics-table": true,
+		"--otel-logs-table":    true,
+		"--upstream":           true,
+		"--log-file":           true,
 	}
 
 	i := 0
@@ -341,14 +352,23 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 						i++
 						profile = args[i]
 					}
-				case "--otel-table":
+				case "--otel-metrics-table":
 					if value != "" {
-						otelTable = value
-						otelTableSet = true
+						otelMetricsTable = value
+						otelMetricsTableSet = true
 					} else if i+1 < len(args) {
 						i++
-						otelTable = args[i]
-						otelTableSet = true
+						otelMetricsTable = args[i]
+						otelMetricsTableSet = true
+					}
+				case "--otel-logs-table":
+					if value != "" {
+						otelLogsTable = value
+						otelLogsTableSet = true
+					} else if i+1 < len(args) {
+						i++
+						otelLogsTable = args[i]
+						otelLogsTableSet = true
 					}
 				case "--upstream":
 					if value != "" {
@@ -405,11 +425,22 @@ Databricks-Claude Flags:
   --print-env           Print resolved configuration and exit (token redacted)
   --verbose, -v         Enable debug logging to stderr
   --log-file string     Write debug logs to a file (combinable with --verbose)
-  --otel                Enable OpenTelemetry tracing
-  --no-otel             Clear persisted OTEL keys and disable OTEL for future sessions
-  --otel-table string   Unity Catalog table for OTEL spans
-  --version             Print version and exit
-  --help, -h            Show this help message
+  --otel                       Enable OpenTelemetry tracing
+  --no-otel                    Clear persisted OTEL keys and disable OTEL for future sessions
+  --otel-metrics-table string  Unity Catalog table for OTEL metrics
+  --otel-logs-table string     Unity Catalog table for OTEL logs (derived from metrics table if omitted)
+  --version                    Print version and exit
+  --help, -h                   Show this help message
+
+Example Unity Catalog table setup (run in a Databricks SQL warehouse):
+
+  CREATE TABLE main.claude_telemetry.claude_otel_metrics (
+    ... -- see https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta
+  ) USING DELTA TBLPROPERTIES ('otel.schemaVersion' = 'v1');
+
+  CREATE TABLE main.claude_telemetry.claude_otel_logs (
+    ... -- see https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta
+  ) USING DELTA TBLPROPERTIES ('otel.schemaVersion' = 'v1');
 
 ────────────────────────────────────────────────────────────────────────────────
 Claude CLI Options:
