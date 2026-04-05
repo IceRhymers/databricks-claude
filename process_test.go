@@ -466,19 +466,20 @@ func TestFullSetup_CreatesSettingsIfMissing(t *testing.T) {
 	}
 }
 
-func TestFullSetup_OTELWritesAllTwelveKeys(t *testing.T) {
+func TestFullSetup_OTELWritesAllThirteenKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	writeJSON(t, path, map[string]interface{}{"env": map[string]interface{}{}})
 
 	sm := NewSettingsManager(path)
 	cfg := FullSetupConfig{
-		ProxyURL:    "http://127.0.0.1:54321",
-		Token:       "tok",
-		Host:        "https://dbc.example.com",
-		Profile:     "p",
-		OTELEnabled: true,
-		OTELTable:   "main.claude_telemetry.claude_otel_metrics",
+		ProxyURL:         "http://127.0.0.1:54321",
+		Token:            "tok",
+		Host:             "https://dbc.example.com",
+		Profile:          "p",
+		OTELEnabled:      true,
+		OTELMetricsTable: "main.claude_telemetry.claude_otel_metrics",
+		OTELLogsTable:    "main.claude_telemetry.claude_otel_logs",
 	}
 	if err := sm.FullSetup(cfg); err != nil {
 		t.Fatalf("FullSetup: %v", err)
@@ -499,10 +500,11 @@ func TestFullSetup_OTELWritesAllTwelveKeys(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL":     "http/protobuf",
 		"OTEL_LOGS_EXPORTER":                   "otlp",
 		"OTEL_LOGS_EXPORT_INTERVAL":            "5000",
-		"CLAUDE_OTEL_UC_TABLE":                 "main.claude_telemetry.claude_otel_metrics",
+		"CLAUDE_OTEL_UC_METRICS_TABLE":         "main.claude_telemetry.claude_otel_metrics",
+		"CLAUDE_OTEL_UC_LOGS_TABLE":            "main.claude_telemetry.claude_otel_logs",
 	}
-	if len(otelChecks) != 12 {
-		t.Fatalf("expected 12 OTEL checks, got %d", len(otelChecks))
+	if len(otelChecks) != 13 {
+		t.Fatalf("expected 13 OTEL checks, got %d", len(otelChecks))
 	}
 	for k, want := range otelChecks {
 		if got, ok := env[k]; !ok {
@@ -804,5 +806,107 @@ func TestSettingsManager_ClearOTELKeys(t *testing.T) {
 	// Non-OTEL keys must be untouched.
 	if env["ANTHROPIC_BASE_URL"] != "https://upstream.example.com" {
 		t.Errorf("ANTHROPIC_BASE_URL should be unchanged, got %v", env["ANTHROPIC_BASE_URL"])
+	}
+}
+
+func TestSettingsManager_ClearsStaleOTELMetricsEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	// Simulate a crash where OTEL metrics endpoint was left pointing to localhost.
+	original := map[string]interface{}{
+		"env": map[string]interface{}{
+			"ANTHROPIC_BASE_URL":                  "http://127.0.0.1:8888",
+			"ANTHROPIC_AUTH_TOKEN":                 "stale-token",
+			"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://127.0.0.1:8888/otel/v1/metrics",
+			"OTEL_EXPORTER_OTLP_METRICS_HEADERS":  "content-type=application/x-protobuf",
+		},
+	}
+	writeJSON(t, path, original)
+
+	sm := NewSettingsManager(path)
+	if err := sm.SaveAndOverwrite("http://127.0.0.1:9999"); err != nil {
+		t.Fatalf("SaveAndOverwrite: %v", err)
+	}
+
+	// Restore should remove the stale OTEL metrics endpoint (not restore the dead localhost value).
+	if err := sm.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	restored := readJSON(t, path)
+	rEnv := restored["env"].(map[string]interface{})
+	if _, exists := rEnv["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"]; exists {
+		t.Errorf("expected OTEL_EXPORTER_OTLP_METRICS_ENDPOINT to be removed after stale-localhost restore, got %v", rEnv["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"])
+	}
+	if _, exists := rEnv["ANTHROPIC_BASE_URL"]; exists {
+		t.Errorf("expected ANTHROPIC_BASE_URL to be removed after stale-localhost restore, got %v", rEnv["ANTHROPIC_BASE_URL"])
+	}
+}
+
+func TestSettingsManager_ClearsStaleOTELLogsEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	// Simulate a crash where OTEL logs endpoint was left pointing to localhost.
+	original := map[string]interface{}{
+		"env": map[string]interface{}{
+			"ANTHROPIC_BASE_URL":                "http://127.0.0.1:8888",
+			"ANTHROPIC_AUTH_TOKEN":               "stale-token",
+			"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT":  "http://127.0.0.1:8888/otel/v1/logs",
+			"OTEL_EXPORTER_OTLP_LOGS_HEADERS":   "content-type=application/x-protobuf",
+		},
+	}
+	writeJSON(t, path, original)
+
+	sm := NewSettingsManager(path)
+	if err := sm.SaveAndOverwrite("http://127.0.0.1:9999"); err != nil {
+		t.Fatalf("SaveAndOverwrite: %v", err)
+	}
+
+	// Restore should remove the stale OTEL logs endpoint.
+	if err := sm.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	restored := readJSON(t, path)
+	rEnv := restored["env"].(map[string]interface{})
+	if _, exists := rEnv["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"]; exists {
+		t.Errorf("expected OTEL_EXPORTER_OTLP_LOGS_ENDPOINT to be removed after stale-localhost restore, got %v", rEnv["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"])
+	}
+}
+
+func TestSettingsManager_StaleOTELPreservesRealUpstream(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	// Mix: real upstream OTEL endpoint + stale localhost inference URL.
+	// Only the stale localhost values should be cleared; real upstreams preserved.
+	original := map[string]interface{}{
+		"env": map[string]interface{}{
+			"ANTHROPIC_BASE_URL":                  "http://127.0.0.1:8888",
+			"ANTHROPIC_AUTH_TOKEN":                 "stale-token",
+			"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "https://otel.example.com/v1/metrics",
+			"OTEL_EXPORTER_OTLP_METRICS_HEADERS":  "Authorization=Bearer real-token",
+		},
+	}
+	writeJSON(t, path, original)
+
+	sm := NewSettingsManager(path)
+	if err := sm.SaveAndOverwrite("http://127.0.0.1:9999"); err != nil {
+		t.Fatalf("SaveAndOverwrite: %v", err)
+	}
+
+	if err := sm.Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	restored := readJSON(t, path)
+	rEnv := restored["env"].(map[string]interface{})
+
+	// Real OTEL endpoint should be restored (not stale localhost).
+	if rEnv["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] != "https://otel.example.com/v1/metrics" {
+		t.Errorf("expected real OTEL endpoint to be restored, got %v", rEnv["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"])
+	}
+	// Stale inference URL should be cleared.
+	if _, exists := rEnv["ANTHROPIC_BASE_URL"]; exists {
+		t.Errorf("expected ANTHROPIC_BASE_URL to be removed, got %v", rEnv["ANTHROPIC_BASE_URL"])
 	}
 }
