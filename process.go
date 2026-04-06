@@ -2,27 +2,20 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
-	"strings"
-	"sync"
-	"syscall"
+	"github.com/IceRhymers/databricks-claude/pkg/childproc"
+	"github.com/IceRhymers/databricks-claude/pkg/settings"
 )
 
 // SettingsManager reads, patches, and restores ~/.claude/settings.json.
 type SettingsManager struct {
-	settingsPath       string
-	origValues         map[string]interface{} // saved originals for restore
-	otelKeysPersistent bool                   // when true, Restore skips OTEL keys
-	mu                 sync.Mutex
-	lock               *FileLock
-	registry           *SessionRegistry
+	inner              *settings.Manager
+	otelKeysPersistent bool // when true, Restore skips OTEL keys
 }
 
 // NewSettingsManager creates a SettingsManager for the given settings.json path.
@@ -30,75 +23,64 @@ type SettingsManager struct {
 // at ~/.claude/.sessions.json (derived from the settings.json directory).
 func NewSettingsManager(path string) *SettingsManager {
 	dir := filepath.Dir(path)
-	return &SettingsManager{
-		settingsPath: path,
-		origValues:   make(map[string]interface{}),
-		lock:         NewFileLock(filepath.Join(dir, ".settings.lock")),
-		registry:     NewSessionRegistry(filepath.Join(dir, ".sessions.json")),
+	lock := NewFileLock(filepath.Join(dir, ".settings.lock"))
+	reg := NewSessionRegistry(filepath.Join(dir, ".sessions.json"))
+
+	// Wrap the registry to satisfy settings.SessionTracker interface.
+	tracker := &registryAdapter{reg: reg}
+
+	kc := settings.KeyConfig{
+		ManagedKeys:   inferenceKeys,
+		ProtectedKeys: otelKeys,
 	}
+
+	return &SettingsManager{
+		inner: settings.NewManager(path, lock, tracker, kc),
+	}
+}
+
+// registryAdapter wraps SessionRegistry to implement settings.SessionTracker.
+type registryAdapter struct {
+	reg *SessionRegistry
+}
+
+func (a *registryAdapter) Register(pid int, proxyURL string) error {
+	return a.reg.Register(pid, proxyURL)
+}
+
+func (a *registryAdapter) Unregister(pid int) error {
+	return a.reg.Unregister(pid)
+}
+
+func (a *registryAdapter) LiveSessions() ([]settings.LiveSession, error) {
+	sessions, err := a.reg.LiveSessions()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]settings.LiveSession, len(sessions))
+	for i, s := range sessions {
+		result[i] = settings.LiveSession{PID: s.PID, ProxyURL: s.ProxyURL}
+	}
+	return result, nil
+}
+
+func (a *registryAdapter) MostRecentLive() (*settings.LiveSession, error) {
+	s, err := a.reg.MostRecentLive()
+	if err != nil {
+		return nil, err
+	}
+	if s == nil {
+		return nil, nil
+	}
+	return &settings.LiveSession{PID: s.PID, ProxyURL: s.ProxyURL}, nil
 }
 
 // SetOTELPersistent controls whether Restore skips OTEL keys. When true,
 // Restore will not touch any keys in otelKeys or fullSetupOTELKeys, leaving
 // them in settings.json as-is. Use ClearOTELKeys to explicitly remove them.
 func (sm *SettingsManager) SetOTELPersistent(v bool) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
 	sm.otelKeysPersistent = v
-}
-
-// readSettings reads and parses settings.json, returning the full document.
-func (sm *SettingsManager) readSettings() (map[string]interface{}, error) {
-	data, err := os.ReadFile(sm.settingsPath)
-	if err != nil {
-		return nil, fmt.Errorf("read settings.json: %w", err)
-	}
-	var doc map[string]interface{}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("parse settings.json: %w", err)
-	}
-	return doc, nil
-}
-
-// writeSettings atomically writes doc to settings.json using a temp file in
-// the same directory followed by os.Rename.
-func (sm *SettingsManager) writeSettings(doc map[string]interface{}) error {
-	data, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal settings.json: %w", err)
-	}
-	dir := filepath.Dir(sm.settingsPath)
-	tmp, err := os.CreateTemp(dir, ".settings-*.json.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("close temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, sm.settingsPath); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("rename temp file: %w", err)
-	}
-	return nil
-}
-
-// getEnvBlock returns the "env" sub-map from the document, creating it if needed.
-func getEnvBlock(doc map[string]interface{}) map[string]interface{} {
-	if env, ok := doc["env"]; ok {
-		if envMap, ok := env.(map[string]interface{}); ok {
-			return envMap
-		}
-	}
-	envMap := make(map[string]interface{})
-	doc["env"] = envMap
-	return envMap
+	sm.inner.SetProtectedPersistent(v)
 }
 
 // keysToManage lists the env keys we read/restore. OTEL keys are only touched
@@ -169,13 +151,10 @@ type FullSetupConfig struct {
 // all keys it will write, then writes all Databricks/Claude proxy values.
 // Restore() will undo everything FullSetup wrote.
 func (sm *SettingsManager) FullSetup(config FullSetupConfig) error {
-	if err := sm.lock.Lock(); err != nil {
+	if err := sm.inner.Lock().Lock(); err != nil {
 		return fmt.Errorf("acquire file lock: %w", err)
 	}
-	defer sm.lock.Unlock()
-
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	defer sm.inner.Lock().Unlock()
 
 	// Determine which keys we'll write.
 	keysToWrite := append([]string{}, fullSetupInferenceKeys...)
@@ -184,29 +163,22 @@ func (sm *SettingsManager) FullSetup(config FullSetupConfig) error {
 	}
 
 	// Read or create settings.json.
-	doc, err := sm.readSettings()
+	doc, err := sm.inner.ReadSettings()
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		doc = map[string]interface{}{"env": map[string]interface{}{}}
-		dir := filepath.Dir(sm.settingsPath)
+		dir := filepath.Dir(sm.inner.SettingsPath())
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create settings dir: %w", err)
 		}
 	}
 
-	env := getEnvBlock(doc)
+	env := settings.GetEnvBlock(doc)
 
 	// Save originals for all keys we will write (absent keys stored as nil sentinel).
-	for _, k := range keysToWrite {
-		if v, exists := env[k]; exists {
-			sm.origValues[k] = v
-		} else {
-			// Explicit nil signals Restore to delete this key.
-			sm.origValues[k] = nil
-		}
-	}
+	sm.inner.SaveOriginals(env, keysToWrite)
 
 	// Write inference/Databricks keys.
 	env["ANTHROPIC_BASE_URL"] = config.ProxyURL
@@ -248,12 +220,12 @@ func (sm *SettingsManager) FullSetup(config FullSetupConfig) error {
 		env["CLAUDE_OTEL_UC_LOGS_TABLE"] = config.OTELLogsTable
 	}
 
-	if err := sm.writeSettings(doc); err != nil {
+	if err := sm.inner.WriteSettings(doc); err != nil {
 		return err
 	}
 
 	// Register this session in the registry so other sessions know we're alive.
-	if err := sm.registry.Register(os.Getpid(), config.ProxyURL); err != nil {
+	if err := sm.inner.Registry().Register(os.Getpid(), config.ProxyURL); err != nil {
 		log.Printf("databricks-claude: warning: failed to register session: %v", err)
 	}
 
@@ -273,94 +245,28 @@ func (sm *SettingsManager) restoreFullSetupKeys(env map[string]interface{}) {
 	}
 
 	allKeys := append(fullSetupInferenceKeys, fullSetupOTELKeys...)
-	for _, k := range allKeys {
-		if skipOTEL[k] {
-			continue
-		}
-		orig, tracked := sm.origValues[k]
-		if !tracked {
-			continue
-		}
-		if orig == nil {
-			delete(env, k)
-		} else {
-			env[k] = orig
-		}
-	}
+	sm.inner.RestoreKeys(env, allKeys, skipOTEL)
 }
 
 // SaveAndOverwrite reads settings.json, saves original values for keys we will
 // overwrite, then writes proxy values. Returns an error if settings.json does
 // not exist.
 func (sm *SettingsManager) SaveAndOverwrite(proxyURL string) error {
-	if err := sm.lock.Lock(); err != nil {
-		return fmt.Errorf("acquire file lock: %w", err)
-	}
-	defer sm.lock.Unlock()
+	return sm.inner.SaveAndOverwrite(proxyURL, func(env map[string]interface{}, proxyURL string) {
+		// Determine whether OTEL was configured before we touched anything.
+		_, otelConfigured := env["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"]
 
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+		// Write inference proxy values.
+		env["ANTHROPIC_BASE_URL"] = proxyURL
+		env["ANTHROPIC_AUTH_TOKEN"] = "proxy-managed" // proxy injects real token per-request
 
-	doc, err := sm.readSettings()
-	if err != nil {
-		return err
-	}
-
-	env := getEnvBlock(doc)
-
-	// Determine whether OTEL was configured before we touched anything.
-	_, otelConfigured := env["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"]
-
-	// Save originals for all keys we may touch.
-	allKeys := append(inferenceKeys, otelKeys...)
-	for _, k := range allKeys {
-		if v, exists := env[k]; exists {
-			sm.origValues[k] = v
+		// Write OTEL proxy values only when OTEL was already configured.
+		if otelConfigured {
+			env["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] = proxyURL + "/otel/v1/metrics"
+			// Strip any Bearer token from headers; the proxy re-adds it.
+			env["OTEL_EXPORTER_OTLP_METRICS_HEADERS"] = "content-type=application/x-protobuf"
 		}
-		// If it didn't exist, we leave origValues[k] unset — Restore will delete the key.
-	}
-
-	// If ANTHROPIC_BASE_URL already points to localhost (stale from a crash), clear it
-	// before setting it to the new proxy URL so we don't keep a stale value as the "original".
-	if orig, ok := sm.origValues["ANTHROPIC_BASE_URL"]; ok {
-		if s, ok := orig.(string); ok && strings.HasPrefix(s, "http://127.0.0.1") {
-			// Stale localhost value — treat it as if it was absent.
-			delete(sm.origValues, "ANTHROPIC_BASE_URL")
-		}
-	}
-	// Same stale-localhost check for OTEL endpoints (crash leftover).
-	if orig, ok := sm.origValues["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"]; ok {
-		if s, ok := orig.(string); ok && strings.HasPrefix(s, "http://127.0.0.1") {
-			delete(sm.origValues, "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
-		}
-	}
-	if orig, ok := sm.origValues["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"]; ok {
-		if s, ok := orig.(string); ok && strings.HasPrefix(s, "http://127.0.0.1") {
-			delete(sm.origValues, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
-		}
-	}
-
-	// Write inference proxy values.
-	env["ANTHROPIC_BASE_URL"] = proxyURL
-	env["ANTHROPIC_AUTH_TOKEN"] = "proxy-managed" // proxy injects real token per-request
-
-	// Write OTEL proxy values only when OTEL was already configured.
-	if otelConfigured {
-		env["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] = proxyURL + "/otel/v1/metrics"
-		// Strip any Bearer token from headers; the proxy re-adds it.
-		env["OTEL_EXPORTER_OTLP_METRICS_HEADERS"] = "content-type=application/x-protobuf"
-	}
-
-	if err := sm.writeSettings(doc); err != nil {
-		return err
-	}
-
-	// Register this session in the registry so other sessions know we're alive.
-	if err := sm.registry.Register(os.Getpid(), proxyURL); err != nil {
-		log.Printf("databricks-claude: warning: failed to register session: %v", err)
-	}
-
-	return nil
+	})
 }
 
 // Restore writes the original values back to settings.json. Keys that did not
@@ -371,38 +277,35 @@ func (sm *SettingsManager) SaveAndOverwrite(proxyURL string) error {
 // ANTHROPIC_BASE_URL to the most recent survivor instead of restoring the
 // original upstream. Only the last session standing restores originals.
 func (sm *SettingsManager) Restore() error {
-	if err := sm.lock.Lock(); err != nil {
+	if err := sm.inner.Lock().Lock(); err != nil {
 		return fmt.Errorf("acquire file lock: %w", err)
 	}
-	defer sm.lock.Unlock()
-
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	defer sm.inner.Lock().Unlock()
 
 	// Unregister ourselves from the session registry.
-	if err := sm.registry.Unregister(os.Getpid()); err != nil {
+	if err := sm.inner.Registry().Unregister(os.Getpid()); err != nil {
 		log.Printf("databricks-claude: warning: failed to unregister session: %v", err)
 	}
 
 	// Check for other live sessions.
-	live, err := sm.registry.LiveSessions()
+	live, err := sm.inner.Registry().LiveSessions()
 	if err != nil {
 		log.Printf("databricks-claude: warning: failed to read live sessions: %v", err)
 		// Fall through to full restore on error.
 		live = nil
 	}
 
-	doc, err := sm.readSettings()
+	doc, err := sm.inner.ReadSettings()
 	if err != nil {
 		return err
 	}
 
-	env := getEnvBlock(doc)
+	env := settings.GetEnvBlock(doc)
 
 	if len(live) > 0 {
 		// Other sessions still alive — hand off ANTHROPIC_BASE_URL to the
 		// most recent survivor so it keeps working.
-		survivor, sErr := sm.registry.MostRecentLive()
+		survivor, sErr := sm.inner.Registry().MostRecentLive()
 		if sErr == nil && survivor != nil {
 			env["ANTHROPIC_BASE_URL"] = survivor.ProxyURL
 			log.Printf("databricks-claude: handing off ANTHROPIC_BASE_URL to surviving session (PID %d, %s)", survivor.PID, survivor.ProxyURL)
@@ -424,7 +327,7 @@ func (sm *SettingsManager) Restore() error {
 			if skipOTEL[k] {
 				continue
 			}
-			if orig, had := sm.origValues[k]; had {
+			if orig, had := sm.inner.OrigValues()[k]; had {
 				env[k] = orig
 			} else {
 				delete(env, k)
@@ -435,26 +338,23 @@ func (sm *SettingsManager) Restore() error {
 		sm.restoreFullSetupKeys(env)
 	}
 
-	return sm.writeSettings(doc)
+	return sm.inner.WriteSettings(doc)
 }
 
 // ClearOTELKeys explicitly removes all OTEL keys from settings.json. This is
 // used by --no-otel to ensure OTEL configuration is fully removed.
 func (sm *SettingsManager) ClearOTELKeys() error {
-	if err := sm.lock.Lock(); err != nil {
+	if err := sm.inner.Lock().Lock(); err != nil {
 		return fmt.Errorf("acquire file lock: %w", err)
 	}
-	defer sm.lock.Unlock()
+	defer sm.inner.Lock().Unlock()
 
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	doc, err := sm.readSettings()
+	doc, err := sm.inner.ReadSettings()
 	if err != nil {
 		return err
 	}
 
-	env := getEnvBlock(doc)
+	env := settings.GetEnvBlock(doc)
 	allOTEL := append(otelKeys, fullSetupOTELKeys...)
 	seen := map[string]bool{}
 	for _, k := range allOTEL {
@@ -465,56 +365,52 @@ func (sm *SettingsManager) ClearOTELKeys() error {
 		delete(env, k)
 	}
 
-	return sm.writeSettings(doc)
+	return sm.inner.WriteSettings(doc)
+}
+
+// readSettings reads and parses settings.json, returning the full document.
+func (sm *SettingsManager) readSettings() (map[string]interface{}, error) {
+	return sm.inner.ReadSettings()
+}
+
+// writeSettings atomically writes doc to settings.json.
+func (sm *SettingsManager) writeSettings(doc map[string]interface{}) error {
+	return sm.inner.WriteSettings(doc)
+}
+
+// getEnvBlock returns the "env" sub-map from the document, creating it if needed.
+func getEnvBlock(doc map[string]interface{}) map[string]interface{} {
+	return settings.GetEnvBlock(doc)
 }
 
 // RunChild starts claude as a child process with the supplied arguments and
 // waits for it to exit, returning the exit code.
 func RunChild(ctx context.Context, claudeArgs []string) (int, error) {
-	cmd := exec.CommandContext(ctx, "claude", claudeArgs...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
-		return 1, fmt.Errorf("start claude: %w", err)
-	}
-
-	cancel := ForwardSignals(cmd)
-	defer cancel()
-
-	err := cmd.Wait()
-	if err == nil {
-		return 0, nil
-	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		return exitErr.ExitCode(), nil
-	}
-	return 1, fmt.Errorf("wait claude: %w", err)
+	return childproc.Run(ctx, childproc.Config{
+		BinaryName: "claude",
+		Args:       claudeArgs,
+	})
 }
 
 // ForwardSignals sets up SIGINT/SIGTERM forwarding from the parent to cmd's
 // process. The returned cancel function stops the forwarding goroutine.
 func ForwardSignals(cmd *exec.Cmd) (cancel func()) {
-	ch := make(chan os.Signal, 4)
-	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-
-	done := make(chan struct{})
-	go func() {
-		defer signal.Stop(ch)
-		for {
-			select {
-			case sig := <-ch:
-				if cmd.Process != nil {
-					cmd.Process.Signal(sig)
-				}
-			case <-done:
-				return
-			}
-		}
-	}()
-
-	return func() {
-		close(done)
-	}
+	return childproc.ForwardSignals(cmd)
 }
+
+// readSettingsForSaveAndOverwrite is used by tests that directly access readLocked.
+// We keep the registry accessible for concurrent_test.go.
+func (sm *SettingsManager) registry() *SessionRegistry {
+	return sm.inner.Registry().(*registryAdapter).reg
+}
+
+// origValues returns the saved originals map (for test access).
+func (sm *SettingsManager) origValues() map[string]interface{} {
+	return sm.inner.OrigValues()
+}
+
+// setOrigValue sets a specific original value (for test access).
+func (sm *SettingsManager) setOrigValue(key string, value interface{}) {
+	sm.inner.SetOrigValue(key, value)
+}
+

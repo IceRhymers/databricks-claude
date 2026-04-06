@@ -1,23 +1,27 @@
-package main
+package proxy
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/IceRhymers/databricks-claude/pkg/tokencache"
 )
 
-// warmToken returns a *TokenProvider whose cache is pre-loaded with the given
-// token so that no subprocess invocation ever occurs during tests.
-func warmToken(token string) *tokencache.TokenProvider {
-	tp := tokencache.NewTokenProvider(nil) // fetcher unused — cache is pre-warmed
-	tp.SetCache(token, time.Now().Add(24*time.Hour))
-	return tp
+// staticTokenSource implements TokenSource for testing.
+type staticTokenSource struct {
+	token string
+}
+
+func (s *staticTokenSource) Token(_ context.Context) (string, error) {
+	return s.token, nil
+}
+
+func warmToken(token string) TokenSource {
+	return &staticTokenSource{token: token}
 }
 
 // TestProxy_InjectsAuthHeader verifies that the Authorization header is set.
@@ -29,14 +33,14 @@ func TestProxy_InjectsAuthHeader(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := &ProxyConfig{
+	cfg := &Config{
 		InferenceUpstream: upstream.URL,
 		OTELUpstream:      upstream.URL,
 		UCMetricsTable:    "main.t.m",
 		UCLogsTable:       "main.t.l",
-		TokenProvider:     warmToken("test-token-123"),
+		TokenSource:       warmToken("test-token-123"),
 	}
-	handler := NewProxyServer(cfg)
+	handler := NewServer(cfg)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/messages", nil)
 	rec := httptest.NewRecorder()
@@ -56,14 +60,14 @@ func TestProxy_InjectsCustomHeaders(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := &ProxyConfig{
+	cfg := &Config{
 		InferenceUpstream: upstream.URL,
 		OTELUpstream:      upstream.URL,
 		UCMetricsTable:    "main.t.m",
 		UCLogsTable:       "main.t.l",
-		TokenProvider:     warmToken("tok"),
+		TokenSource:       warmToken("tok"),
 	}
-	handler := NewProxyServer(cfg)
+	handler := NewServer(cfg)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	rec := httptest.NewRecorder()
@@ -90,14 +94,14 @@ func TestProxy_RoutesDefaultToInference(t *testing.T) {
 	}))
 	defer otel.Close()
 
-	cfg := &ProxyConfig{
+	cfg := &Config{
 		InferenceUpstream: inference.URL,
 		OTELUpstream:      otel.URL,
 		UCMetricsTable:    "main.t.m",
 		UCLogsTable:       "main.t.l",
-		TokenProvider:     warmToken("tok"),
+		TokenSource:       warmToken("tok"),
 	}
-	handler := NewProxyServer(cfg)
+	handler := NewServer(cfg)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	rec := httptest.NewRecorder()
@@ -123,14 +127,14 @@ func TestProxy_RoutesOTELPath(t *testing.T) {
 	}))
 	defer inference.Close()
 
-	cfg := &ProxyConfig{
+	cfg := &Config{
 		InferenceUpstream: inference.URL,
 		OTELUpstream:      otel.URL,
 		UCMetricsTable:    "main.t.m",
 		UCLogsTable:       "main.t.l",
-		TokenProvider:     warmToken("tok"),
+		TokenSource:       warmToken("tok"),
 	}
-	handler := NewProxyServer(cfg)
+	handler := NewServer(cfg)
 
 	req := httptest.NewRequest(http.MethodPost, "/otel/v1/metrics", nil)
 	rec := httptest.NewRecorder()
@@ -142,7 +146,6 @@ func TestProxy_RoutesOTELPath(t *testing.T) {
 }
 
 // TestProxy_PathAlgebra_Inference verifies that the upstream path is prepended.
-// /v1/messages + upstream base /anthropic → /anthropic/v1/messages
 func TestProxy_PathAlgebra_Inference(t *testing.T) {
 	var gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -151,15 +154,14 @@ func TestProxy_PathAlgebra_Inference(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	// Append a base path to the upstream URL.
-	cfg := &ProxyConfig{
+	cfg := &Config{
 		InferenceUpstream: upstream.URL + "/anthropic",
 		OTELUpstream:      upstream.URL,
 		UCMetricsTable:    "main.t.m",
 		UCLogsTable:       "main.t.l",
-		TokenProvider:     warmToken("tok"),
+		TokenSource:       warmToken("tok"),
 	}
-	handler := NewProxyServer(cfg)
+	handler := NewServer(cfg)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	rec := httptest.NewRecorder()
@@ -173,7 +175,6 @@ func TestProxy_PathAlgebra_Inference(t *testing.T) {
 
 // TestProxy_PathAlgebra_OTEL verifies that /otel prefix is stripped and the
 // upstream base path is prepended.
-// /otel/v1/metrics + upstream base /api/2.0/otel → /api/2.0/otel/v1/metrics
 func TestProxy_PathAlgebra_OTEL(t *testing.T) {
 	var gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -182,14 +183,14 @@ func TestProxy_PathAlgebra_OTEL(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := &ProxyConfig{
+	cfg := &Config{
 		InferenceUpstream: upstream.URL,
 		OTELUpstream:      upstream.URL + "/api/2.0/otel",
 		UCMetricsTable:    "main.t.m",
 		UCLogsTable:       "main.t.l",
-		TokenProvider:     warmToken("tok"),
+		TokenSource:       warmToken("tok"),
 	}
-	handler := NewProxyServer(cfg)
+	handler := NewServer(cfg)
 
 	req := httptest.NewRequest(http.MethodPost, "/otel/v1/metrics", nil)
 	rec := httptest.NewRecorder()
@@ -212,14 +213,14 @@ func TestProxy_PreservesRequestBody(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := &ProxyConfig{
+	cfg := &Config{
 		InferenceUpstream: upstream.URL,
 		OTELUpstream:      upstream.URL,
 		UCMetricsTable:    "main.t.m",
 		UCLogsTable:       "main.t.l",
-		TokenProvider:     warmToken("tok"),
+		TokenSource:       warmToken("tok"),
 	}
-	handler := NewProxyServer(cfg)
+	handler := NewServer(cfg)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -234,17 +235,15 @@ func TestProxy_PreservesRequestBody(t *testing.T) {
 // TestProxy_PanicRecovery verifies that a panic in a Director returns 502 and
 // does not crash the server.
 func TestProxy_PanicRecovery(t *testing.T) {
-	// Use a handler that panics to simulate a broken Director.
 	panicHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("simulated director panic")
 	})
 
-	recovered := recoveryHandler(panicHandler)
+	recovered := RecoveryHandler(panicHandler)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 
-	// Must not panic.
 	recovered.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadGateway {
@@ -275,19 +274,18 @@ func TestProxy_SSEStreaming(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := &ProxyConfig{
+	cfg := &Config{
 		InferenceUpstream: upstream.URL,
 		OTELUpstream:      upstream.URL,
 		UCMetricsTable:    "main.t.m",
 		UCLogsTable:       "main.t.l",
-		TokenProvider:     warmToken("tok"),
+		TokenSource:       warmToken("tok"),
 	}
-	handler := NewProxyServer(cfg)
+	handler := NewServer(cfg)
 
-	// Use a real listener so we can test actual streaming behaviour.
-	l, err := StartProxy(handler)
+	l, err := Start(handler)
 	if err != nil {
-		t.Fatalf("StartProxy: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	defer l.Close()
 
@@ -317,14 +315,14 @@ func TestProxy_OTELTableName_Metrics(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := &ProxyConfig{
+	cfg := &Config{
 		InferenceUpstream: upstream.URL,
 		OTELUpstream:      upstream.URL,
 		UCMetricsTable:    "main.telemetry.claude_otel_metrics",
 		UCLogsTable:       "main.telemetry.claude_otel_logs",
-		TokenProvider:     warmToken("tok"),
+		TokenSource:       warmToken("tok"),
 	}
-	handler := NewProxyServer(cfg)
+	handler := NewServer(cfg)
 
 	req := httptest.NewRequest(http.MethodPost, "/otel/v1/metrics", nil)
 	rec := httptest.NewRecorder()
@@ -344,14 +342,14 @@ func TestProxy_OTELTableName_Logs(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := &ProxyConfig{
+	cfg := &Config{
 		InferenceUpstream: upstream.URL,
 		OTELUpstream:      upstream.URL,
 		UCMetricsTable:    "main.telemetry.claude_otel_metrics",
 		UCLogsTable:       "main.telemetry.claude_otel_logs",
-		TokenProvider:     warmToken("tok"),
+		TokenSource:       warmToken("tok"),
 	}
-	handler := NewProxyServer(cfg)
+	handler := NewServer(cfg)
 
 	req := httptest.NewRequest(http.MethodPost, "/otel/v1/logs", nil)
 	rec := httptest.NewRecorder()
@@ -359,5 +357,27 @@ func TestProxy_OTELTableName_Logs(t *testing.T) {
 
 	if gotTable != "main.telemetry.claude_otel_logs" {
 		t.Errorf("got table %q, want %q", gotTable, "main.telemetry.claude_otel_logs")
+	}
+}
+
+// Ensure Start works correctly and listeners can be used.
+func TestProxy_Start(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	l, err := Start(handler)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer l.Close()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + l.Addr().String() + "/")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("got status %d, want 200", resp.StatusCode)
 	}
 }

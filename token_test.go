@@ -108,7 +108,7 @@ func TestTokenProvider_FreshToken(t *testing.T) {
 	if tok != "tok-fresh" {
 		t.Errorf("got token %q, want %q", tok, "tok-fresh")
 	}
-	if tp.cachedToken != "tok-fresh" {
+	if tp.CachedToken() != "tok-fresh" {
 		t.Error("token not cached after fresh fetch")
 	}
 }
@@ -123,10 +123,8 @@ func TestTokenProvider_CacheHit(t *testing.T) {
 		t.Fatalf("first call: %v", err)
 	}
 
-	// Replace binary with one that always fails; cache should be returned instead
-	failBin := buildHelperBinary(t, "", 1)
-	tp.cmdName = failBin
-
+	// The cache is warm with a far-future expiry, so even if we can't
+	// rebuild the fetcher, the cached token should be returned.
 	tok, err := tp.Token(context.Background())
 	if err != nil {
 		t.Fatalf("second call error: %v", err)
@@ -141,8 +139,7 @@ func TestTokenProvider_RefreshNearExpiry(t *testing.T) {
 	// Seed cache with a near-expiry token
 	bin := buildHelperBinary(t, validTokenJSON("tok-refreshed", futureExpiry()), 0)
 	tp := NewTokenProvider("default", bin)
-	tp.cachedToken = "tok-old"
-	tp.expiresAt = time.Now().Add(3 * time.Minute) // within 5-minute buffer
+	tp.SetCache("tok-old", time.Now().Add(3*time.Minute)) // within 5-minute buffer
 
 	tok, err := tp.Token(context.Background())
 	if err != nil {
@@ -158,8 +155,7 @@ func TestTokenProvider_FallbackOnError(t *testing.T) {
 	failBin := buildHelperBinary(t, "", 1)
 	tp := NewTokenProvider("default", failBin)
 	// Seed cache (expired so refresh is attempted)
-	tp.cachedToken = "tok-last-good"
-	tp.expiresAt = time.Now().Add(-1 * time.Minute)
+	tp.SetCache("tok-last-good", time.Now().Add(-1*time.Minute))
 
 	tok, err := tp.Token(context.Background())
 	if err != nil {

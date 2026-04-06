@@ -8,9 +8,13 @@ import (
 	"net/http"
 	"os/exec"
 	"strconv"
-	"sync"
 	"time"
+
+	"github.com/IceRhymers/databricks-claude/pkg/tokencache"
 )
+
+// TokenProvider is an alias to the pkg type for backward compatibility.
+type TokenProvider = tokencache.TokenProvider
 
 type tokenResponse struct {
 	AccessToken string `json:"access_token"`
@@ -18,62 +22,40 @@ type tokenResponse struct {
 	Expiry      string `json:"expiry"` // RFC3339 or Unix timestamp
 }
 
-// TokenProvider fetches and caches Databricks access tokens.
-type TokenProvider struct {
-	profile     string
-	mu          sync.Mutex
-	cachedToken string
-	expiresAt   time.Time
-	cmdName     string // "databricks" by default, overridable for testing
+// databricksFetcher implements tokencache.TokenFetcher using the Databricks CLI.
+type databricksFetcher struct {
+	profile string
+	cmdName string
 }
 
-// NewTokenProvider creates a new TokenProvider. cmdName defaults to "databricks" if empty.
-func NewTokenProvider(profile, cmdName string) *TokenProvider {
-	if cmdName == "" {
-		cmdName = "databricks"
-	}
-	return &TokenProvider{
-		profile: profile,
-		cmdName: cmdName,
-	}
-}
-
-// Token returns a valid access token, refreshing if necessary.
-func (tp *TokenProvider) Token(ctx context.Context) (string, error) {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
-
-	// Double-check: return cached token if still valid (with 5-minute buffer)
-	if tp.cachedToken != "" && time.Now().Before(tp.expiresAt.Add(-5*time.Minute)) {
-		return tp.cachedToken, nil
-	}
-
-	// Fetch a new token with a 10-second timeout
+func (f *databricksFetcher) FetchToken(ctx context.Context) (string, time.Time, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(fetchCtx, tp.cmdName, "auth", "token", "--profile", tp.profile)
+	cmd := exec.CommandContext(fetchCtx, f.cmdName, "auth", "token", "--profile", f.profile)
 	out, err := cmd.Output()
 	if err != nil {
-		if tp.cachedToken != "" {
-			log.Printf("token refresh failed, using cached token: %v", err)
-			return tp.cachedToken, nil
-		}
-		return "", fmt.Errorf("failed to fetch token: %w", err)
+		return "", time.Time{}, fmt.Errorf("databricks auth token failed: %w", err)
 	}
 
 	resp, err := parseTokenResponse(out)
 	if err != nil {
-		if tp.cachedToken != "" {
-			log.Printf("token parse failed, using cached token: %v", err)
-			return tp.cachedToken, nil
-		}
-		return "", fmt.Errorf("failed to parse token response: %w", err)
+		return "", time.Time{}, fmt.Errorf("failed to parse token response: %w", err)
 	}
 
-	tp.cachedToken = resp.AccessToken
-	tp.expiresAt = resp.expiryTime()
-	return tp.cachedToken, nil
+	return resp.AccessToken, resp.expiryTime(), nil
+}
+
+// NewTokenProvider creates a new TokenProvider backed by the Databricks CLI.
+// cmdName defaults to "databricks" if empty.
+func NewTokenProvider(profile, cmdName string) *TokenProvider {
+	if cmdName == "" {
+		cmdName = "databricks"
+	}
+	return tokencache.NewTokenProvider(&databricksFetcher{
+		profile: profile,
+		cmdName: cmdName,
+	})
 }
 
 // parseTokenResponse decodes the JSON output from "databricks auth token".
