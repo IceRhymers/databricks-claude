@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -38,6 +39,12 @@ type Config struct {
 	UCLogsTable    string
 	TokenSource    TokenSource
 	Verbose        bool
+	// APIKey, when non-empty, requires all incoming requests to present
+	// Authorization: Bearer <APIKey>. Leave empty to disable auth.
+	APIKey string
+	// TLSCertFile and TLSKeyFile enable TLS on the listener when both are set.
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
 // RecoveryHandler wraps h with panic recovery, returning 502 on panic.
@@ -226,6 +233,24 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upstream *url.URL, 
 	}
 }
 
+// requireAPIKey returns middleware that validates Authorization: Bearer <key>
+// on every incoming request. If key is empty, authentication is disabled and
+// requests pass through unchanged.
+// APIKey check applies to all connections including WebSocket upgrades (used by databricks-codex)
+func requireAPIKey(next http.Handler, key string) http.Handler {
+	if key == "" {
+		return next // auth disabled
+	}
+	expected := "Bearer " + key
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != expected {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // NewServer returns an http.Handler that routes requests to the
 // inference upstream (default) and the OTEL upstream (/otel/).
 //
@@ -364,16 +389,48 @@ func NewServer(config *Config) http.Handler {
 	mux.Handle("/otel/", RecoveryHandler(otelProxy))
 	mux.Handle("/", RecoveryHandler(inferenceHandler))
 
-	return mux
+	// APIKey check applies to all connections including WebSocket upgrades (used by databricks-codex)
+	return requireAPIKey(mux, config.APIKey)
+}
+
+// ValidateTLSConfig returns an error if the TLS configuration is incomplete
+// (one of cert/key set but not the other). Both empty is valid (TLS disabled).
+func ValidateTLSConfig(certFile, keyFile string) error {
+	if (certFile == "") != (keyFile == "") {
+		return fmt.Errorf("both --tls-cert and --tls-key must be provided together")
+	}
+	return nil
 }
 
 // Start binds to 127.0.0.1:0, starts serving, and returns the listener.
 // Callers read l.Addr() to discover the assigned port.
-func Start(handler http.Handler) (net.Listener, error) {
+// When certFile and keyFile are both non-empty, the listener serves TLS.
+func Start(handler http.Handler, certFile, keyFile string) (net.Listener, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
+
+	useTLS := certFile != "" && keyFile != ""
+
+	if useTLS {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			l.Close()
+			return nil, fmt.Errorf("failed to load TLS cert/key: %w", err)
+		}
+		tlsListener := tls.NewListener(l, &tls.Config{
+			Certificates: []tls.Certificate{cert},
+		})
+		go func() {
+			if err := http.Serve(tlsListener, handler); err != nil {
+				log.Printf("databricks-claude: proxy stopped: %v", err)
+			}
+		}()
+		log.Printf("databricks-claude: listening on https://%s", l.Addr().String())
+		return tlsListener, nil
+	}
+
 	go func() {
 		if err := http.Serve(l, handler); err != nil {
 			// http.Serve returns when the listener is closed; that is expected
@@ -381,5 +438,6 @@ func Start(handler http.Handler) (net.Listener, error) {
 			log.Printf("databricks-claude: proxy stopped: %v", err)
 		}
 	}()
+	log.Printf("databricks-claude: listening on http://%s", l.Addr().String())
 	return l, nil
 }

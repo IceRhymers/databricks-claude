@@ -16,6 +16,9 @@ type ProxyConfig struct {
 	UCLogsTable       string
 	TokenProvider     *tokencache.TokenProvider
 	Verbose           bool
+	APIKey            string
+	TLSCertFile       string
+	TLSKeyFile        string
 }
 
 // recoveryHandler wraps h with panic recovery, returning 502 on panic.
@@ -33,11 +36,13 @@ func NewProxyServer(config *ProxyConfig) http.Handler {
 		UCLogsTable:       config.UCLogsTable,
 		TokenSource:       config.TokenProvider,
 		Verbose:           config.Verbose,
+		APIKey:            config.APIKey,
 	})
 }
 
 // StartProxy binds to 127.0.0.1:0, starts serving, and returns the listener.
 // Callers read l.Addr() to discover the assigned port.
-func StartProxy(handler http.Handler) (net.Listener, error) {
-	return proxy.Start(handler)
+// When config.TLSCertFile and config.TLSKeyFile are both set, the listener serves TLS.
+func StartProxy(config *ProxyConfig, handler http.Handler) (net.Listener, error) {
+	return proxy.Start(handler, config.TLSCertFile, config.TLSKeyFile)
 }
