@@ -65,7 +65,7 @@ Transparent proxy wrapper for Claude Code that auto-refreshes Databricks OAuth t
 - `pkg/authcheck` -- pre-flight auth verification
 - `pkg/childproc` -- child process management
 - `pkg/filelock` -- file-based locking
-- `pkg/proxy` -- HTTP/WebSocket reverse proxy, security checks, log sanitization
+- `pkg/proxy` -- HTTP/WebSocket reverse proxy, API key auth, TLS, security checks, log sanitization
 - `pkg/registry` -- session tracking
 - `pkg/settings` -- settings.json read/write/restore engine
 - `pkg/tokencache` -- generic token caching

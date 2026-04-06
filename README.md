@@ -14,7 +14,7 @@ Databricks AI Gateway uses short-lived OAuth tokens. Claude Code only supports a
 2. Patches `~/.claude/settings.json` to point at the proxy
 3. Launches `claude` with your args — fully transparent
 4. Injects fresh Databricks OAuth tokens on every request (auto-refreshed from `databricks auth token`)
-5. Restores `settings.json` when done (even on crash, via `defer`)
+5. Restores `settings.json` when done (explicit restore before exit)
 
 You use it exactly like `claude`. Every flag and argument is forwarded.
 
@@ -57,7 +57,19 @@ databricks-claude --log-file /tmp/dc.log "fix the bug in main.go"
 databricks-claude -v --log-file /tmp/dc.log "fix the bug in main.go"
 
 # With OTEL telemetry:
-databricks-claude --otel --otel-table main.catalog.table "summarize this PR"
+databricks-claude --otel "summarize this PR"
+
+# With custom OTEL tables:
+databricks-claude --otel --otel-metrics-table main.catalog.metrics --otel-logs-table main.catalog.logs "summarize this PR"
+
+# Disable OTEL (clears persisted keys):
+databricks-claude --no-otel
+
+# With proxy API key authentication:
+databricks-claude --proxy-api-key my-secret-key "explain this codebase"
+
+# With TLS:
+databricks-claude --tls-cert cert.pem --tls-key key.pem "explain this codebase"
 ```
 
 ## Flags
@@ -68,11 +80,16 @@ databricks-claude --otel --otel-table main.catalog.table "summarize this PR"
 | `--verbose`, `-v` | `false` | Enable debug logging to stderr |
 | `--log-file` | | Write debug logs to a file (combinable with `--verbose`) |
 | `--otel` | `false` | Enable OTEL telemetry proxying |
-| `--otel-table` | `main.claude_telemetry.claude_otel_metrics` | UC table for OTEL metrics |
+| `--no-otel` | | Clear persisted OTEL keys and disable OTEL for future sessions |
+| `--otel-metrics-table` | `main.claude_telemetry.claude_otel_metrics` | Unity Catalog table for OTEL metrics |
+| `--otel-logs-table` | derived from metrics table | Unity Catalog table for OTEL logs |
 | `--upstream` | auto-discovered | Override the AI Gateway URL |
+| `--proxy-api-key` | | Require Bearer token auth on all proxy requests |
+| `--tls-cert` | | Path to TLS certificate file (requires `--tls-key`) |
+| `--tls-key` | | Path to TLS private key file (requires `--tls-cert`) |
 | `--version` | | Print version and exit |
-| `--print-env` | | Print resolved configuration (token redacted) and exit. Use to verify auth setup without starting the proxy. |
-| `--help`, `-h` | | Print wrapper flags and the full `claude --help` output, then exit. |
+| `--print-env` | | Print resolved configuration (token redacted) and exit |
+| `--help`, `-h` | | Print wrapper flags and the full `claude --help` output, then exit |
 
 All other flags and args are forwarded to `claude`.
 
@@ -121,13 +138,17 @@ databricks-claude --print-env
 Example output:
 
 ```
-profile:   DEFAULT
-host:      https://adb-1234567890123456.7.azuredatabricks.net
-upstream:  https://1234567890123456.ai-gateway.cloud.databricks.com/anthropic
-token:     dapi******************************** (redacted)
+databricks-claude configuration:
+  Profile:              DEFAULT
+  DATABRICKS_HOST:      https://adb-1234567890123456.7.azuredatabricks.net
+  ANTHROPIC_BASE_URL:   https://1234567890123456.ai-gateway.cloud.databricks.com/anthropic
+  ANTHROPIC_AUTH_TOKEN: dapi-***
+  ANTHROPIC_MODEL:
+  Upstream binary:      /usr/local/bin/claude
+  OTEL enabled:         false
 ```
 
-If the token shows as empty or the upstream URL looks wrong, check your Databricks CLI profile with `databricks auth env`.
+If the token shows as empty or the base URL looks wrong, check your Databricks CLI profile with `databricks auth env`.
 
 ### View full usage
 

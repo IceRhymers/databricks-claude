@@ -1,40 +1,77 @@
-# databricks-claude
+# CLAUDE.md
 
-Transparent proxy wrapper for Claude Code that auto-refreshes Databricks OAuth tokens via the Databricks CLI.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What This Is
+
+Transparent proxy wrapper for Claude Code that auto-refreshes Databricks OAuth tokens via the Databricks CLI. Zero external Go dependencies — pure stdlib only.
+
+## Build & Test
+
+```bash
+make build                       # produces ./databricks-claude
+make test                        # go test ./... -v
+make lint                        # go vet ./...
+make install                     # installs to $GOPATH/bin
+make dist                        # cross-compile darwin/linux/windows amd64+arm64
+go test -run TestParseArgs -v    # run a single test
+go test ./pkg/proxy/... -v       # test a single package
+```
 
 ## Architecture
 
-Four source files plus tests, all in `package main`:
+### Root package (`main`)
 
-- **main.go** — CLI entry point: parses flags, resolves config from `~/.claude/settings.json` and `~/.claude/.databricks-claude.json` (persistent config), seeds the token cache, discovers the AI Gateway URL, starts the proxy, patches settings, launches `claude`, and restores settings on exit.
-- **proxy.go** — HTTP reverse proxy with two routes: `/` forwards to the inference upstream (AI Gateway), `/otel/` forwards to the OTEL upstream. Both routes inject fresh OAuth tokens per-request.
-- **token.go** — `TokenProvider` fetches and caches Databricks access tokens by shelling out to `databricks auth token`. Also contains `DiscoverHost`, `ResolveWorkspaceID`, and `ConstructGatewayURL` for auto-discovery.
-- **process.go** — `SettingsManager` for atomic read/patch/restore of `~/.claude/settings.json`. `RunChild` launches `claude` as a subprocess. `ForwardSignals` relays SIGINT/SIGTERM to the child.
+Six `.go` files act as thin facades wiring together `pkg/` sub-packages:
 
-## Key Design Decisions
+- **main.go** — CLI entry point: flag parsing, config resolution (`~/.claude/settings.json` + `~/.claude/.databricks-claude.json`), token seeding, AI Gateway auto-discovery, proxy startup, settings patching, child launch, and explicit settings restore before `os.Exit`.
+- **proxy.go** — Facade over `pkg/proxy`: defines `ProxyConfig`, wires `NewProxyServer` and `StartProxy`.
+- **token.go** — Facade over `pkg/tokencache`: implements `databricksFetcher` (shells out to `databricks auth token`), host discovery, workspace ID resolution via SCIM, AI Gateway URL construction.
+- **process.go** — `SettingsManager` wrapping `pkg/settings`: full-setup and save/restore of settings.json env keys, OTEL key management, `RunChild`, `ForwardSignals`.
+- **lock.go** — Type alias forwarding `pkg/filelock.FileLock`.
+- **registry.go** — Type alias forwarding `pkg/registry.SessionRegistry`.
 
-- **Zero external Go dependencies** — pure stdlib only. No vendor directory, no dependency management beyond `go.mod`.
-- **settings.json is patched atomically** — writes go to a temp file in the same directory, then `os.Rename`. Always restored via `defer`, even on crash.
-- **Token cache** — mutex-guarded `TokenProvider`. Tokens are cached and refreshed 5 minutes before expiry. On refresh failure, the last good token is returned.
-- **Child process signals** — SIGINT/SIGTERM are forwarded to `claude`; its exit code is propagated as our exit code.
-- **Two proxy routes** — `/` routes to inference upstream, `/otel/` routes to OTEL upstream. Path algebra prepends the upstream base path.
-- **Panic recovery** — both proxy routes are wrapped in `recoveryHandler` that catches panics and returns HTTP 502.
-- **Persistent config** — `~/.claude/.databricks-claude.json` stores the Databricks CLI profile across sessions, independent of the settings.json restore cycle. Written on first setup when profile is not DEFAULT.
+### Library packages (`pkg/`)
 
-## Testing
+Each package is independently importable with no cross-dependencies:
 
-- Tests use **helper binaries compiled at test time** to mock the `databricks` CLI (see `buildHelperBinary`, `buildSlowBinary`, `buildAuthEnvBinary` in `token_test.go`).
-- `warmToken()` in `proxy_test.go` pre-loads the token cache to avoid subprocess calls during proxy tests.
-- `process_test.go` tests settings.json save/restore, atomic writes, OTEL handling, signal forwarding, and exit code propagation.
-- Run: `make test` or `go test ./... -v`
+| Package | Purpose |
+|---------|---------|
+| `pkg/authcheck` | Pre-flight Databricks auth check + interactive browser login fallback |
+| `pkg/childproc` | Child process start, SIGINT/SIGTERM forwarding, exit code propagation |
+| `pkg/filelock` | Exclusive file locking via `syscall.Flock` (graceful degradation) |
+| `pkg/proxy` | HTTP/WebSocket reverse proxy, OTEL routing, API key auth, TLS, panic recovery, log sanitization |
+| `pkg/registry` | JSON-file session registry for multi-process coordination and handoff |
+| `pkg/settings` | Settings.json read/write/restore engine with session-aware handoff |
+| `pkg/tokencache` | Mutex-guarded token cache with 5-min refresh buffer and fallback-on-error |
 
-## Build
+### Key data flow
 
-- `make build` — produces `./databricks-claude`
-- `make install` — installs to `$GOPATH/bin`
-- `make dist` — cross-compiles for darwin/linux/windows amd64+arm64
-- `make lint` — runs `go vet`
+1. `main.go` seeds token cache → starts proxy on `127.0.0.1:0` → patches `settings.json` to point `ANTHROPIC_BASE_URL` at proxy → launches `claude` as child
+2. Proxy intercepts every request, injects fresh OAuth token via `pkg/tokencache` → forwards to AI Gateway (inference) or Databricks OTEL endpoint
+3. On exit, `SettingsManager.Restore()` is called **explicitly before `os.Exit`** (not via defer — `os.Exit` skips defers). Smart handoff points `ANTHROPIC_BASE_URL` to a surviving session if one exists.
 
-## No Breaking Changes Policy
+## Key Design Constraints
 
-This binary wraps `claude` and patches `~/.claude/settings.json`. Any change to settings.json handling, key names, or restore logic needs careful thought — a botched restore leaves the user's Claude config broken.
+- **Zero external dependencies** — do not add third-party imports. Pure Go stdlib only.
+- **No breaking changes to settings.json** — a botched restore leaves the user's Claude config pointing at a dead proxy. Any change to key names, restore logic, or the save/restore lifecycle requires extreme care.
+- **Atomic file writes everywhere** — all JSON writes (settings, registry, persistent config) use temp-file + `os.Rename` in the same directory.
+- **Session handoff** — when multiple `databricks-claude` instances run concurrently, the exiting one hands `ANTHROPIC_BASE_URL` to the most recent survivor via `pkg/registry`.
+- **OTEL key persistence** — when `--otel` is active, OTEL keys survive settings restore (controlled by `otelKeysPersistent` flag).
+
+## Testing Patterns
+
+- **Helper binaries**: `token_test.go` compiles small Go programs at test time (`buildHelperBinary`, `buildSlowBinary`, `buildAuthEnvBinary`) to mock the `databricks` CLI. Don't try to mock `exec.Command` directly.
+- **Token pre-warming**: `warmToken()` in `proxy_test.go` seeds the cache to avoid subprocess calls during proxy tests.
+- **Test-overridable globals**: `authcheck` uses `var execCommand = exec.Command` pattern; `checks.go` uses `var getuid = os.Getuid`. Override in tests, not via interfaces.
+- **Settings isolation**: `process_test.go` creates temp directories with fresh `settings.json` files. `pkg/settings` has no dedicated test file — it's tested through root-level integration tests.
+
+## Pre-Commit Consistency Checks
+
+Before generating any commit, verify that documentation files are consistent with the code:
+
+1. **README.md** — flags table, usage examples, and `--print-env` output must match `parseArgs` in `main.go` and `handlePrintEnv` output format.
+2. **CLAUDE.md** — architecture description must reflect the current file and package structure.
+3. **AGENTS.md files** — key file tables must list files that actually exist; parent references must resolve.
+
+If any documentation is stale, fix it in the same commit or flag it.
