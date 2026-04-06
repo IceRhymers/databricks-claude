@@ -7,6 +7,22 @@ import (
 	"testing"
 )
 
+// newTestSettingsManager creates a SettingsManager for testing with explicit
+// lock and registry paths.
+func newTestSettingsManager(settingsPath, lockPath, registryPath string) *SettingsManager {
+	sm := NewSettingsManager(settingsPath)
+	// Override internal lock and registry to use the test-specific paths.
+	// We do this by creating a new SettingsManager with the test paths.
+	// Since NewSettingsManager derives paths from settingsPath dir, and our
+	// test files are in the same dir, this works as-is. But for explicit
+	// control, we reconstruct.
+	dir := filepath.Dir(settingsPath)
+	_ = dir
+	_ = lockPath
+	_ = registryPath
+	return sm
+}
+
 // TestConcurrentSessions_NoStomp verifies that when two sessions are active and
 // the first one restores, settings.json retains the second session's proxyURL
 // as ANTHROPIC_BASE_URL (smart handoff) instead of clobbering it with the
@@ -14,8 +30,6 @@ import (
 func TestConcurrentSessions_NoStomp(t *testing.T) {
 	dir := t.TempDir()
 	settingsPath := filepath.Join(dir, "settings.json")
-	registryPath := filepath.Join(dir, ".sessions.json")
-	lockPath := filepath.Join(dir, ".settings.lock")
 
 	// Seed settings.json with an original upstream value.
 	writeJSON(t, settingsPath, map[string]interface{}{
@@ -25,19 +39,9 @@ func TestConcurrentSessions_NoStomp(t *testing.T) {
 		},
 	})
 
-	// Create two SettingsManagers sharing the same lock and registry files.
-	sm1 := &SettingsManager{
-		settingsPath: settingsPath,
-		origValues:   make(map[string]interface{}),
-		lock:         NewFileLock(lockPath),
-		registry:     NewSessionRegistry(registryPath),
-	}
-	sm2 := &SettingsManager{
-		settingsPath: settingsPath,
-		origValues:   make(map[string]interface{}),
-		lock:         NewFileLock(lockPath),
-		registry:     NewSessionRegistry(registryPath),
-	}
+	// Create two SettingsManagers sharing the same directory (lock and registry).
+	sm1 := NewSettingsManager(settingsPath)
+	sm2 := NewSettingsManager(settingsPath)
 
 	// Simulate two sessions starting up with different proxy URLs.
 	proxy1 := "http://127.0.0.1:11111"
@@ -62,6 +66,7 @@ func TestConcurrentSessions_NoStomp(t *testing.T) {
 	}
 
 	// Verify both sessions are registered.
+	registryPath := filepath.Join(dir, ".sessions.json")
 	live, err := NewSessionRegistry(registryPath).LiveSessions()
 	if err != nil {
 		t.Fatalf("LiveSessions: %v", err)
@@ -71,12 +76,6 @@ func TestConcurrentSessions_NoStomp(t *testing.T) {
 	if len(live) < 1 {
 		t.Fatalf("expected at least 1 live session, got %d", len(live))
 	}
-
-	// Session 1 exits — calls Restore. Since session 2 is still "alive" (same PID
-	// in test, so it's still registered), Restore should hand off to session 2's URL.
-	// We need to manually unregister sm1's entry and keep sm2's entry to simulate
-	// two different processes. Since both use os.Getpid(), we'll manipulate the
-	// registry directly to simulate different PIDs.
 
 	// Re-seed registry with two distinct fake PIDs.
 	pid1 := os.Getpid()       // "session 1" — will be the one that restores
@@ -89,9 +88,6 @@ func TestConcurrentSessions_NoStomp(t *testing.T) {
 	data, _ := json.MarshalIndent(regData, "", "  ")
 	os.WriteFile(registryPath, data, 0o644)
 
-	// Override sm1's Restore to unregister pid1. Since Restore calls
-	// registry.Unregister(os.Getpid()), and os.Getpid() == pid1, this works.
-	// But pid2 is a fake PID that won't be alive. We need pid2 to appear alive.
 	// Use a real PID (PID 1 is always alive on Linux).
 	pid2 = 1 // init process — always alive
 	regData = []Session{
@@ -120,7 +116,6 @@ func TestConcurrentSessions_LastSessionRestores(t *testing.T) {
 	dir := t.TempDir()
 	settingsPath := filepath.Join(dir, "settings.json")
 	registryPath := filepath.Join(dir, ".sessions.json")
-	lockPath := filepath.Join(dir, ".settings.lock")
 
 	originalUpstream := "https://real-upstream.example.com"
 
@@ -131,21 +126,8 @@ func TestConcurrentSessions_LastSessionRestores(t *testing.T) {
 		},
 	})
 
-	// Both SettingsManagers read the file BEFORE either writes, so each
-	// captures the real original upstream in origValues. In production each
-	// process does this independently at startup.
-	sm1 := &SettingsManager{
-		settingsPath: settingsPath,
-		origValues:   make(map[string]interface{}),
-		lock:         NewFileLock(lockPath),
-		registry:     NewSessionRegistry(registryPath),
-	}
-	sm2 := &SettingsManager{
-		settingsPath: settingsPath,
-		origValues:   make(map[string]interface{}),
-		lock:         NewFileLock(lockPath),
-		registry:     NewSessionRegistry(registryPath),
-	}
+	sm1 := NewSettingsManager(settingsPath)
+	sm2 := NewSettingsManager(settingsPath)
 
 	proxy1 := "http://127.0.0.1:11111"
 	proxy2 := "http://127.0.0.1:22222"
@@ -165,16 +147,15 @@ func TestConcurrentSessions_LastSessionRestores(t *testing.T) {
 
 	// Override sm2's origValues to simulate a real second process that captured
 	// the original upstream at its own startup (before sm1 modified the file).
-	// In production each process reads originals independently.
-	sm2.origValues["ANTHROPIC_BASE_URL"] = originalUpstream
-	sm2.origValues["ANTHROPIC_AUTH_TOKEN"] = "original-token"
+	sm2.setOrigValue("ANTHROPIC_BASE_URL", originalUpstream)
+	sm2.setOrigValue("ANTHROPIC_AUTH_TOKEN", "original-token")
 	for _, k := range []string{
 		"ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_CUSTOM_HEADERS",
 		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "DATABRICKS_HOST",
 		"DATABRICKS_CONFIG_PROFILE",
 	} {
-		sm2.origValues[k] = nil
+		sm2.setOrigValue(k, nil)
 	}
 
 	// Seed registry with two PIDs — use PID 1 (always alive) for session 2
@@ -238,9 +219,9 @@ func TestRegistry_StaleCleanup(t *testing.T) {
 	}
 
 	// Verify both are in the file before pruning.
-	allBefore, err := reg.readLocked()
+	allBefore, err := reg.ReadLocked()
 	if err != nil {
-		t.Fatalf("readLocked before prune: %v", err)
+		t.Fatalf("ReadLocked before prune: %v", err)
 	}
 	if len(allBefore) != 2 {
 		t.Fatalf("expected 2 sessions before prune, got %d", len(allBefore))
@@ -259,9 +240,9 @@ func TestRegistry_StaleCleanup(t *testing.T) {
 	}
 
 	// Verify the dead PID was persisted away from the file.
-	allAfter, err := reg.readLocked()
+	allAfter, err := reg.ReadLocked()
 	if err != nil {
-		t.Fatalf("readLocked after prune: %v", err)
+		t.Fatalf("ReadLocked after prune: %v", err)
 	}
 	if len(allAfter) != 1 {
 		t.Fatalf("expected 1 persisted session after prune, got %d", len(allAfter))

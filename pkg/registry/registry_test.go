@@ -1,4 +1,4 @@
-package main
+package registry
 
 import (
 	"os"
@@ -15,7 +15,7 @@ func tempRegistryPath(t *testing.T) string {
 
 func TestSessionRegistry_RegisterUnregister(t *testing.T) {
 	path := tempRegistryPath(t)
-	reg := NewSessionRegistry(path)
+	reg := New(path)
 
 	pid := os.Getpid()
 
@@ -34,7 +34,7 @@ func TestSessionRegistry_RegisterUnregister(t *testing.T) {
 	// Read back — only the first entry should remain.
 	sessions, err := reg.ReadLocked()
 	if err != nil {
-		t.Fatalf("readLocked: %v", err)
+		t.Fatalf("ReadLocked: %v", err)
 	}
 	if len(sessions) != 1 {
 		t.Fatalf("expected 1 session, got %d", len(sessions))
@@ -49,7 +49,7 @@ func TestSessionRegistry_RegisterUnregister(t *testing.T) {
 
 func TestSessionRegistry_LiveSessions_PrunesStale(t *testing.T) {
 	path := tempRegistryPath(t)
-	reg := NewSessionRegistry(path)
+	reg := New(path)
 
 	livePID := os.Getpid()
 	deadPID := 2147483 // Very unlikely to be a real PID.
@@ -76,7 +76,7 @@ func TestSessionRegistry_LiveSessions_PrunesStale(t *testing.T) {
 	// Verify the stale entry was persisted away.
 	all, err := reg.ReadLocked()
 	if err != nil {
-		t.Fatalf("readLocked after prune: %v", err)
+		t.Fatalf("ReadLocked after prune: %v", err)
 	}
 	if len(all) != 1 {
 		t.Fatalf("expected 1 persisted session after prune, got %d", len(all))
@@ -85,7 +85,7 @@ func TestSessionRegistry_LiveSessions_PrunesStale(t *testing.T) {
 
 func TestSessionRegistry_MostRecentLive(t *testing.T) {
 	path := tempRegistryPath(t)
-	reg := NewSessionRegistry(path)
+	reg := New(path)
 
 	pid := os.Getpid()
 
@@ -110,7 +110,7 @@ func TestSessionRegistry_MostRecentLive(t *testing.T) {
 	}
 
 	// Empty registry should return nil.
-	emptyReg := NewSessionRegistry(tempRegistryPath(t))
+	emptyReg := New(tempRegistryPath(t))
 	most, err = emptyReg.MostRecentLive()
 	if err != nil {
 		t.Fatalf("MostRecentLive empty: %v", err)
@@ -122,7 +122,7 @@ func TestSessionRegistry_MostRecentLive(t *testing.T) {
 
 func TestSessionRegistry_ConcurrentAccess(t *testing.T) {
 	path := tempRegistryPath(t)
-	reg := NewSessionRegistry(path)
+	reg := New(path)
 
 	pid := os.Getpid()
 	const goroutines = 20
@@ -164,7 +164,7 @@ func TestSessionRegistry_ConcurrentAccess(t *testing.T) {
 	// Verify the file is valid JSON and has the expected count.
 	sessions, err := reg.ReadLocked()
 	if err != nil {
-		t.Fatalf("readLocked after concurrent: %v", err)
+		t.Fatalf("ReadLocked after concurrent: %v", err)
 	}
 	if len(sessions) != goroutines/2 {
 		t.Fatalf("expected %d sessions, got %d", goroutines/2, len(sessions))
