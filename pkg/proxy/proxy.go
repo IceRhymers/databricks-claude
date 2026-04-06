@@ -157,7 +157,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upstream *url.URL, 
 	if upstreamResp.StatusCode != http.StatusSwitchingProtocols {
 		body, _ := io.ReadAll(upstreamResp.Body)
 		upstreamResp.Body.Close()
-		log.Printf("databricks-claude: ws upgrade rejected: %d %s", upstreamResp.StatusCode, string(body))
+		log.Printf("databricks-claude: ws upgrade rejected: %d %s", upstreamResp.StatusCode, sanitizeLogOutput(string(body)))
 		w.WriteHeader(upstreamResp.StatusCode)
 		w.Write(body) //nolint:errcheck
 		return
@@ -285,7 +285,7 @@ func NewServer(config *Config) http.Handler {
 					if len(snippet) > 500 {
 						snippet = snippet[:500] + "..."
 					}
-					log.Printf("databricks-claude: upstream error %d: %s", resp.StatusCode, snippet)
+					log.Printf("databricks-claude: upstream error %d: %s", resp.StatusCode, sanitizeLogOutput(snippet))
 					// Put the body back so the caller still gets it
 					resp.Body = io.NopCloser(bytes.NewReader(body))
 				}
@@ -349,7 +349,7 @@ func NewServer(config *Config) http.Handler {
 						snippet = snippet[:500] + "..."
 					}
 					if resp.StatusCode >= 400 {
-						log.Printf("databricks-claude: otel upstream error %d: %s", resp.StatusCode, snippet)
+						log.Printf("databricks-claude: otel upstream error %d: %s", resp.StatusCode, sanitizeLogOutput(snippet))
 					} else {
 						log.Printf("databricks-claude: otel ← %d (%d bytes)", resp.StatusCode, len(body))
 					}
