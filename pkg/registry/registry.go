@@ -146,7 +146,7 @@ func (r *SessionRegistry) readLocked() ([]Session, error) {
 // Caller must hold r.mu.
 func (r *SessionRegistry) writeLocked(sessions []Session) error {
 	dir := filepath.Dir(r.path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 
@@ -160,6 +160,11 @@ func (r *SessionRegistry) writeLocked(sessions []Session) error {
 		return err
 	}
 	tmpName := tmp.Name()
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
 
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
