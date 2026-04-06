@@ -283,7 +283,7 @@ func TestProxy_SSEStreaming(t *testing.T) {
 	}
 	handler := NewServer(cfg)
 
-	l, err := Start(handler)
+	l, err := Start(handler, "", "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -435,7 +435,7 @@ func TestProxy_WebSocket_UpgradeRejectedByUpstream(t *testing.T) {
 		TokenSource:       warmToken("tok"),
 	}
 
-	l, err := Start(NewServer(cfg))
+	l, err := Start(NewServer(cfg), "", "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -497,7 +497,7 @@ func TestProxy_Start(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	l, err := Start(handler)
+	l, err := Start(handler, "", "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -511,5 +511,123 @@ func TestProxy_Start(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("got status %d, want 200", resp.StatusCode)
+	}
+}
+
+// --- API Key auth tests ---
+
+// TestProxy_APIKey_CorrectKey verifies that a request with the correct API key
+// is forwarded to the upstream (200).
+func TestProxy_APIKey_CorrectKey(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &Config{
+		InferenceUpstream: upstream.URL,
+		OTELUpstream:      upstream.URL,
+		UCLogsTable:       "main.t.l",
+		TokenSource:       warmToken("tok"),
+		APIKey:            "my-secret-key",
+	}
+	handler := NewServer(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer my-secret-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want 200", rec.Code)
+	}
+}
+
+// TestProxy_APIKey_WrongKey verifies that a request with the wrong API key
+// is rejected with 401.
+func TestProxy_APIKey_WrongKey(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream should not be called with wrong key")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &Config{
+		InferenceUpstream: upstream.URL,
+		OTELUpstream:      upstream.URL,
+		UCLogsTable:       "main.t.l",
+		TokenSource:       warmToken("tok"),
+		APIKey:            "my-secret-key",
+	}
+	handler := NewServer(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer wrong-key")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("got status %d, want 401", rec.Code)
+	}
+}
+
+// TestProxy_APIKey_NoKeyConfigured verifies that when no API key is configured,
+// requests pass through without auth (200).
+func TestProxy_APIKey_NoKeyConfigured(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &Config{
+		InferenceUpstream: upstream.URL,
+		OTELUpstream:      upstream.URL,
+		UCLogsTable:       "main.t.l",
+		TokenSource:       warmToken("tok"),
+		APIKey:            "", // no key — auth disabled
+	}
+	handler := NewServer(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	// No Authorization header at all.
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want 200", rec.Code)
+	}
+}
+
+// --- TLS config validation tests ---
+
+// TestValidateTLSConfig_CertWithoutKey returns error when only cert is provided.
+func TestValidateTLSConfig_CertWithoutKey(t *testing.T) {
+	err := ValidateTLSConfig("/path/to/cert.pem", "")
+	if err == nil {
+		t.Error("expected error when cert is set but key is empty")
+	}
+}
+
+// TestValidateTLSConfig_KeyWithoutCert returns error when only key is provided.
+func TestValidateTLSConfig_KeyWithoutCert(t *testing.T) {
+	err := ValidateTLSConfig("", "/path/to/key.pem")
+	if err == nil {
+		t.Error("expected error when key is set but cert is empty")
+	}
+}
+
+// TestValidateTLSConfig_BothSet returns no error when both cert and key are provided.
+func TestValidateTLSConfig_BothSet(t *testing.T) {
+	err := ValidateTLSConfig("/path/to/cert.pem", "/path/to/key.pem")
+	if err != nil {
+		t.Errorf("unexpected error when both cert and key are set: %v", err)
+	}
+}
+
+// TestValidateTLSConfig_NeitherSet returns no error when TLS is disabled.
+func TestValidateTLSConfig_NeitherSet(t *testing.T) {
+	err := ValidateTLSConfig("", "")
+	if err != nil {
+		t.Errorf("unexpected error when neither cert nor key is set: %v", err)
 	}
 }

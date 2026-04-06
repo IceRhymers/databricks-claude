@@ -23,7 +23,7 @@ func main() {
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
-	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, claudeArgs := parseArgs(os.Args[1:])
+	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, claudeArgs := parseArgs(os.Args[1:])
 
 	if showHelp {
 		handleHelp(upstream)
@@ -226,6 +226,11 @@ func main() {
 		os.Exit(0)
 	}
 
+	// --- Validate TLS config ---
+	if err := proxy.ValidateTLSConfig(tlsCert, tlsKey); err != nil {
+		log.Fatalf("databricks-claude: %v", err)
+	}
+
 	// --- Start proxy ---
 	proxyConfig := &ProxyConfig{
 		InferenceUpstream: inferenceUpstream,
@@ -234,13 +239,24 @@ func main() {
 		UCLogsTable:       ucLogsTable,
 		TokenProvider:     tp,
 		Verbose:           verbose,
+		APIKey:            proxyAPIKey,
+		TLSCertFile:       tlsCert,
+		TLSKeyFile:        tlsKey,
+	}
+	if proxyAPIKey != "" {
+		fmt.Fprintln(os.Stderr, "databricks-claude: proxy API key authentication enabled")
 	}
 	handler := NewProxyServer(proxyConfig)
-	listener, err := StartProxy(handler)
+	listener, err := StartProxy(proxyConfig, handler)
 	if err != nil {
 		log.Fatalf("databricks-claude: failed to start proxy: %v", err)
 	}
-	proxyURL := "http://" + listener.Addr().String()
+	scheme := "http"
+	if tlsCert != "" && tlsKey != "" {
+		scheme = "https"
+		fmt.Fprintln(os.Stderr, "databricks-claude: TLS enabled")
+	}
+	proxyURL := scheme + "://" + listener.Addr().String()
 
 	// --- Patch settings.json ---
 	sm := NewSettingsManager(settingsPath)
@@ -325,10 +341,10 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 }
 
 // parseArgs separates databricks-claude flags from claude flags.
-// databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-metrics-table, --otel-logs-table, --no-otel.
+// databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-metrics-table, --otel-logs-table, --no-otel, --proxy-api-key, --tls-cert, --tls-key.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, claudeArgs []string) {
+func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, claudeArgs []string) {
 	otelMetricsTable = "main.claude_telemetry.claude_otel_metrics" // default
 
 	knownFlags := map[string]bool{
@@ -343,6 +359,9 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 		"--otel-logs-table":    true,
 		"--upstream":           true,
 		"--log-file":           true,
+		"--proxy-api-key":     true,
+		"--tls-cert":          true,
+		"--tls-key":           true,
 	}
 
 	i := 0
@@ -430,6 +449,27 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 					otel = true
 				case "--no-otel":
 					noOtel = true
+				case "--proxy-api-key":
+					if value != "" {
+						proxyAPIKey = value
+					} else if i+1 < len(args) {
+						i++
+						proxyAPIKey = args[i]
+					}
+				case "--tls-cert":
+					if value != "" {
+						tlsCert = value
+					} else if i+1 < len(args) {
+						i++
+						tlsCert = args[i]
+					}
+				case "--tls-key":
+					if value != "" {
+						tlsKey = value
+					} else if i+1 < len(args) {
+						i++
+						tlsKey = args[i]
+					}
 				}
 				i++
 				continue
@@ -463,6 +503,9 @@ Databricks-Claude Flags:
   --no-otel                    Clear persisted OTEL keys and disable OTEL for future sessions
   --otel-metrics-table string  Unity Catalog table for OTEL metrics
   --otel-logs-table string     Unity Catalog table for OTEL logs (derived from metrics table if omitted)
+  --proxy-api-key string       Require Bearer token auth on all proxy requests
+  --tls-cert string            Path to TLS certificate file (requires --tls-key)
+  --tls-key string             Path to TLS private key file (requires --tls-cert)
   --version                    Print version and exit
   --help, -h                   Show this help message
 

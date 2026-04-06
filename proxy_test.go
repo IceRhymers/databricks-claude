@@ -285,7 +285,7 @@ func TestProxy_SSEStreaming(t *testing.T) {
 	handler := NewProxyServer(cfg)
 
 	// Use a real listener so we can test actual streaming behaviour.
-	l, err := StartProxy(handler)
+	l, err := StartProxy(cfg, handler)
 	if err != nil {
 		t.Fatalf("StartProxy: %v", err)
 	}
