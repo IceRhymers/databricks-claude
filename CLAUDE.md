@@ -6,7 +6,7 @@ Transparent proxy wrapper for Claude Code that auto-refreshes Databricks OAuth t
 
 Four source files plus tests, all in `package main`:
 
-- **main.go** — CLI entry point: parses flags, resolves config from `~/.claude/settings.json`, seeds the token cache, discovers the AI Gateway URL, starts the proxy, patches settings, launches `claude`, and restores settings on exit.
+- **main.go** — CLI entry point: parses flags, resolves config from `~/.claude/settings.json` and `~/.claude/.databricks-claude.json` (persistent config), seeds the token cache, discovers the AI Gateway URL, starts the proxy, patches settings, launches `claude`, and restores settings on exit.
 - **proxy.go** — HTTP reverse proxy with two routes: `/` forwards to the inference upstream (AI Gateway), `/otel/` forwards to the OTEL upstream. Both routes inject fresh OAuth tokens per-request.
 - **token.go** — `TokenProvider` fetches and caches Databricks access tokens by shelling out to `databricks auth token`. Also contains `DiscoverHost`, `ResolveWorkspaceID`, and `ConstructGatewayURL` for auto-discovery.
 - **process.go** — `SettingsManager` for atomic read/patch/restore of `~/.claude/settings.json`. `RunChild` launches `claude` as a subprocess. `ForwardSignals` relays SIGINT/SIGTERM to the child.
@@ -19,6 +19,7 @@ Four source files plus tests, all in `package main`:
 - **Child process signals** — SIGINT/SIGTERM are forwarded to `claude`; its exit code is propagated as our exit code.
 - **Two proxy routes** — `/` routes to inference upstream, `/otel/` routes to OTEL upstream. Path algebra prepends the upstream base path.
 - **Panic recovery** — both proxy routes are wrapped in `recoveryHandler` that catches panics and returns HTTP 502.
+- **Persistent config** — `~/.claude/.databricks-claude.json` stores the Databricks CLI profile across sessions, independent of the settings.json restore cycle. Written on first setup when profile is not DEFAULT.
 
 ## Testing
 

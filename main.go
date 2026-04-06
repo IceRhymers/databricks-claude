@@ -81,7 +81,7 @@ func main() {
 
 	env := envBlock(settingsDoc)
 
-	// Resolve profile: CLI flag > env var > settings.json > DEFAULT
+	// Resolve profile: CLI flag > env var > settings.json > persistent config > DEFAULT
 	resolvedProfile := profile
 	if resolvedProfile == "" {
 		resolvedProfile = os.Getenv("DATABRICKS_CONFIG_PROFILE")
@@ -89,6 +89,15 @@ func main() {
 	if resolvedProfile == "" {
 		if v, ok := env["DATABRICKS_CONFIG_PROFILE"].(string); ok && v != "" {
 			resolvedProfile = v
+		}
+	}
+	if resolvedProfile == "" {
+		pcPath := persistentConfigPath(homeDir)
+		if pc, err := readPersistentConfig(pcPath); err == nil {
+			if v, ok := pc["profile"].(string); ok && v != "" {
+				resolvedProfile = v
+				log.Printf("databricks-claude: using profile %q from persistent config", v)
+			}
 		}
 	}
 	if resolvedProfile == "" {
@@ -241,6 +250,18 @@ func main() {
 		}
 		log.Printf("databricks-claude: self-setup complete — profile=%s, host=%s, gateway=%s",
 			resolvedProfile, databricksHost, inferenceUpstream)
+
+		// Persist profile so future runs don't need --profile.
+		if resolvedProfile != "DEFAULT" {
+			pcPath := persistentConfigPath(homeDir)
+			pc, _ := readPersistentConfig(pcPath)
+			pc["profile"] = resolvedProfile
+			if err := writePersistentConfig(pcPath, pc); err != nil {
+				log.Printf("databricks-claude: warning: failed to persist profile: %v", err)
+			} else {
+				log.Printf("databricks-claude: persisted profile %q to %s", resolvedProfile, pcPath)
+			}
+		}
 	} else {
 		if err := sm.SaveAndOverwrite(proxyURL); err != nil {
 			log.Fatalf("databricks-claude: failed to patch settings.json: %v", err)
@@ -420,7 +441,7 @@ Usage:
   databricks-claude [databricks-claude flags] [claude flags] [claude args]
 
 Databricks-Claude Flags:
-  --profile string      Databricks config profile (default "DEFAULT")
+  --profile string      Databricks config profile (saved to ~/.claude/.databricks-claude.json)
   --upstream string     Override the AI Gateway URL (default: auto-discovered)
   --print-env           Print resolved configuration and exit (token redacted)
   --verbose, -v         Enable debug logging to stderr
@@ -502,6 +523,48 @@ func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, anthropicM
   OTEL logs interval:   5000ms
 `, otelMetricsTable, otelLogsTable)
 	}
+}
+
+// persistentConfigPath returns the path to the persistent config file.
+func persistentConfigPath(homeDir string) string {
+	return filepath.Join(homeDir, ".claude", ".databricks-claude.json")
+}
+
+// readPersistentConfig reads the persistent config file. Returns an empty map
+// if the file does not exist.
+func readPersistentConfig(path string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]interface{}{}, nil
+		}
+		return nil, err
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// writePersistentConfig atomically writes the persistent config file.
+func writePersistentConfig(path string, cfg map[string]interface{}) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // deriveLogsTable derives the OTEL logs table name from the metrics table name.
