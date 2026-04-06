@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
+	"github.com/IceRhymers/databricks-claude/pkg/proxy"
 )
 
 // Version is set at build time via -ldflags.
@@ -109,6 +110,11 @@ func main() {
 	// --- Ensure the user is authenticated before proceeding ---
 	if err := authcheck.EnsureAuthenticated(resolvedProfile); err != nil {
 		log.Fatalf("databricks-claude: auth failed: %v", err)
+	}
+
+	// --- Startup security checks ---
+	for _, w := range proxy.SecurityChecks() {
+		fmt.Fprintln(os.Stderr, w)
 	}
 
 	// Extract upstream values from settings.json.
