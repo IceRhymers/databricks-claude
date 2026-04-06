@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
 )
 
 // Version is set at build time via -ldflags.
@@ -102,6 +104,11 @@ func main() {
 	}
 	if resolvedProfile == "" {
 		resolvedProfile = "DEFAULT"
+	}
+
+	// --- Ensure the user is authenticated before proceeding ---
+	if err := authcheck.EnsureAuthenticated(resolvedProfile); err != nil {
+		log.Fatalf("databricks-claude: auth failed: %v", err)
 	}
 
 	// Extract upstream values from settings.json.
