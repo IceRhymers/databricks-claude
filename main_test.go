@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -599,5 +601,106 @@ func TestHandlePrintEnv_OTELFields(t *testing.T) {
 		if !strings.Contains(out, c) {
 			t.Errorf("expected output to contain %q, got:\n%s", c, out)
 		}
+	}
+}
+
+// --- Persistent config tests ---
+
+func TestReadPersistentConfig_MissingFile(t *testing.T) {
+	cfg, err := readPersistentConfig(filepath.Join(t.TempDir(), "nonexistent.json"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg) != 0 {
+		t.Errorf("expected empty map, got %v", cfg)
+	}
+}
+
+func TestReadPersistentConfig_ValidFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".databricks-claude.json")
+	data := []byte(`{"profile":"my-workspace"}`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := readPersistentConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg["profile"] != "my-workspace" {
+		t.Errorf("expected profile=%q, got %v", "my-workspace", cfg["profile"])
+	}
+}
+
+func TestReadPersistentConfig_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".databricks-claude.json")
+	if err := os.WriteFile(path, []byte(`{bad json`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := readPersistentConfig(path)
+	if err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
+func TestWritePersistentConfig_Roundtrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub", ".databricks-claude.json")
+
+	cfg := map[string]interface{}{"profile": "test-profile"}
+	if err := writePersistentConfig(path, cfg); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	got, err := readPersistentConfig(path)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if got["profile"] != "test-profile" {
+		t.Errorf("expected profile=%q, got %v", "test-profile", got["profile"])
+	}
+
+	// Verify the file is valid JSON with indentation.
+	raw, _ := os.ReadFile(path)
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("file is not valid JSON: %v", err)
+	}
+	if !strings.Contains(string(raw), "\n") {
+		t.Error("expected indented JSON output")
+	}
+}
+
+func TestWritePersistentConfig_UpdatesExisting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".databricks-claude.json")
+
+	// Write initial config.
+	initial := map[string]interface{}{"profile": "first"}
+	if err := writePersistentConfig(path, initial); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read, update, write.
+	cfg, _ := readPersistentConfig(path)
+	cfg["profile"] = "second"
+	if err := writePersistentConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := readPersistentConfig(path)
+	if got["profile"] != "second" {
+		t.Errorf("expected profile=%q, got %v", "second", got["profile"])
+	}
+}
+
+func TestPersistentConfigPath(t *testing.T) {
+	got := persistentConfigPath("/home/user")
+	want := filepath.Join("/home/user", ".claude", ".databricks-claude.json")
+	if got != want {
+		t.Errorf("persistentConfigPath=%q, want %q", got, want)
 	}
 }

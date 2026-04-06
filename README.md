@@ -91,7 +91,22 @@ If workspace ID resolution fails, it falls back to `<host>/serving-endpoints/ant
 1. `--profile` CLI flag
 2. `DATABRICKS_CONFIG_PROFILE` environment variable
 3. `DATABRICKS_CONFIG_PROFILE` in `~/.claude/settings.json` env block
-4. `DEFAULT`
+4. `profile` from `~/.claude/.databricks-claude.json` (persistent config)
+5. `DEFAULT`
+
+## Persistent Config (`~/.claude/.databricks-claude.json`)
+
+On first setup (when `ANTHROPIC_BASE_URL` is not yet configured), `databricks-claude` saves your resolved profile to `~/.claude/.databricks-claude.json`. This file is **never** modified by the settings.json restore cycle, so your profile persists across sessions.
+
+```json
+{
+  "profile": "my-workspace"
+}
+```
+
+This means you only need to pass `--profile` once — subsequent runs will automatically use the saved profile. To switch profiles, pass `--profile <new-profile>` and the persistent config is updated.
+
+The file is only written when the profile is not `DEFAULT` (the implicit default doesn't need saving).
 
 ## Debugging
 
