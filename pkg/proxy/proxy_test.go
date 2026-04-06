@@ -360,6 +360,138 @@ func TestProxy_OTELTableName_Logs(t *testing.T) {
 	}
 }
 
+// TestProxy_OTELTableName_MetricsEmpty verifies that when UCMetricsTable is
+// empty (e.g. databricks-codex which has no native metrics), the
+// X-Databricks-UC-Table-Name header is omitted for metrics requests.
+func TestProxy_OTELTableName_MetricsEmpty(t *testing.T) {
+	var gotTable string
+	var tableHeaderPresent bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, tableHeaderPresent = r.Header["X-Databricks-Uc-Table-Name"]
+		gotTable = r.Header.Get("X-Databricks-UC-Table-Name")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &Config{
+		InferenceUpstream: upstream.URL,
+		OTELUpstream:      upstream.URL,
+		UCMetricsTable:    "", // empty — caller does not emit metrics
+		UCLogsTable:       "main.telemetry.codex_otel_logs",
+		TokenSource:       warmToken("tok"),
+	}
+	handler := NewServer(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/otel/v1/metrics", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if tableHeaderPresent || gotTable != "" {
+		t.Errorf("expected X-Databricks-UC-Table-Name to be absent when UCMetricsTable is empty, got %q", gotTable)
+	}
+}
+
+// TestProxy_WebSocket_IsUpgradeDetected verifies that isWebSocketUpgrade
+// correctly identifies WebSocket upgrade requests.
+func TestProxy_WebSocket_IsUpgradeDetected(t *testing.T) {
+	tests := []struct {
+		name    string
+		upgrade string
+		want    bool
+	}{
+		{"websocket lowercase", "websocket", true},
+		{"WebSocket mixed case", "WebSocket", true},
+		{"WEBSOCKET uppercase", "WEBSOCKET", true},
+		{"empty", "", false},
+		{"http2", "h2c", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tc.upgrade != "" {
+				r.Header.Set("Upgrade", tc.upgrade)
+			}
+			if got := isWebSocketUpgrade(r); got != tc.want {
+				t.Errorf("isWebSocketUpgrade(%q) = %v, want %v", tc.upgrade, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProxy_WebSocket_UpgradeRejectedByUpstream verifies that when the upstream
+// rejects the WebSocket upgrade (non-101), the status is forwarded to the client.
+// This covers the codex inference path — Codex uses WebSocket; Claude uses HTTP/SSE.
+func TestProxy_WebSocket_UpgradeRejectedByUpstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate upstream rejecting the upgrade (e.g. auth failure).
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	cfg := &Config{
+		InferenceUpstream: upstream.URL,
+		OTELUpstream:      upstream.URL,
+		UCLogsTable:       "main.t.l",
+		TokenSource:       warmToken("tok"),
+	}
+
+	l, err := Start(NewServer(cfg))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer l.Close()
+
+	// Send a WebSocket upgrade request through the running proxy.
+	req, _ := http.NewRequest(http.MethodGet, "http://"+l.Addr().String()+"/v1/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("got status %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+// TestProxy_WebSocket_PlainHTTPNotAffected verifies that plain HTTP requests
+// (no Upgrade header) are still routed through the normal httputil.ReverseProxy
+// path after the WebSocket detection wrapper was added. This is the
+// databricks-claude (Claude Code) path — it never sends WebSocket upgrades.
+func TestProxy_WebSocket_PlainHTTPNotAffected(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &Config{
+		InferenceUpstream: upstream.URL,
+		OTELUpstream:      upstream.URL,
+		UCLogsTable:       "main.t.l",
+		TokenSource:       warmToken("plain-http-token"),
+	}
+	handler := NewServer(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	// No Upgrade header — this is a plain HTTP request (Claude Code path).
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if gotAuth != "Bearer plain-http-token" {
+		t.Errorf("got Authorization %q, want %q", gotAuth, "Bearer plain-http-token")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want 200", rec.Code)
+	}
+}
+
 // Ensure Start works correctly and listeners can be used.
 func TestProxy_Start(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
