@@ -170,7 +170,7 @@ func (sm *SettingsManager) FullSetup(config FullSetupConfig) error {
 		}
 		doc = map[string]interface{}{"env": map[string]interface{}{}}
 		dir := filepath.Dir(sm.inner.SettingsPath())
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("create settings dir: %w", err)
 		}
 	}

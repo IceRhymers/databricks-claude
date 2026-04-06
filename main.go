@@ -62,7 +62,7 @@ func main() {
 		log.SetOutput(os.Stderr)
 	}
 	if logFile != "" {
-		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			log.SetOutput(os.Stderr) // ensure this fatal is visible
 			log.Fatalf("databricks-claude: cannot open log file %q: %v", logFile, err)
@@ -569,12 +569,12 @@ func writePersistentConfig(path string, cfg map[string]interface{}) error {
 	data = append(data, '\n')
 
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
