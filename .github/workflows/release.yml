@@ -38,7 +38,9 @@ jobs:
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload ${{ needs.release-please.outputs.tag_name }} dist/*update-homebrew:
+        run: gh release upload ${{ needs.release-please.outputs.tag_name }} dist/*
+
+  update-homebrew:
     needs: [release-please, build-and-upload]
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
