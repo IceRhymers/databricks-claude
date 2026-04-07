@@ -23,6 +23,15 @@ You use it exactly like `claude`. Every flag and argument is forwarded.
 
 ## Installation
 
+Via Homebrew (recommended):
+
+```
+brew tap IceRhymers/tap
+brew install databricks-claude
+```
+
+Via Go:
+
 ### From source
 
 ```bash
