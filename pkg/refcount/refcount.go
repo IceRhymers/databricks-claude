@@ -1,5 +1,4 @@
-// Package refcount provides cross-process session counting backed by a JSON
-// file. The locking mechanism is platform-specific (flock on Unix, sync.Mutex
+// Package refcount provides cross-process session counting backed by a JSON file.
 // on Windows).
 package refcount
 
