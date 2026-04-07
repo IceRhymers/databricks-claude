@@ -28,7 +28,7 @@ func main() {
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
-	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, portFlag, claudeArgs := parseArgs(os.Args[1:])
+	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, model, modelSet, portFlag, claudeArgs := parseArgs(os.Args[1:])
 
 	if showHelp {
 		handleHelp(upstream)
@@ -96,12 +96,9 @@ func main() {
 	// state file.
 	resolvedProfile := profile
 	if resolvedProfile == "" {
-		pcPath := persistentConfigPath(homeDir)
-		if pc, err := readPersistentConfig(pcPath); err == nil {
-			if v, ok := pc["profile"].(string); ok && v != "" {
-				resolvedProfile = v
-				log.Printf("databricks-claude: using profile %q from persistent config", v)
-			}
+		if saved := loadState(); saved.Profile != "" {
+			resolvedProfile = saved.Profile
+			log.Printf("databricks-claude: using profile %q from state file", saved.Profile)
 		}
 	}
 	if resolvedProfile == "" {
@@ -220,31 +217,29 @@ func main() {
 		ucLogsTable = deriveLogsTable(ucMetricsTable)
 	}
 
-	// --- Print env and exit if requested ---
-	if printEnv {
-		anthropicModel := os.Getenv("ANTHROPIC_MODEL")
-		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, anthropicModel, upstream, otel || otelConfigured, ucMetricsTable, ucLogsTable)
-		os.Exit(0)
-	}
-
-	// --- Validate TLS config ---
-	if err := proxy.ValidateTLSConfig(tlsCert, tlsKey); err != nil {
-		log.Fatalf("databricks-claude: %v", err)
-	}
-
-	// --- Load persistent state and resolve port ---
-	state, err := loadState()
-	if err != nil {
-		log.Printf("databricks-claude: warning: failed to load state: %v", err)
-		state = &persistentState{}
-	}
+	// --- Load persistent state and resolve port + model ---
+	state := loadState()
 
 	port := resolvePort(portFlag, state)
 	if portFlag > 0 {
 		state.Port = port
 		if err := saveState(state); err != nil {
-			log.Printf("databricks-claude: warning: failed to save state: %v", err)
+			log.Printf("databricks-claude: warning: failed to save port: %v", err)
 		}
+	}
+
+	// --- Resolve model ---
+	resolvedModel := resolveModel(model, state)
+	if modelSet {
+		state.Model = resolvedModel
+		if err := saveState(state); err != nil {
+			log.Printf("databricks-claude: warning: failed to save model: %v", err)
+		} else {
+			log.Printf("databricks-claude: saved model %q for future sessions", resolvedModel)
+		}
+	}
+	if resolvedModel != "" {
+		log.Printf("databricks-claude: using model: %s", resolvedModel)
 	}
 
 	// Persist profile so future runs don't need --profile.
@@ -255,6 +250,17 @@ func main() {
 		} else {
 			log.Printf("databricks-claude: persisted profile %q", resolvedProfile)
 		}
+	}
+
+	// --- Print env and exit if requested ---
+	if printEnv {
+		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, resolvedModel, upstream, otel || otelConfigured, ucMetricsTable, ucLogsTable)
+		os.Exit(0)
+	}
+
+	// --- Validate TLS config ---
+	if err := proxy.ValidateTLSConfig(tlsCert, tlsKey); err != nil {
+		log.Fatalf("databricks-claude: %v", err)
 	}
 
 	// --- Bind proxy port ---
@@ -398,7 +404,7 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 // databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-metrics-table, --otel-logs-table, --no-otel, --proxy-api-key, --tls-cert, --tls-key.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, portFlag int, claudeArgs []string) {
+func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, model string, modelSet bool, portFlag int, claudeArgs []string) {
 	otelMetricsTable = "main.claude_telemetry.claude_otel_metrics" // default
 
 	knownFlags := map[string]bool{
@@ -416,6 +422,7 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 		"--proxy-api-key":     true,
 		"--tls-cert":          true,
 		"--tls-key":           true,
+		"--model":             true,
 		"--port":              true,
 	}
 
@@ -525,6 +532,15 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 						i++
 						tlsKey = args[i]
 					}
+				case "--model":
+					if value != "" {
+						model = value
+						modelSet = true
+					} else if i+1 < len(args) {
+						i++
+						model = args[i]
+						modelSet = true
+					}
 				case "--port":
 					if value != "" {
 						portFlag, _ = strconv.Atoi(value)
@@ -557,6 +573,7 @@ Usage:
 
 Databricks-Claude Flags:
   --profile string      Databricks config profile (saved to ~/.claude/.databricks-claude.json)
+  --model string        Model name (saved for future sessions)
   --upstream string     Override the AI Gateway URL (default: auto-discovered)
   --print-env           Print resolved configuration and exit (token redacted)
   --verbose, -v         Enable debug logging to stderr
@@ -608,7 +625,7 @@ Claude CLI Options:
 }
 
 // handlePrintEnv prints resolved configuration with the token redacted.
-func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, anthropicModel, upstreamBinary string, otelEnabled bool, otelMetricsTable, otelLogsTable string) {
+func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, model, upstreamBinary string, otelEnabled bool, otelMetricsTable, otelLogsTable string) {
 	// Redact token.
 	redacted := "**** (redacted)"
 	if strings.HasPrefix(token, "dapi-") {
@@ -625,15 +642,20 @@ func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, anthropicM
 		}
 	}
 
+	modelDisplay := model
+	if modelDisplay == "" {
+		modelDisplay = "(default)"
+	}
+
 	fmt.Printf(`databricks-claude configuration:
   Profile:              %s
+  Model:                %s
   DATABRICKS_HOST:      %s
   ANTHROPIC_BASE_URL:   %s
   ANTHROPIC_AUTH_TOKEN: %s
-  ANTHROPIC_MODEL:      %s
   Upstream binary:      %s
   OTEL enabled:         %v
-`, profile, databricksHost, anthropicBaseURL, redacted, anthropicModel, binaryPath, otelEnabled)
+`, profile, modelDisplay, databricksHost, anthropicBaseURL, redacted, binaryPath, otelEnabled)
 
 	if otelEnabled {
 		fmt.Printf(`  OTEL metrics table:   %s

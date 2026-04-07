@@ -2,82 +2,106 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 )
 
-// persistentState holds cross-session state persisted to ~/.claude/.databricks-claude.json.
-// This is separate from the persistent config (profile, etc.) — it tracks runtime
-// state that survives across invocations.
+// persistentState is the JSON schema for ~/.claude/.databricks-claude.json.
+// This file survives config restores and persists across sessions.
 type persistentState struct {
 	Profile string `json:"profile,omitempty"`
+	Model   string `json:"model,omitempty"`
 	Port    int    `json:"port,omitempty"`
 }
 
 const defaultPort = 49153
 
-// statePath returns the path to the persistent state file.
-func statePath() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+// resolvePort returns the port to use, following the resolution chain:
+// 1. --port flag (portFlag > 0)
+// 2. Saved state value (non-zero)
+// 3. Default 49153
+func resolvePort(portFlag int, state persistentState) int {
+	if portFlag > 0 {
+		return portFlag
 	}
-	return filepath.Join(homeDir, ".claude", ".databricks-claude.json"), nil
+	if state.Port > 0 {
+		return state.Port
+	}
+	return defaultPort
 }
 
-// loadState reads the persistent state from disk. Returns a zero-value state
-// if the file does not exist.
-func loadState() (*persistentState, error) {
-	p, err := statePath()
-	if err != nil {
-		return &persistentState{}, err
+// resolveModel returns the model to use, following the resolution chain:
+// 1. --model flag (non-empty)
+// 2. Saved state value (non-empty)
+// 3. Default "" (no override)
+func resolveModel(flagVal string, state persistentState) string {
+	if flagVal != "" {
+		return flagVal
 	}
-	data, err := os.ReadFile(p)
+	if state.Model != "" {
+		return state.Model
+	}
+	return ""
+}
+
+// statePath returns the path to the persistent state file.
+// It is a variable so tests can override it.
+var statePath = func() string {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return &persistentState{}, nil
-		}
-		return nil, err
+		return ".claude/.databricks-claude.json"
+	}
+	return filepath.Join(home, ".claude", ".databricks-claude.json")
+}
+
+// loadState reads the persistent state file. Returns zero-value state if
+// the file doesn't exist or can't be parsed.
+func loadState() persistentState {
+	data, err := os.ReadFile(statePath())
+	if err != nil {
+		return persistentState{}
 	}
 	var s persistentState
 	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, err
+		log.Printf("databricks-claude: invalid state file, ignoring: %v", err)
+		return persistentState{}
 	}
-	return &s, nil
+	return s
 }
 
-// saveState writes the persistent state to disk atomically.
-func saveState(s *persistentState) error {
-	p, err := statePath()
-	if err != nil {
-		return err
-	}
-	dir := filepath.Dir(p)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
+// saveState writes the persistent state file atomically.
+func saveState(s persistentState) error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+
+	p := statePath()
+	dir := filepath.Dir(p)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.Rename(tmp, p)
-}
 
-// resolvePort returns the port to use, following the resolution chain:
-// 1. --port flag (portFlag > 0)
-// 2. Saved state value (non-zero)
-// 3. Default 49153
-func resolvePort(portFlag int, state *persistentState) int {
-	if portFlag > 0 {
-		return portFlag
+	tmp, err := os.CreateTemp(dir, ".state-*.tmp")
+	if err != nil {
+		return err
 	}
-	if state != nil && state.Port > 0 {
-		return state.Port
+	tmpPath := tmp.Name()
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
 	}
-	return defaultPort
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return os.Rename(tmpPath, p)
 }
