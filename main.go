@@ -96,12 +96,9 @@ func main() {
 	// state file.
 	resolvedProfile := profile
 	if resolvedProfile == "" {
-		pcPath := persistentConfigPath(homeDir)
-		if pc, err := readPersistentConfig(pcPath); err == nil {
-			if v, ok := pc["profile"].(string); ok && v != "" {
-				resolvedProfile = v
-				log.Printf("databricks-claude: using profile %q from persistent config", v)
-			}
+		if saved := loadState(); saved.Profile != "" {
+			resolvedProfile = saved.Profile
+			log.Printf("databricks-claude: using profile %q from state file", saved.Profile)
 		}
 	}
 	if resolvedProfile == "" {
@@ -220,30 +217,14 @@ func main() {
 		ucLogsTable = deriveLogsTable(ucMetricsTable)
 	}
 
-	// --- Print env and exit if requested ---
-	if printEnv {
-		anthropicModel := os.Getenv("ANTHROPIC_MODEL")
-		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, anthropicModel, upstream, otel || otelConfigured, ucMetricsTable, ucLogsTable)
-		os.Exit(0)
-	}
-
-	// --- Validate TLS config ---
-	if err := proxy.ValidateTLSConfig(tlsCert, tlsKey); err != nil {
-		log.Fatalf("databricks-claude: %v", err)
-	}
-
 	// --- Load persistent state and resolve port ---
-	state, err := loadState()
-	if err != nil {
-		log.Printf("databricks-claude: warning: failed to load state: %v", err)
-		state = &persistentState{}
-	}
+	state := loadState()
 
 	port := resolvePort(portFlag, state)
 	if portFlag > 0 {
 		state.Port = port
 		if err := saveState(state); err != nil {
-			log.Printf("databricks-claude: warning: failed to save state: %v", err)
+			log.Printf("databricks-claude: warning: failed to save port: %v", err)
 		}
 	}
 
@@ -255,6 +236,17 @@ func main() {
 		} else {
 			log.Printf("databricks-claude: persisted profile %q", resolvedProfile)
 		}
+	}
+
+	// --- Print env and exit if requested ---
+	if printEnv {
+		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, upstream, otel || otelConfigured, ucMetricsTable, ucLogsTable)
+		os.Exit(0)
+	}
+
+	// --- Validate TLS config ---
+	if err := proxy.ValidateTLSConfig(tlsCert, tlsKey); err != nil {
+		log.Fatalf("databricks-claude: %v", err)
 	}
 
 	// --- Bind proxy port ---
@@ -608,7 +600,7 @@ Claude CLI Options:
 }
 
 // handlePrintEnv prints resolved configuration with the token redacted.
-func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, anthropicModel, upstreamBinary string, otelEnabled bool, otelMetricsTable, otelLogsTable string) {
+func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, upstreamBinary string, otelEnabled bool, otelMetricsTable, otelLogsTable string) {
 	// Redact token.
 	redacted := "**** (redacted)"
 	if strings.HasPrefix(token, "dapi-") {
@@ -630,10 +622,9 @@ func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, anthropicM
   DATABRICKS_HOST:      %s
   ANTHROPIC_BASE_URL:   %s
   ANTHROPIC_AUTH_TOKEN: %s
-  ANTHROPIC_MODEL:      %s
   Upstream binary:      %s
   OTEL enabled:         %v
-`, profile, databricksHost, anthropicBaseURL, redacted, anthropicModel, binaryPath, otelEnabled)
+`, profile, databricksHost, anthropicBaseURL, redacted, binaryPath, otelEnabled)
 
 	if otelEnabled {
 		fmt.Printf(`  OTEL metrics table:   %s

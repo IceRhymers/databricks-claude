@@ -429,7 +429,7 @@ func captureStdout(fn func()) string {
 
 func TestHandlePrintEnv_DapiTokenRedacted(t *testing.T) {
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "dapi-abc123secret", "", "", false, "", "")
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "dapi-abc123secret", "", false, "", "")
 	})
 	if !strings.Contains(out, "dapi-***") {
 		t.Errorf("expected dapi token to appear as 'dapi-***', got:\n%s", out)
@@ -441,7 +441,7 @@ func TestHandlePrintEnv_DapiTokenRedacted(t *testing.T) {
 
 func TestHandlePrintEnv_NonDapiTokenRedacted(t *testing.T) {
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "eyJhbGciOiJSUzI1NiJ9", "", "", false, "", "")
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "eyJhbGciOiJSUzI1NiJ9", "", false, "", "")
 	})
 	if !strings.Contains(out, "**** (redacted)") {
 		t.Errorf("expected non-dapi token to appear as '**** (redacted)', got:\n%s", out)
@@ -454,7 +454,7 @@ func TestHandlePrintEnv_NonDapiTokenRedacted(t *testing.T) {
 func TestHandlePrintEnv_ContainsDatabricksHost(t *testing.T) {
 	host := "https://dbc-abc123.cloud.databricks.com"
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", host, "https://gw.example.com", "tok", "", "", false, "", "")
+		handlePrintEnv("DEFAULT", host, "https://gw.example.com", "tok", "", false, "", "")
 	})
 	if !strings.Contains(out, host) {
 		t.Errorf("expected output to contain DATABRICKS_HOST %q, got:\n%s", host, out)
@@ -464,7 +464,7 @@ func TestHandlePrintEnv_ContainsDatabricksHost(t *testing.T) {
 func TestHandlePrintEnv_ContainsAnthropicBaseURL(t *testing.T) {
 	baseURL := "https://gateway.example.com/anthropic"
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", baseURL, "tok", "", "", false, "", "")
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", baseURL, "tok", "", false, "", "")
 	})
 	if !strings.Contains(out, baseURL) {
 		t.Errorf("expected output to contain ANTHROPIC_BASE_URL %q, got:\n%s", baseURL, out)
@@ -473,7 +473,7 @@ func TestHandlePrintEnv_ContainsAnthropicBaseURL(t *testing.T) {
 
 func TestHandlePrintEnv_EmptyTokenRedacted(t *testing.T) {
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "", "", "", false, "", "")
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "", "", false, "", "")
 	})
 	// Empty string does not start with "dapi-" so it should show as **** (redacted)
 	if !strings.Contains(out, "**** (redacted)") {
@@ -588,7 +588,7 @@ func TestOTELTableDerivation(t *testing.T) {
 
 func TestHandlePrintEnv_OTELFields(t *testing.T) {
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "tok", "", "", true, "main.telemetry.claude_otel_metrics", "main.telemetry.claude_otel_logs")
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "tok", "", true, "main.telemetry.claude_otel_metrics", "main.telemetry.claude_otel_logs")
 	})
 	checks := []string{
 		"OTEL enabled:         true",
