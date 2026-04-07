@@ -89,16 +89,12 @@ func main() {
 
 	env := envBlock(settingsDoc)
 
-	// Resolve profile: CLI flag > env var > settings.json > persistent config > DEFAULT
+	// Resolve profile: --profile flag (saved to state file) > state file > "DEFAULT"
+	// The env var DATABRICKS_CONFIG_PROFILE is NOT consulted here because
+	// Claude's settings.json injects env vars into child processes, which
+	// would override the user's explicit --profile choice persisted in the
+	// state file.
 	resolvedProfile := profile
-	if resolvedProfile == "" {
-		resolvedProfile = os.Getenv("DATABRICKS_CONFIG_PROFILE")
-	}
-	if resolvedProfile == "" {
-		if v, ok := env["DATABRICKS_CONFIG_PROFILE"].(string); ok && v != "" {
-			resolvedProfile = v
-		}
-	}
 	if resolvedProfile == "" {
 		pcPath := persistentConfigPath(homeDir)
 		if pc, err := readPersistentConfig(pcPath); err == nil {

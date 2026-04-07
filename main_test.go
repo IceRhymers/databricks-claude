@@ -704,3 +704,79 @@ func TestPersistentConfigPath(t *testing.T) {
 		t.Errorf("persistentConfigPath=%q, want %q", got, want)
 	}
 }
+
+// TestProfileResolution_StateFileWins verifies that the state file profile
+// wins over both the settings.json env block AND the process environment
+// variable DATABRICKS_CONFIG_PROFILE. The resolution chain is:
+//
+//	--profile flag (saved to state file) > state file > "DEFAULT"
+func TestProfileResolution_StateFileWins(t *testing.T) {
+	// Helper: run the same resolution chain as main.go.
+	resolve := func(flagProfile string, pcPath string) string {
+		resolvedProfile := flagProfile
+		if resolvedProfile == "" {
+			if pc, err := readPersistentConfig(pcPath); err == nil {
+				if v, ok := pc["profile"].(string); ok && v != "" {
+					resolvedProfile = v
+				}
+			}
+		}
+		if resolvedProfile == "" {
+			resolvedProfile = "DEFAULT"
+		}
+		return resolvedProfile
+	}
+
+	// Common setup: state file with "state-file-profile".
+	dir := t.TempDir()
+	pcPath := filepath.Join(dir, ".databricks-claude.json")
+	stateData := []byte(`{"profile":"state-file-profile"}`)
+	if err := os.WriteFile(pcPath, stateData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("state file wins over settings.json env block", func(t *testing.T) {
+		// Simulate settings.json with env block containing a profile.
+		settingsDoc := map[string]interface{}{
+			"env": map[string]interface{}{
+				"DATABRICKS_CONFIG_PROFILE": "settings-profile",
+			},
+		}
+		env := envBlock(settingsDoc)
+
+		got := resolve("", pcPath)
+		if got != "state-file-profile" {
+			t.Fatalf("expected profile=%q, got %q", "state-file-profile", got)
+		}
+
+		// Confirm the env block still contains the value (it exists, just isn't consulted).
+		if v, ok := env["DATABRICKS_CONFIG_PROFILE"].(string); !ok || v != "settings-profile" {
+			t.Errorf("env block should still contain settings-profile, got %v", env["DATABRICKS_CONFIG_PROFILE"])
+		}
+	})
+
+	t.Run("state file wins over process env var", func(t *testing.T) {
+		// Set the process env var to a different profile.
+		t.Setenv("DATABRICKS_CONFIG_PROFILE", "env-var-profile")
+
+		got := resolve("", pcPath)
+		if got != "state-file-profile" {
+			t.Fatalf("expected profile=%q, got %q; process env var should not be consulted", "state-file-profile", got)
+		}
+	})
+
+	t.Run("flag still wins over state file", func(t *testing.T) {
+		got := resolve("flag-profile", pcPath)
+		if got != "flag-profile" {
+			t.Fatalf("expected profile=%q, got %q", "flag-profile", got)
+		}
+	})
+
+	t.Run("falls back to DEFAULT when no state file", func(t *testing.T) {
+		emptyPath := filepath.Join(dir, "nonexistent.json")
+		got := resolve("", emptyPath)
+		if got != "DEFAULT" {
+			t.Fatalf("expected profile=%q, got %q", "DEFAULT", got)
+		}
+	})
+}

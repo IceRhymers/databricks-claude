@@ -105,11 +105,14 @@ If workspace ID resolution fails, it falls back to `<host>/serving-endpoints/ant
 
 ## Profile Resolution Order
 
-1. `--profile` CLI flag
-2. `DATABRICKS_CONFIG_PROFILE` environment variable
-3. `DATABRICKS_CONFIG_PROFILE` in `~/.claude/settings.json` env block
-4. `profile` from `~/.claude/.databricks-claude.json` (persistent config)
-5. `DEFAULT`
+1. `--profile` CLI flag (writes to state file for future runs)
+2. `profile` from `~/.claude/.databricks-claude.json` (state file)
+3. `DEFAULT`
+
+> **Note:** `DATABRICKS_CONFIG_PROFILE` is intentionally *not* consulted during
+> resolution. Claude's `settings.json` injects env vars into child processes,
+> which would override the user's explicit `--profile` choice persisted in the
+> state file.
 
 ## Persistent Config (`~/.claude/.databricks-claude.json`)
 
