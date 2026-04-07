@@ -10,11 +10,11 @@ Databricks AI Gateway uses short-lived OAuth tokens. Claude Code only supports a
 
 `databricks-claude` wraps the `claude` binary. It:
 
-1. Spins up a local HTTP proxy on `127.0.0.1` (random port)
-2. Patches `~/.claude/settings.json` to point at the proxy
+1. Binds a local HTTP proxy on `127.0.0.1:49153` (fixed port — shared across concurrent sessions)
+2. Writes `~/.claude/settings.json` once to point `ANTHROPIC_BASE_URL` at the proxy (idempotent — no restore on exit)
 3. Launches `claude` with your args — fully transparent
 4. Injects fresh Databricks OAuth tokens on every request (auto-refreshed from `databricks auth token`)
-5. Restores `settings.json` when done (explicit restore before exit)
+5. Tracks concurrent sessions with a ref-count; the last session out closes the listener
 
 You use it exactly like `claude`. Every flag and argument is forwarded.
 
@@ -85,6 +85,7 @@ databricks-claude --tls-cert cert.pem --tls-key key.pem "explain this codebase"
 | `--otel-logs-table` | derived from metrics table | Unity Catalog table for OTEL logs |
 | `--upstream` | auto-discovered | Override the AI Gateway URL |
 | `--proxy-api-key` | | Require Bearer token auth on all proxy requests |
+| `--port` | `49153` | Proxy listen port (saved for future sessions) |
 | `--tls-cert` | | Path to TLS certificate file (requires `--tls-key`) |
 | `--tls-key` | | Path to TLS private key file (requires `--tls-cert`) |
 | `--version` | | Print version and exit |
@@ -116,7 +117,7 @@ If workspace ID resolution fails, it falls back to `<host>/serving-endpoints/ant
 
 ## Persistent Config (`~/.claude/.databricks-claude.json`)
 
-On first setup (when `ANTHROPIC_BASE_URL` is not yet configured), `databricks-claude` saves your resolved profile to `~/.claude/.databricks-claude.json`. This file is **never** modified by the settings.json restore cycle, so your profile persists across sessions.
+On first setup (when `ANTHROPIC_BASE_URL` is not yet configured), `databricks-claude` saves your resolved profile to `~/.claude/.databricks-claude.json`. This file persists independently of `settings.json` — your profile is never lost when config is rewritten.
 
 ```json
 {
