@@ -12,9 +12,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
@@ -30,7 +32,7 @@ func main() {
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
-	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, portFlag, claudeArgs := parseArgs(os.Args[1:])
+	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, portFlag, headless, claudeArgs := parseArgs(os.Args[1:])
 
 	if showHelp {
 		handleHelp(upstream)
@@ -338,12 +340,21 @@ func main() {
 	}
 
 	if err := ensureConfig(proxyURL, otelEnv); err != nil {
-		log.Fatalf("databricks-claude: %v", err)
+		if headless {
+			fmt.Fprintf(os.Stderr, "databricks-claude: warning: config write failed: %v\n", err)
+		} else {
+			log.Fatalf("databricks-claude: %v", err)
+		}
 	}
 
 	// --- Log startup info ---
 	log.Printf("databricks-claude: proxy on %s (owner=%v), profile=%s, upstream=%s",
 		proxyURL, isOwner, resolvedProfile, inferenceUpstream)
+
+	if headless {
+		runHeadless(proxyURL, ln, isOwner, refcountPath)
+		return
+	}
 
 	// --- Run child ---
 	exitCode, err := RunChild(context.Background(), claudeArgs)
@@ -363,6 +374,24 @@ func main() {
 	}
 
 	os.Exit(exitCode)
+}
+
+// runHeadless runs the proxy without launching a claude child process.
+// It prints the proxy URL to stdout, then blocks until SIGINT/SIGTERM.
+// The watchProxy goroutine (for non-owner sessions) is already started
+// before this function is called.
+func runHeadless(proxyURL string, ln net.Listener, isOwner bool, refcountPath string) {
+	fmt.Printf("PROXY_URL=%s\n", proxyURL)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+	signal.Stop(sigCh)
+
+	n, _ := refcount.Release(refcountPath)
+	if n == 0 && isOwner {
+		ln.Close()
+	}
 }
 
 // listenerPort extracts the port from a net.Listener, falling back to the
@@ -404,7 +433,7 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 // databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-metrics-table, --otel-logs-table, --no-otel, --proxy-api-key, --tls-cert, --tls-key.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, portFlag int, claudeArgs []string) {
+func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, portFlag int, headless bool, claudeArgs []string) {
 	otelMetricsTable = "main.claude_telemetry.claude_otel_metrics" // default
 
 	knownFlags := map[string]bool{
@@ -423,6 +452,7 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 		"--tls-cert":          true,
 		"--tls-key":           true,
 		"--port":              true,
+		"--headless":          true,
 	}
 
 	i := 0
@@ -538,6 +568,8 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 						i++
 						portFlag, _ = strconv.Atoi(args[i])
 					}
+				case "--headless":
+					headless = true
 				}
 				i++
 				continue
@@ -575,6 +607,7 @@ Databricks-Claude Flags:
   --tls-cert string            Path to TLS certificate file (requires --tls-key)
   --tls-key string             Path to TLS private key file (requires --tls-cert)
   --port int                   Fixed proxy port (default: 49153, saved to state)
+  --headless                   Start proxy without launching claude (for IDE extensions)
   --version                    Print version and exit
   --help, -h                   Show this help message
 
