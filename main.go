@@ -89,15 +89,10 @@ func main() {
 
 	env := envBlock(settingsDoc)
 
-	// Resolve profile: CLI flag > env var > settings.json > persistent config > DEFAULT
+	// Resolve profile: CLI flag > env var > persistent config (state file) > DEFAULT
 	resolvedProfile := profile
 	if resolvedProfile == "" {
 		resolvedProfile = os.Getenv("DATABRICKS_CONFIG_PROFILE")
-	}
-	if resolvedProfile == "" {
-		if v, ok := env["DATABRICKS_CONFIG_PROFILE"].(string); ok && v != "" {
-			resolvedProfile = v
-		}
 	}
 	if resolvedProfile == "" {
 		pcPath := persistentConfigPath(homeDir)
