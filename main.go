@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
 	"github.com/IceRhymers/databricks-claude/pkg/portbind"
@@ -262,25 +264,27 @@ func main() {
 	}
 	proxyURL := fmt.Sprintf("%s://127.0.0.1:%d", scheme, listenerPort(ln, port))
 
-	// --- Start proxy if we own the port ---
+	// --- Build proxy handler (needed by both owner and watchProxy) ---
+	proxyConfig := &ProxyConfig{
+		InferenceUpstream: inferenceUpstream,
+		OTELUpstream:      otelUpstream,
+		UCMetricsTable:    ucMetricsTable,
+		UCLogsTable:       ucLogsTable,
+		TokenProvider:     tp,
+		Verbose:           verbose,
+		APIKey:            proxyAPIKey,
+		TLSCertFile:       tlsCert,
+		TLSKeyFile:        tlsKey,
+		ToolName:          "databricks-claude",
+		Version:           Version,
+	}
+	if proxyAPIKey != "" {
+		fmt.Fprintln(os.Stderr, "databricks-claude: proxy API key authentication enabled")
+	}
+	handler := NewProxyServer(proxyConfig)
+
+	// --- Start proxy if we own the port; otherwise watch for owner death ---
 	if isOwner {
-		proxyConfig := &ProxyConfig{
-			InferenceUpstream: inferenceUpstream,
-			OTELUpstream:      otelUpstream,
-			UCMetricsTable:    ucMetricsTable,
-			UCLogsTable:       ucLogsTable,
-			TokenProvider:     tp,
-			Verbose:           verbose,
-			APIKey:            proxyAPIKey,
-			TLSCertFile:       tlsCert,
-			TLSKeyFile:        tlsKey,
-			ToolName:          "databricks-claude",
-			Version:           Version,
-		}
-		if proxyAPIKey != "" {
-			fmt.Fprintln(os.Stderr, "databricks-claude: proxy API key authentication enabled")
-		}
-		handler := NewProxyServer(proxyConfig)
 		go func() {
 			srv := &http.Server{Handler: handler}
 			if tlsCert != "" && tlsKey != "" {
@@ -293,17 +297,16 @@ func main() {
 				}
 			}
 		}()
+	} else {
+		// Watch for owner death and take over the proxy if needed.
+		go watchProxy(port, handler, tlsCert, tlsKey)
 	}
 
 	// --- Reference counting ---
 	refcountPath := filepath.Join(os.TempDir(), fmt.Sprintf(".databricks-claude-sessions-%d", port))
-	refcount.Acquire(refcountPath)
-	defer func() {
-		n, _ := refcount.Release(refcountPath)
-		if n == 0 && isOwner {
-			ln.Close()
-		}
-	}()
+	if err := refcount.Acquire(refcountPath); err != nil {
+		log.Printf("databricks-claude: refcount acquire warning: %v", err)
+	}
 
 	// --- Write config once (idempotent) ---
 	otelEnabled := otel || otelConfigured
@@ -346,6 +349,17 @@ func main() {
 	exitCode, err := RunChild(context.Background(), claudeArgs)
 	if err != nil {
 		log.Printf("databricks-claude: child error: %v", err)
+	}
+
+	// --- Release refcount; if last session and owner, close listener ---
+	// Called explicitly because os.Exit skips defers.
+	remaining, relErr := refcount.Release(refcountPath)
+	if relErr != nil {
+		log.Printf("databricks-claude: refcount release warning: %v", relErr)
+	}
+	if remaining == 0 && isOwner {
+		ln.Close()
+		log.Printf("databricks-claude: last session, proxy shut down")
 	}
 
 	os.Exit(exitCode)
@@ -675,6 +689,52 @@ func writePersistentConfig(path string, cfg map[string]interface{}) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// proxyHealthy checks whether the proxy on the given port is responding.
+func proxyHealthy(port int, scheme string) bool {
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	if scheme == "https" {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+	resp, err := client.Get(fmt.Sprintf("%s://127.0.0.1:%d/health", scheme, port))
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// watchProxy polls the proxy health endpoint and takes over the port if the
+// owner process dies. Runs as a goroutine for non-owner sessions.
+func watchProxy(port int, handler http.Handler, tlsCert, tlsKey string) {
+	scheme := "http"
+	if tlsCert != "" && tlsKey != "" {
+		scheme = "https"
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if proxyHealthy(port, scheme) {
+			continue
+		}
+
+		// Proxy is unreachable — try to bind the port and take over.
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue // another session grabbed it first
+		}
+		if _, err := proxy.Serve(ln, handler, tlsCert, tlsKey); err != nil {
+			ln.Close()
+			continue
+		}
+		log.Printf("databricks-claude: proxy owner died, took over on :%d", port)
+		return
+	}
 }
 
 // deriveLogsTable derives the OTEL logs table name from the metrics table name.
