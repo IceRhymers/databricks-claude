@@ -7,13 +7,18 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
+	"github.com/IceRhymers/databricks-claude/pkg/portbind"
 	"github.com/IceRhymers/databricks-claude/pkg/proxy"
+	"github.com/IceRhymers/databricks-claude/pkg/refcount"
 )
 
 // Version is set at build time via -ldflags.
@@ -23,7 +28,7 @@ func main() {
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
-	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, claudeArgs := parseArgs(os.Args[1:])
+	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, portFlag, claudeArgs := parseArgs(os.Args[1:])
 
 	if showHelp {
 		handleHelp(upstream)
@@ -41,8 +46,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("databricks-claude: cannot determine home dir: %v", err)
 		}
-		sm := NewSettingsManager(filepath.Join(homeDir, ".claude", "settings.json"))
-		if err := sm.ClearOTELKeys(); err != nil {
+		settingsPathForClear := filepath.Join(homeDir, ".claude", "settings.json")
+		if err := clearOTELKeys(settingsPathForClear); err != nil {
 			log.Fatalf("databricks-claude: failed to clear OTEL keys: %v", err)
 		}
 		fmt.Fprintln(os.Stderr, "databricks-claude: OTEL keys cleared — OTEL disabled for future sessions")
@@ -231,74 +236,123 @@ func main() {
 		log.Fatalf("databricks-claude: %v", err)
 	}
 
-	// --- Start proxy ---
-	proxyConfig := &ProxyConfig{
-		InferenceUpstream: inferenceUpstream,
-		OTELUpstream:      otelUpstream,
-		UCMetricsTable:    ucMetricsTable,
-		UCLogsTable:       ucLogsTable,
-		TokenProvider:     tp,
-		Verbose:           verbose,
-		APIKey:            proxyAPIKey,
-		TLSCertFile:       tlsCert,
-		TLSKeyFile:        tlsKey,
-	}
-	if proxyAPIKey != "" {
-		fmt.Fprintln(os.Stderr, "databricks-claude: proxy API key authentication enabled")
-	}
-	handler := NewProxyServer(proxyConfig)
-	listener, err := StartProxy(proxyConfig, handler)
+	// --- Load persistent state and resolve port ---
+	state, err := loadState()
 	if err != nil {
-		log.Fatalf("databricks-claude: failed to start proxy: %v", err)
+		log.Printf("databricks-claude: warning: failed to load state: %v", err)
+		state = &persistentState{}
 	}
+
+	port := resolvePort(portFlag, state)
+	if portFlag > 0 {
+		state.Port = port
+		if err := saveState(state); err != nil {
+			log.Printf("databricks-claude: warning: failed to save state: %v", err)
+		}
+	}
+
+	// Persist profile so future runs don't need --profile.
+	if resolvedProfile != "DEFAULT" {
+		state.Profile = resolvedProfile
+		if err := saveState(state); err != nil {
+			log.Printf("databricks-claude: warning: failed to persist profile: %v", err)
+		} else {
+			log.Printf("databricks-claude: persisted profile %q", resolvedProfile)
+		}
+	}
+
+	// --- Bind proxy port ---
+	ln, isOwner, err := portbind.Bind("databricks-claude", port)
+	if err != nil {
+		log.Fatalf("databricks-claude: %v", err)
+	}
+
 	scheme := "http"
 	if tlsCert != "" && tlsKey != "" {
 		scheme = "https"
 		fmt.Fprintln(os.Stderr, "databricks-claude: TLS enabled")
 	}
-	proxyURL := scheme + "://" + listener.Addr().String()
+	proxyURL := fmt.Sprintf("%s://127.0.0.1:%d", scheme, listenerPort(ln, port))
 
-	// --- Patch settings.json ---
-	sm := NewSettingsManager(settingsPath)
+	// --- Start proxy if we own the port ---
+	if isOwner {
+		proxyConfig := &ProxyConfig{
+			InferenceUpstream: inferenceUpstream,
+			OTELUpstream:      otelUpstream,
+			UCMetricsTable:    ucMetricsTable,
+			UCLogsTable:       ucLogsTable,
+			TokenProvider:     tp,
+			Verbose:           verbose,
+			APIKey:            proxyAPIKey,
+			TLSCertFile:       tlsCert,
+			TLSKeyFile:        tlsKey,
+			ToolName:          "databricks-claude",
+			Version:           Version,
+		}
+		if proxyAPIKey != "" {
+			fmt.Fprintln(os.Stderr, "databricks-claude: proxy API key authentication enabled")
+		}
+		handler := NewProxyServer(proxyConfig)
+		go func() {
+			srv := &http.Server{Handler: handler}
+			if tlsCert != "" && tlsKey != "" {
+				if err := srv.ServeTLS(ln, tlsCert, tlsKey); err != nil && err != http.ErrServerClosed {
+					log.Printf("databricks-claude: proxy serve error: %v", err)
+				}
+			} else {
+				if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+					log.Printf("databricks-claude: proxy serve error: %v", err)
+				}
+			}
+		}()
+	}
+
+	// --- Reference counting ---
+	refcountPath := filepath.Join(os.TempDir(), fmt.Sprintf(".databricks-claude-sessions-%d", port))
+	refcount.Acquire(refcountPath)
+	defer func() {
+		n, _ := refcount.Release(refcountPath)
+		if n == 0 && isOwner {
+			ln.Close()
+		}
+	}()
+
+	// --- Write config once (idempotent) ---
 	otelEnabled := otel || otelConfigured
+	otelEnv := map[string]string{}
 	if otelEnabled {
-		sm.SetOTELPersistent(true)
+		otelEnv["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] = proxyURL + "/otel/v1/metrics"
+		otelEnv["OTEL_EXPORTER_OTLP_METRICS_HEADERS"] = "content-type=application/x-protobuf"
+		otelEnv["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
+		otelEnv["OTEL_METRICS_EXPORTER"] = "otlp"
+		otelEnv["OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"] = "http/protobuf"
+		otelEnv["OTEL_METRIC_EXPORT_INTERVAL"] = "10000"
+		otelEnv["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = proxyURL + "/otel/v1/logs"
+		otelEnv["OTEL_EXPORTER_OTLP_LOGS_HEADERS"] = "content-type=application/x-protobuf"
+		otelEnv["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] = "http/protobuf"
+		otelEnv["OTEL_LOGS_EXPORTER"] = "otlp"
+		otelEnv["OTEL_LOGS_EXPORT_INTERVAL"] = "5000"
+		otelEnv["CLAUDE_OTEL_UC_METRICS_TABLE"] = ucMetricsTable
+		otelEnv["CLAUDE_OTEL_UC_LOGS_TABLE"] = ucLogsTable
 	}
 	if needsFullSetup {
-		if err := sm.FullSetup(FullSetupConfig{
-			ProxyURL:    proxyURL,
-			Token:       initialToken,
-			Host:        databricksHost,
-			Profile:     resolvedProfile,
-			UpstreamURL: inferenceUpstream,
-			OTELEnabled:     otelEnabled,
-			OTELMetricsTable: ucMetricsTable,
-			OTELLogsTable:    ucLogsTable,
-		}); err != nil {
-			log.Fatalf("databricks-claude: failed to write settings.json: %v", err)
-		}
-		log.Printf("databricks-claude: self-setup complete — profile=%s, host=%s, gateway=%s",
-			resolvedProfile, databricksHost, inferenceUpstream)
-
-		// Persist profile so future runs don't need --profile.
-		if resolvedProfile != "DEFAULT" {
-			pcPath := persistentConfigPath(homeDir)
-			pc, _ := readPersistentConfig(pcPath)
-			pc["profile"] = resolvedProfile
-			if err := writePersistentConfig(pcPath, pc); err != nil {
-				log.Printf("databricks-claude: warning: failed to persist profile: %v", err)
-			} else {
-				log.Printf("databricks-claude: persisted profile %q to %s", resolvedProfile, pcPath)
-			}
-		}
-	} else {
-		if err := sm.SaveAndOverwrite(proxyURL); err != nil {
-			log.Fatalf("databricks-claude: failed to patch settings.json: %v", err)
-		}
+		// Also write Databricks-specific keys for full setup.
+		otelEnv["DATABRICKS_HOST"] = databricksHost
+		otelEnv["DATABRICKS_CONFIG_PROFILE"] = resolvedProfile
+		otelEnv["ANTHROPIC_DEFAULT_OPUS_MODEL"] = "databricks-claude-opus-4-6"
+		otelEnv["ANTHROPIC_DEFAULT_SONNET_MODEL"] = "databricks-claude-sonnet-4-6"
+		otelEnv["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = "databricks-claude-haiku-4-5"
+		otelEnv["ANTHROPIC_CUSTOM_HEADERS"] = "x-databricks-use-coding-agent-mode: true"
+		otelEnv["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
 	}
+
+	if err := ensureConfig(proxyURL, otelEnv); err != nil {
+		log.Fatalf("databricks-claude: %v", err)
+	}
+
 	// --- Log startup info ---
-	log.Printf("databricks-claude: proxy listening on %s, profile=%s, upstream=%s",
-		listener.Addr().String(), resolvedProfile, inferenceUpstream)
+	log.Printf("databricks-claude: proxy on %s (owner=%v), profile=%s, upstream=%s",
+		proxyURL, isOwner, resolvedProfile, inferenceUpstream)
 
 	// --- Run child ---
 	exitCode, err := RunChild(context.Background(), claudeArgs)
@@ -306,15 +360,19 @@ func main() {
 		log.Printf("databricks-claude: child error: %v", err)
 	}
 
-	// Restore settings.json explicitly before exit. This MUST be a direct call,
-	// not a defer — os.Exit skips all deferred functions and would leave
-	// settings.json pointing at our now-dead proxy, breaking any surviving
-	// concurrent sessions.
-	if err := sm.Restore(); err != nil {
-		log.Printf("databricks-claude: warning: failed to restore settings.json: %v", err)
-	}
-
 	os.Exit(exitCode)
+}
+
+// listenerPort extracts the port from a net.Listener, falling back to the
+// configured port if the listener is nil (e.g., non-owner case).
+func listenerPort(ln net.Listener, fallback int) int {
+	if ln == nil {
+		return fallback
+	}
+	if addr, ok := ln.Addr().(*net.TCPAddr); ok {
+		return addr.Port
+	}
+	return fallback
 }
 
 // readSettingsDoc reads and parses settings.json, returning the full document.
@@ -344,7 +402,7 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 // databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-metrics-table, --otel-logs-table, --no-otel, --proxy-api-key, --tls-cert, --tls-key.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, claudeArgs []string) {
+func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, portFlag int, claudeArgs []string) {
 	otelMetricsTable = "main.claude_telemetry.claude_otel_metrics" // default
 
 	knownFlags := map[string]bool{
@@ -362,6 +420,7 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 		"--proxy-api-key":     true,
 		"--tls-cert":          true,
 		"--tls-key":           true,
+		"--port":              true,
 	}
 
 	i := 0
@@ -470,6 +529,13 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 						i++
 						tlsKey = args[i]
 					}
+				case "--port":
+					if value != "" {
+						portFlag, _ = strconv.Atoi(value)
+					} else if i+1 < len(args) {
+						i++
+						portFlag, _ = strconv.Atoi(args[i])
+					}
 				}
 				i++
 				continue
@@ -506,6 +572,7 @@ Databricks-Claude Flags:
   --proxy-api-key string       Require Bearer token auth on all proxy requests
   --tls-cert string            Path to TLS certificate file (requires --tls-key)
   --tls-key string             Path to TLS private key file (requires --tls-cert)
+  --port int                   Fixed proxy port (default: 49153, saved to state)
   --version                    Print version and exit
   --help, -h                   Show this help message
 

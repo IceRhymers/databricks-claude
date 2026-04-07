@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"net/http/httputil"
 	"net/url"
 	"strings"
@@ -39,6 +41,10 @@ type Config struct {
 	UCLogsTable    string
 	TokenSource    TokenSource
 	Verbose        bool
+	// ToolName identifies this proxy in /health responses (e.g. "databricks-claude").
+	ToolName string
+	// Version is the build version reported by /health.
+	Version string
 	// APIKey, when non-empty, requires all incoming requests to present
 	// Authorization: Bearer <APIKey>. Leave empty to disable auth.
 	APIKey string
@@ -386,6 +392,16 @@ func NewServer(config *Config) http.Handler {
 		FlushInterval: -1,
 	}
 
+	// Health endpoint — used by portbind to detect an existing proxy for this tool.
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"tool":    config.ToolName,
+			"version": config.Version,
+			"pid":     os.Getpid(),
+		})
+	})
+
 	mux.Handle("/otel/", RecoveryHandler(otelProxy))
 	mux.Handle("/", RecoveryHandler(inferenceHandler))
 
@@ -410,7 +426,13 @@ func Start(handler http.Handler, certFile, keyFile string) (net.Listener, error)
 	if err != nil {
 		return nil, err
 	}
+	return Serve(l, handler, certFile, keyFile)
+}
 
+// Serve starts the proxy on an existing listener. The listener is wrapped in a
+// TLS listener when certFile and keyFile are both non-empty. Returns the
+// (possibly wrapped) listener that is actively serving.
+func Serve(l net.Listener, handler http.Handler, certFile, keyFile string) (net.Listener, error) {
 	useTLS := certFile != "" && keyFile != ""
 
 	if useTLS {
