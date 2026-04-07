@@ -426,7 +426,13 @@ func Start(handler http.Handler, certFile, keyFile string) (net.Listener, error)
 	if err != nil {
 		return nil, err
 	}
+	return Serve(l, handler, certFile, keyFile)
+}
 
+// Serve starts the proxy on an existing listener. The listener is wrapped in a
+// TLS listener when certFile and keyFile are both non-empty. Returns the
+// (possibly wrapped) listener that is actively serving.
+func Serve(l net.Listener, handler http.Handler, certFile, keyFile string) (net.Listener, error) {
 	useTLS := certFile != "" && keyFile != ""
 
 	if useTLS {

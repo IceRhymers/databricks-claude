@@ -46,8 +46,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("databricks-claude: cannot determine home dir: %v", err)
 		}
-		sm := NewSettingsManager(filepath.Join(homeDir, ".claude", "settings.json"))
-		if err := sm.ClearOTELKeys(); err != nil {
+		settingsPathForClear := filepath.Join(homeDir, ".claude", "settings.json")
+		if err := clearOTELKeys(settingsPathForClear); err != nil {
 			log.Fatalf("databricks-claude: failed to clear OTEL keys: %v", err)
 		}
 		fmt.Fprintln(os.Stderr, "databricks-claude: OTEL keys cleared — OTEL disabled for future sessions")
@@ -286,6 +286,8 @@ func main() {
 			APIKey:            proxyAPIKey,
 			TLSCertFile:       tlsCert,
 			TLSKeyFile:        tlsKey,
+			ToolName:          "databricks-claude",
+			Version:           Version,
 		}
 		if proxyAPIKey != "" {
 			fmt.Fprintln(os.Stderr, "databricks-claude: proxy API key authentication enabled")
