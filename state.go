@@ -11,7 +11,6 @@ import (
 // This file survives config restores and persists across sessions.
 type persistentState struct {
 	Profile string `json:"profile,omitempty"`
-	Model   string `json:"model,omitempty"`
 	Port    int    `json:"port,omitempty"`
 }
 
@@ -29,20 +28,6 @@ func resolvePort(portFlag int, state persistentState) int {
 		return state.Port
 	}
 	return defaultPort
-}
-
-// resolveModel returns the model to use, following the resolution chain:
-// 1. --model flag (non-empty)
-// 2. Saved state value (non-empty)
-// 3. Default "" (no override)
-func resolveModel(flagVal string, state persistentState) string {
-	if flagVal != "" {
-		return flagVal
-	}
-	if state.Model != "" {
-		return state.Model
-	}
-	return ""
 }
 
 // statePath returns the path to the persistent state file.

@@ -64,46 +64,6 @@ func TestSaveState_OverwritesPrevious(t *testing.T) {
 	}
 }
 
-func TestSaveAndLoadState_Model(t *testing.T) {
-	dir := t.TempDir()
-	orig := statePath
-	statePath = func() string { return filepath.Join(dir, "state.json") }
-	defer func() { statePath = orig }()
-
-	if err := saveState(persistentState{Model: "databricks-claude-sonnet-4-6"}); err != nil {
-		t.Fatalf("saveState: %v", err)
-	}
-
-	s := loadState()
-	if s.Model != "databricks-claude-sonnet-4-6" {
-		t.Errorf("got Model %q, want %q", s.Model, "databricks-claude-sonnet-4-6")
-	}
-}
-
-func TestSaveState_ModelPreservesOtherFields(t *testing.T) {
-	dir := t.TempDir()
-	orig := statePath
-	statePath = func() string { return filepath.Join(dir, "state.json") }
-	defer func() { statePath = orig }()
-
-	saveState(persistentState{Profile: "aidev", Port: 9999})
-
-	s := loadState()
-	s.Model = "custom-model"
-	saveState(s)
-
-	s = loadState()
-	if s.Profile != "aidev" {
-		t.Errorf("got Profile %q, want %q", s.Profile, "aidev")
-	}
-	if s.Port != 9999 {
-		t.Errorf("got Port %d, want %d", s.Port, 9999)
-	}
-	if s.Model != "custom-model" {
-		t.Errorf("got Model %q, want %q", s.Model, "custom-model")
-	}
-}
-
 func TestSaveAndLoadState_Port(t *testing.T) {
 	dir := t.TempDir()
 	orig := statePath
@@ -137,28 +97,6 @@ func TestResolvePort(t *testing.T) {
 			got := resolvePort(tc.portFlag, tc.state)
 			if got != tc.want {
 				t.Errorf("resolvePort(%d, %+v) = %d, want %d", tc.portFlag, tc.state, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestResolveModel(t *testing.T) {
-	tests := []struct {
-		name    string
-		flagVal string
-		state   persistentState
-		want    string
-	}{
-		{"flag wins over state", "flag-model", persistentState{Model: "state-model"}, "flag-model"},
-		{"state wins over default", "", persistentState{Model: "state-model"}, "state-model"},
-		{"empty when no flag and no state", "", persistentState{}, ""},
-		{"flag wins over empty state", "flag-model", persistentState{}, "flag-model"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := resolveModel(tc.flagVal, tc.state)
-			if got != tc.want {
-				t.Errorf("resolveModel(%q, %+v) = %q, want %q", tc.flagVal, tc.state, got, tc.want)
 			}
 		})
 	}
