@@ -134,6 +134,45 @@ databricks-claude --headless
 - **`POST /shutdown`** — decrements the session refcount; when it reaches 0, the proxy exits. Returns `{"remaining": N, "exiting": true/false}`
 - **Idle timeout** — after 30 minutes with no proxied requests, the proxy shuts down automatically. Configure with `--idle-timeout <duration>` (e.g. `10m`, `1h`). Use `--idle-timeout 0` to disable.
 
+## Session Hooks (automatic proxy lifecycle)
+
+Install hooks so every Claude Code session auto-starts the proxy on startup and releases it cleanly on exit — no manual `--headless` needed.
+
+### Install
+
+```bash
+databricks-claude --install-hooks
+```
+
+This merges two hooks into `~/.claude/settings.json`:
+
+- **SessionStart** — calls `databricks-claude --headless-ensure` on session startup: starts the proxy if it isn't already running
+- **Stop** — calls `databricks-claude --headless-release` on session end: decrements the refcount; proxy exits when the last session closes
+
+### Uninstall
+
+```bash
+databricks-claude --uninstall-hooks
+```
+
+Removes only the databricks-claude hook entries. Other hooks in your settings are untouched.
+
+### Notes
+
+- Idempotent — safe to re-run after upgrades
+- The proxy starts on the configured port (default `49153`). If you use a custom port via `--port`, the hooks will respect that setting automatically (port is saved to the state file)
+- Unclean exits (force-quit, OOM kill) are covered by the idle timeout — the proxy self-exits after 30 minutes with no inference traffic
+
+### Claude Code Plugin (for repo users)
+
+If you work directly in the `databricks-claude` repo or install via a plugin marketplace, hooks are also available as a Claude Code plugin:
+
+```bash
+claude --plugin-dir /path/to/databricks-claude
+```
+
+The `.claude-plugin/` directory and `hooks/hooks.json` at the repo root define the plugin.
+
 ## Profile Resolution Order
 
 1. `--profile` CLI flag (writes to state file for future runs)
