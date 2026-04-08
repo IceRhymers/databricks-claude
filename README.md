@@ -49,6 +49,7 @@ echo 'alias claude="databricks-claude"' >> ~/.zshrc  # or ~/.bashrc
 - Go 1.22+
 - [Databricks CLI](https://docs.databricks.com/dev-tools/cli/databricks-cli.html) installed and authenticated (`databricks auth login`)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
+- A Databricks Model Serving endpoint with [AI Gateway](https://docs.databricks.com/aws/en/ai-gateway/) enabled (currently in public Beta)
 
 ## Usage
 
