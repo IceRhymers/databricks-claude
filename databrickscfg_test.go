@@ -9,14 +9,15 @@ func TestParseDatabricksCfgHost(t *testing.T) {
 	cfg := `
 [DEFAULT]
 host = https://default.azuredatabricks.net
-token = abc123
+auth_type = databricks-cli
 
 [prod]
 host = https://prod.azuredatabricks.net
-token = xyz789
+auth_type = databricks-cli
 
 [staging]
 host  =  https://staging.azuredatabricks.net
+auth_type = databricks-cli
 `
 
 	tests := []struct {
@@ -42,7 +43,7 @@ host  =  https://staging.azuredatabricks.net
 func TestParseDatabricksCfgHost_NoHostKey(t *testing.T) {
 	cfg := `
 [myprofile]
-token = abc123
+auth_type = databricks-cli
 `
 	got := parseDatabricksCfgHost(strings.NewReader(cfg), "myprofile")
 	if got != "" {
