@@ -128,7 +128,4 @@ var otelEnvKeys = []string{
 	"OTEL_LOGS_EXPORT_INTERVAL",
 	"CLAUDE_OTEL_UC_METRICS_TABLE",
 	"CLAUDE_OTEL_UC_LOGS_TABLE",
-	// Migration: remove Databricks env vars that were previously cached in settings.json.
-	"DATABRICKS_HOST",
-	"DATABRICKS_CONFIG_PROFILE",
 }
