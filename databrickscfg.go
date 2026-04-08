@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,10 +20,15 @@ func readDatabricksCfgHost(profile string) string {
 		return ""
 	}
 	defer f.Close()
+	return parseDatabricksCfgHost(f, profile)
+}
 
+// parseDatabricksCfgHost parses an INI-formatted Databricks config and returns
+// the host value for the given profile. Returns empty string if not found.
+func parseDatabricksCfgHost(r io.Reader, profile string) string {
 	target := "[" + profile + "]"
 	inSection := false
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "[") {
