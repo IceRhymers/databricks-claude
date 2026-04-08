@@ -6,16 +6,21 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/IceRhymers/databricks-claude/pkg/refcount"
 )
 
 // --- parseArgs tests ---
 
 func TestParseArgs_HelpLong(t *testing.T) {
-	profile, verbose, version, showHelp, printEnv, otel, _, _, _, _, upstream, logFile, noOtel, _, _, _, _, _, claudeArgs := parseArgs([]string{"--help"})
+	profile, verbose, version, showHelp, printEnv, otel, _, _, _, _, upstream, logFile, noOtel, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--help"})
 	if !showHelp {
 		t.Error("expected showHelp=true for --help")
 	}
@@ -25,77 +30,77 @@ func TestParseArgs_HelpLong(t *testing.T) {
 }
 
 func TestParseArgs_HelpShort(t *testing.T) {
-	_, _, _, showHelp, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"-h"})
+	_, _, _, showHelp, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"-h"})
 	if !showHelp {
 		t.Error("expected showHelp=true for -h")
 	}
 }
 
 func TestParseArgs_PrintEnv(t *testing.T) {
-	_, _, _, _, printEnv, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--print-env"})
+	_, _, _, _, printEnv, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--print-env"})
 	if !printEnv {
 		t.Error("expected printEnv=true for --print-env")
 	}
 }
 
 func TestParseArgs_Version(t *testing.T) {
-	_, _, version, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--version"})
+	_, _, version, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--version"})
 	if !version {
 		t.Error("expected version=true for --version")
 	}
 }
 
 func TestParseArgs_Verbose(t *testing.T) {
-	_, verbose, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--verbose"})
+	_, verbose, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--verbose"})
 	if !verbose {
 		t.Error("expected verbose=true for --verbose")
 	}
 }
 
 func TestParseArgs_VerboseShort(t *testing.T) {
-	_, verbose, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"-v"})
+	_, verbose, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"-v"})
 	if !verbose {
 		t.Error("expected verbose=true for -v")
 	}
 }
 
 func TestParseArgs_LogFile(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, logFile, _, _, _, _, _, _, _ := parseArgs([]string{"--log-file", "/tmp/test.log"})
+	_, _, _, _, _, _, _, _, _, _, _, logFile, _, _, _, _, _, _, _, _ := parseArgs([]string{"--log-file", "/tmp/test.log"})
 	if logFile != "/tmp/test.log" {
 		t.Errorf("expected logFile=%q, got %q", "/tmp/test.log", logFile)
 	}
 }
 
 func TestParseArgs_LogFileEquals(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, logFile, _, _, _, _, _, _, _ := parseArgs([]string{"--log-file=/tmp/test.log"})
+	_, _, _, _, _, _, _, _, _, _, _, logFile, _, _, _, _, _, _, _, _ := parseArgs([]string{"--log-file=/tmp/test.log"})
 	if logFile != "/tmp/test.log" {
 		t.Errorf("expected logFile=%q, got %q", "/tmp/test.log", logFile)
 	}
 }
 
 func TestParseArgs_Profile(t *testing.T) {
-	profile, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--profile", "foo"})
+	profile, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--profile", "foo"})
 	if profile != "foo" {
 		t.Errorf("expected profile=%q, got %q", "foo", profile)
 	}
 }
 
 func TestParseArgs_Upstream(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, upstream, _, _, _, _, _, _, _, _ := parseArgs([]string{"--upstream", "/path/to/claude"})
+	_, _, _, _, _, _, _, _, _, _, upstream, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--upstream", "/path/to/claude"})
 	if upstream != "/path/to/claude" {
 		t.Errorf("expected upstream=%q, got %q", "/path/to/claude", upstream)
 	}
 }
 
 func TestParseArgs_Otel(t *testing.T) {
-	_, _, _, _, _, otel, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
+	_, _, _, _, _, otel, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
 	if !otel {
 		t.Error("expected otel=true for --otel")
 	}
 }
 
 func TestParseArgs_OtelMetricsTableOverride(t *testing.T) {
-	_, _, _, _, _, _, metricsTable, metricsTableSet, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-metrics-table", "main.default.otel"})
+	_, _, _, _, _, _, metricsTable, metricsTableSet, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-metrics-table", "main.default.otel"})
 	if !metricsTableSet {
 		t.Error("expected metricsTableSet=true when --otel-metrics-table is passed")
 	}
@@ -105,7 +110,7 @@ func TestParseArgs_OtelMetricsTableOverride(t *testing.T) {
 }
 
 func TestParseArgs_OtelMetricsTableDefault(t *testing.T) {
-	_, _, _, _, _, _, metricsTable, metricsTableSet, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
+	_, _, _, _, _, _, metricsTable, metricsTableSet, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
 	if metricsTableSet {
 		t.Error("expected metricsTableSet=false when --otel-metrics-table is not passed")
 	}
@@ -115,7 +120,7 @@ func TestParseArgs_OtelMetricsTableDefault(t *testing.T) {
 }
 
 func TestParseArgs_OtelMetricsTableEquals(t *testing.T) {
-	_, _, _, _, _, _, metricsTable, metricsTableSet, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-metrics-table=my.catalog.table"})
+	_, _, _, _, _, _, metricsTable, metricsTableSet, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-metrics-table=my.catalog.table"})
 	if !metricsTableSet {
 		t.Error("expected metricsTableSet=true for --otel-metrics-table=value")
 	}
@@ -125,7 +130,7 @@ func TestParseArgs_OtelMetricsTableEquals(t *testing.T) {
 }
 
 func TestParseArgs_OtelLogsTableOverride(t *testing.T) {
-	_, _, _, _, _, _, _, _, logsTable, logsTableSet, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-logs-table", "main.default.my_logs"})
+	_, _, _, _, _, _, _, _, logsTable, logsTableSet, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-logs-table", "main.default.my_logs"})
 	if !logsTableSet {
 		t.Error("expected logsTableSet=true when --otel-logs-table is passed")
 	}
@@ -135,7 +140,7 @@ func TestParseArgs_OtelLogsTableOverride(t *testing.T) {
 }
 
 func TestParseArgs_OtelLogsTableDefault(t *testing.T) {
-	_, _, _, _, _, _, _, _, logsTable, logsTableSet, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
+	_, _, _, _, _, _, _, _, logsTable, logsTableSet, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
 	if logsTableSet {
 		t.Error("expected logsTableSet=false when --otel-logs-table is not passed")
 	}
@@ -145,7 +150,7 @@ func TestParseArgs_OtelLogsTableDefault(t *testing.T) {
 }
 
 func TestParseArgs_OtelLogsTableEquals(t *testing.T) {
-	_, _, _, _, _, _, _, _, logsTable, logsTableSet, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-logs-table=my.catalog.logs"})
+	_, _, _, _, _, _, _, _, logsTable, logsTableSet, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-logs-table=my.catalog.logs"})
 	if !logsTableSet {
 		t.Error("expected logsTableSet=true for --otel-logs-table=value")
 	}
@@ -155,7 +160,7 @@ func TestParseArgs_OtelLogsTableEquals(t *testing.T) {
 }
 
 func TestParseArgs_BothOtelTables(t *testing.T) {
-	_, _, _, _, _, _, metricsTable, metricsSet, logsTable, logsSet, _, _, _, _, _, _, _, _, _ := parseArgs([]string{
+	_, _, _, _, _, _, metricsTable, metricsSet, logsTable, logsSet, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{
 		"--otel-metrics-table", "cat.schema.metrics",
 		"--otel-logs-table", "cat.schema.logs",
 	})
@@ -171,14 +176,14 @@ func TestParseArgs_BothOtelTables(t *testing.T) {
 }
 
 func TestParseArgs_UnknownFlagPassthrough(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--unknown"})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--unknown"})
 	if len(claudeArgs) != 1 || claudeArgs[0] != "--unknown" {
 		t.Errorf("expected claudeArgs=[\"--unknown\"], got %v", claudeArgs)
 	}
 }
 
 func TestParseArgs_EmptyArgs(t *testing.T) {
-	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, _, _, _, upstream, logFile, noOtel, _, _, _, _, _, claudeArgs := parseArgs([]string{})
+	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, _, _, _, upstream, logFile, noOtel, _, _, _, _, _, _, claudeArgs := parseArgs([]string{})
 	if profile != "" {
 		t.Errorf("expected empty profile, got %q", profile)
 	}
@@ -201,7 +206,7 @@ func TestParseArgs_EmptyArgs(t *testing.T) {
 }
 
 func TestParseArgs_Mixed(t *testing.T) {
-	profile, verbose, _, showHelp, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--profile", "prod", "--verbose", "--help"})
+	profile, verbose, _, showHelp, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--profile", "prod", "--verbose", "--help"})
 	if !showHelp {
 		t.Error("expected showHelp=true")
 	}
@@ -214,14 +219,14 @@ func TestParseArgs_Mixed(t *testing.T) {
 }
 
 func TestParseArgs_Headless(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, headless, _ := parseArgs([]string{"--headless"})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, headless, _, _ := parseArgs([]string{"--headless"})
 	if !headless {
 		t.Error("expected headless=true for --headless")
 	}
 }
 
 func TestParseArgs_HeadlessWithOtherFlags(t *testing.T) {
-	_, verbose, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, headless, _ := parseArgs([]string{"--headless", "--verbose"})
+	_, verbose, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, headless, _, _ := parseArgs([]string{"--headless", "--verbose"})
 	if !headless {
 		t.Error("expected headless=true")
 	}
@@ -231,7 +236,7 @@ func TestParseArgs_HeadlessWithOtherFlags(t *testing.T) {
 }
 
 func TestParseArgs_NoOtel(t *testing.T) {
-	_, _, _, _, _, otel, _, _, _, _, _, _, noOtel, _, _, _, _, _, claudeArgs := parseArgs([]string{"--no-otel"})
+	_, _, _, _, _, otel, _, _, _, _, _, _, noOtel, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--no-otel"})
 	if !noOtel {
 		t.Error("expected noOtel=true for --no-otel")
 	}
@@ -244,7 +249,7 @@ func TestParseArgs_NoOtel(t *testing.T) {
 }
 
 func TestParseArgs_NoOtelAndOtel(t *testing.T) {
-	_, _, _, _, _, otel, _, _, _, _, _, _, noOtel, _, _, _, _, _, _ := parseArgs([]string{"--no-otel", "--otel"})
+	_, _, _, _, _, otel, _, _, _, _, _, _, noOtel, _, _, _, _, _, _, _ := parseArgs([]string{"--no-otel", "--otel"})
 	if !noOtel {
 		t.Error("expected noOtel=true")
 	}
@@ -254,7 +259,7 @@ func TestParseArgs_NoOtelAndOtel(t *testing.T) {
 }
 
 func TestParseArgs_NoOtelWithPassthrough(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, _, noOtel, _, _, _, _, _, claudeArgs := parseArgs([]string{"--no-otel", "somearg"})
+	_, _, _, _, _, _, _, _, _, _, _, _, noOtel, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--no-otel", "somearg"})
 	if !noOtel {
 		t.Error("expected noOtel=true")
 	}
@@ -264,7 +269,7 @@ func TestParseArgs_NoOtelWithPassthrough(t *testing.T) {
 }
 
 func TestParseArgs_OtelUnaffectedByNoOtel(t *testing.T) {
-	_, _, _, _, _, otel, _, _, _, _, _, _, noOtel, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
+	_, _, _, _, _, otel, _, _, _, _, _, _, noOtel, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
 	if !otel {
 		t.Error("expected otel=true for --otel")
 	}
@@ -371,7 +376,7 @@ func TestParseArgs_Table(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			profile, verbose, version, showHelp, printEnv, otel, _, _, _, _, upstream, logFile, _, _, _, _, _, _, claudeArgs := parseArgs(tc.args)
+			profile, verbose, version, showHelp, printEnv, otel, _, _, _, _, upstream, logFile, _, _, _, _, _, _, _, claudeArgs := parseArgs(tc.args)
 
 			if profile != tc.want.profile {
 				t.Errorf("profile: got %q, want %q", profile, tc.want.profile)
@@ -542,7 +547,7 @@ func TestHandleHelp_AllFlagsPresent(t *testing.T) {
 	out := captureStdout(func() {
 		handleHelp("")
 	})
-	flags := []string{"--profile", "--upstream", "--verbose", "-v", "--log-file", "--otel", "--otel-metrics-table", "--otel-logs-table", "--headless", "--version", "--help"}
+	flags := []string{"--profile", "--upstream", "--verbose", "-v", "--log-file", "--otel", "--otel-metrics-table", "--otel-logs-table", "--headless", "--idle-timeout", "--version", "--help"}
 	for _, flag := range flags {
 		if !strings.Contains(out, flag) {
 			t.Errorf("expected help output to contain flag %q, got:\n%s", flag, out)
@@ -796,4 +801,239 @@ func TestProfileResolution_StateFileWins(t *testing.T) {
 			t.Fatalf("expected profile=%q, got %q", "DEFAULT", got)
 		}
 	})
+}
+
+// --- idle-timeout flag tests ---
+
+func TestParseArgs_IdleTimeoutDefault(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _ := parseArgs([]string{})
+	if idleTimeout != 30*time.Minute {
+		t.Errorf("expected default idleTimeout=30m, got %v", idleTimeout)
+	}
+}
+
+func TestParseArgs_IdleTimeoutCustom(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _ := parseArgs([]string{"--idle-timeout", "10m"})
+	if idleTimeout != 10*time.Minute {
+		t.Errorf("expected idleTimeout=10m, got %v", idleTimeout)
+	}
+}
+
+func TestParseArgs_IdleTimeoutZero(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _ := parseArgs([]string{"--idle-timeout", "0"})
+	if idleTimeout != 0 {
+		t.Errorf("expected idleTimeout=0, got %v", idleTimeout)
+	}
+}
+
+func TestParseArgs_IdleTimeoutEquals(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _ := parseArgs([]string{"--idle-timeout=5m"})
+	if idleTimeout != 5*time.Minute {
+		t.Errorf("expected idleTimeout=5m, got %v", idleTimeout)
+	}
+}
+
+func TestParseArgs_IdleTimeoutBareNumber(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _ := parseArgs([]string{"--idle-timeout", "1"})
+	if idleTimeout != 1*time.Minute {
+		t.Errorf("expected idleTimeout=1m for bare number '1', got %v", idleTimeout)
+	}
+}
+
+// --- /shutdown endpoint tests ---
+
+func TestShutdown_DecrementsRefcount(t *testing.T) {
+	refcountPath := filepath.Join(t.TempDir(), "refcount")
+
+	// Acquire twice to simulate two sessions.
+	if err := refcount.Acquire(refcountPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := refcount.Acquire(refcountPath); err != nil {
+		t.Fatal(err)
+	}
+
+	doneCh := make(chan struct{})
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := wrapWithLifecycle(inner, refcountPath, true, 0, "", doneCh)
+
+	// First shutdown: refcount goes from 2 to 1.
+	req := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var resp shutdownResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Remaining != 1 || resp.Exiting {
+		t.Errorf("expected remaining=1, exiting=false; got remaining=%d, exiting=%v", resp.Remaining, resp.Exiting)
+	}
+
+	// doneCh should still be open.
+	select {
+	case <-doneCh:
+		t.Fatal("doneCh should not be closed yet")
+	default:
+	}
+
+	// Second shutdown: refcount goes from 1 to 0, owner exits.
+	req2 := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	var resp2 shutdownResponse
+	if err := json.NewDecoder(rec2.Body).Decode(&resp2); err != nil {
+		t.Fatal(err)
+	}
+	if resp2.Remaining != 0 || !resp2.Exiting {
+		t.Errorf("expected remaining=0, exiting=true; got remaining=%d, exiting=%v", resp2.Remaining, resp2.Exiting)
+	}
+
+	// doneCh should be closed now.
+	select {
+	case <-doneCh:
+		// OK
+	case <-time.After(time.Second):
+		t.Fatal("doneCh should be closed after last shutdown")
+	}
+}
+
+func TestShutdown_MethodNotAllowed(t *testing.T) {
+	doneCh := make(chan struct{})
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	refcountPath := filepath.Join(t.TempDir(), "refcount")
+	handler := wrapWithLifecycle(inner, refcountPath, true, 0, "", doneCh)
+
+	req := httptest.NewRequest(http.MethodGet, "/shutdown", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rec.Code)
+	}
+}
+
+func TestShutdown_RequiresAPIKey(t *testing.T) {
+	doneCh := make(chan struct{})
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	refcountPath := filepath.Join(t.TempDir(), "refcount")
+	handler := wrapWithLifecycle(inner, refcountPath, true, 0, "my-secret-key", doneCh)
+
+	// No auth header → 401.
+	req := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 without auth, got %d", rec.Code)
+	}
+
+	// Wrong key → 401.
+	req2 := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	req2.Header.Set("Authorization", "Bearer wrong-key")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 with wrong key, got %d", rec2.Code)
+	}
+
+	// Correct key → 200.
+	if err := refcount.Acquire(refcountPath); err != nil {
+		t.Fatal(err)
+	}
+	req3 := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	req3.Header.Set("Authorization", "Bearer my-secret-key")
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusOK {
+		t.Errorf("expected 200 with correct key, got %d", rec3.Code)
+	}
+}
+
+func TestShutdown_PassesThrough(t *testing.T) {
+	var gotPath string
+	doneCh := make(chan struct{})
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	})
+	refcountPath := filepath.Join(t.TempDir(), "refcount")
+	handler := wrapWithLifecycle(inner, refcountPath, true, 0, "", doneCh)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/messages", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if gotPath != "/v1/messages" {
+		t.Errorf("expected inner handler to receive /v1/messages, got %q", gotPath)
+	}
+}
+
+// --- idle timeout tests ---
+
+func TestIdleTimeout_TriggersShutdown(t *testing.T) {
+	doneCh := make(chan struct{})
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	refcountPath := filepath.Join(t.TempDir(), "refcount")
+	_ = wrapWithLifecycle(inner, refcountPath, true, 50*time.Millisecond, "", doneCh)
+
+	select {
+	case <-doneCh:
+		// OK — idle timeout fired.
+	case <-time.After(2 * time.Second):
+		t.Fatal("doneCh should have been closed by idle timeout")
+	}
+}
+
+func TestIdleTimeout_ResetByRequest(t *testing.T) {
+	doneCh := make(chan struct{})
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	refcountPath := filepath.Join(t.TempDir(), "refcount")
+	handler := wrapWithLifecycle(inner, refcountPath, true, 100*time.Millisecond, "", doneCh)
+
+	// Send a request at 60ms to reset the timer.
+	time.Sleep(60 * time.Millisecond)
+	req := httptest.NewRequest(http.MethodGet, "/v1/messages", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// At 120ms from start (60ms after request), timer should NOT have fired
+	// because it was reset to 100ms from the request time.
+	time.Sleep(60 * time.Millisecond)
+	select {
+	case <-doneCh:
+		t.Fatal("doneCh should not be closed yet — timer was reset by request")
+	default:
+		// OK
+	}
+
+	// Wait for the timer to actually fire (100ms from the request at 60ms = 160ms total).
+	select {
+	case <-doneCh:
+		// OK
+	case <-time.After(2 * time.Second):
+		t.Fatal("doneCh should have been closed by idle timeout after activity stopped")
+	}
+}
+
+func TestIdleTimeout_ZeroDisables(t *testing.T) {
+	doneCh := make(chan struct{})
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	refcountPath := filepath.Join(t.TempDir(), "refcount")
+	_ = wrapWithLifecycle(inner, refcountPath, true, 0, "", doneCh)
+
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-doneCh:
+		t.Fatal("doneCh should not be closed when idle timeout is 0")
+	default:
+		// OK — no timeout.
+	}
 }

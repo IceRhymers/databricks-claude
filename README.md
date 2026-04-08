@@ -100,6 +100,8 @@ databricks-claude --tls-cert cert.pem --tls-key key.pem "explain this codebase"
 | `--port` | `49153` | Proxy listen port (saved for future sessions) |
 | `--tls-cert` | | Path to TLS certificate file (requires `--tls-key`) |
 | `--tls-key` | | Path to TLS private key file (requires `--tls-cert`) |
+| `--headless` | `false` | Start proxy without launching claude (for IDE extensions) |
+| `--idle-timeout` | `30m` | Idle timeout in headless mode (`0` disables) |
 | `--version` | | Print version and exit |
 | `--print-env` | | Print resolved configuration (token redacted) and exit |
 | `--help`, `-h` | | Print wrapper flags and the full `claude --help` output, then exit |
@@ -115,6 +117,21 @@ On first run (when `ANTHROPIC_BASE_URL` is not set), `databricks-claude` auto-di
 - Constructs the AI Gateway URL: `https://<workspace-id>.ai-gateway.cloud.databricks.com/anthropic`
 
 If workspace ID resolution fails, it falls back to `<host>/serving-endpoints/anthropic`.
+
+## Headless Mode
+
+`--headless` starts the proxy without launching a `claude` child process, for use by IDE extensions and external tooling.
+
+```bash
+databricks-claude --headless
+# prints: PROXY_URL=http://127.0.0.1:<port>
+```
+
+### Lifecycle Management
+
+- **`GET /health`** — liveness check, returns `{"tool":"databricks-claude","version":"...","pid":...}`
+- **`POST /shutdown`** — decrements the session refcount; when it reaches 0, the proxy exits. Returns `{"remaining": N, "exiting": true/false}`
+- **Idle timeout** — after 30 minutes with no proxied requests, the proxy shuts down automatically. Configure with `--idle-timeout <duration>` (e.g. `10m`, `1h`). Use `--idle-timeout 0` to disable.
 
 ## Profile Resolution Order
 

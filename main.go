@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -32,7 +33,7 @@ func main() {
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
-	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, portFlag, headless, claudeArgs := parseArgs(os.Args[1:])
+	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, portFlag, headless, idleTimeout, claudeArgs := parseArgs(os.Args[1:])
 
 	if showHelp {
 		handleHelp(upstream)
@@ -285,6 +286,19 @@ func main() {
 	}
 	handler := NewProxyServer(proxyConfig)
 
+	// --- Reference counting (before server start so lifecycle wrapper can use refcountPath) ---
+	refcountPath := filepath.Join(os.TempDir(), fmt.Sprintf(".databricks-claude-sessions-%d", port))
+	if err := refcount.Acquire(refcountPath); err != nil {
+		log.Printf("databricks-claude: refcount acquire warning: %v", err)
+	}
+
+	// In headless mode, wrap handler with /shutdown endpoint and idle timeout.
+	var doneCh chan struct{}
+	if headless {
+		doneCh = make(chan struct{})
+		handler = wrapWithLifecycle(handler, refcountPath, isOwner, idleTimeout, proxyAPIKey, doneCh)
+	}
+
 	// --- Start proxy if we own the port; otherwise watch for owner death ---
 	if isOwner {
 		go func() {
@@ -302,12 +316,6 @@ func main() {
 	} else {
 		// Watch for owner death and take over the proxy if needed.
 		go watchProxy(port, handler, tlsCert, tlsKey)
-	}
-
-	// --- Reference counting ---
-	refcountPath := filepath.Join(os.TempDir(), fmt.Sprintf(".databricks-claude-sessions-%d", port))
-	if err := refcount.Acquire(refcountPath); err != nil {
-		log.Printf("databricks-claude: refcount acquire warning: %v", err)
 	}
 
 	// --- Write config once (idempotent) ---
@@ -352,7 +360,7 @@ func main() {
 		proxyURL, isOwner, resolvedProfile, inferenceUpstream)
 
 	if headless {
-		runHeadless(proxyURL, ln, isOwner, refcountPath)
+		runHeadless(proxyURL, ln, isOwner, refcountPath, doneCh)
 		return
 	}
 
@@ -376,18 +384,102 @@ func main() {
 	os.Exit(exitCode)
 }
 
+// shutdownResponse is the JSON body returned by POST /shutdown.
+type shutdownResponse struct {
+	Remaining int  `json:"remaining"`
+	Exiting   bool `json:"exiting"`
+}
+
+// wrapWithLifecycle wraps the proxy handler with:
+//   - POST /shutdown: decrements refcount and conditionally shuts down
+//   - Activity tracking: resets the idle timer on every proxied request
+//
+// It returns the wrapped handler. doneCh is closed when shutdown is triggered
+// (either via /shutdown or idle timeout). The caller selects on doneCh to
+// begin cleanup.
+func wrapWithLifecycle(
+	inner http.Handler,
+	refcountPath string,
+	isOwner bool,
+	idleTimeout time.Duration,
+	apiKey string,
+	doneCh chan struct{},
+) http.Handler {
+	var shutdownOnce sync.Once
+	triggerShutdown := func() {
+		shutdownOnce.Do(func() { close(doneCh) })
+	}
+
+	// Idle timer: fires once after idleTimeout of inactivity.
+	// Reset on every proxied request. time.AfterFunc is goroutine-safe.
+	var idleTimer *time.Timer
+	if idleTimeout > 0 {
+		idleTimer = time.AfterFunc(idleTimeout, func() {
+			log.Printf("databricks-claude: idle timeout (%s), shutting down", idleTimeout)
+			triggerShutdown()
+		})
+	}
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/shutdown", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		// Enforce API key if configured (matches requireAPIKey in pkg/proxy).
+		if apiKey != "" {
+			if r.Header.Get("Authorization") != "Bearer "+apiKey {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		remaining, err := refcount.Release(refcountPath)
+		if err != nil {
+			log.Printf("databricks-claude: shutdown refcount release error: %v", err)
+		}
+		exiting := remaining == 0 && isOwner
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(shutdownResponse{Remaining: remaining, Exiting: exiting})
+		if exiting {
+			// Stop idle timer to avoid double-shutdown.
+			if idleTimer != nil {
+				idleTimer.Stop()
+			}
+			triggerShutdown()
+		}
+	})
+
+	// All other routes: reset idle timer, then delegate to inner handler.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if idleTimer != nil {
+			idleTimer.Reset(idleTimeout)
+		}
+		inner.ServeHTTP(w, r)
+	})
+
+	return mux
+}
+
 // runHeadless runs the proxy without launching a claude child process.
-// It prints the proxy URL to stdout, then blocks until SIGINT/SIGTERM.
+// It prints the proxy URL to stdout, then blocks until SIGINT/SIGTERM
+// or until doneCh is closed (by /shutdown or idle timeout).
 // The watchProxy goroutine (for non-owner sessions) is already started
 // before this function is called.
-func runHeadless(proxyURL string, ln net.Listener, isOwner bool, refcountPath string) {
+func runHeadless(proxyURL string, ln net.Listener, isOwner bool, refcountPath string, doneCh chan struct{}) {
 	fmt.Printf("PROXY_URL=%s\n", proxyURL)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-	signal.Stop(sigCh)
 
+	select {
+	case <-sigCh:
+		signal.Stop(sigCh)
+	case <-doneCh:
+		// Triggered by /shutdown or idle timeout.
+	}
+
+	// Release refcount. If /shutdown already released, Release floors at 0.
 	n, _ := refcount.Release(refcountPath)
 	if n == 0 && isOwner {
 		ln.Close()
@@ -433,8 +525,9 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 // databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-metrics-table, --otel-logs-table, --no-otel, --proxy-api-key, --tls-cert, --tls-key.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, portFlag int, headless bool, claudeArgs []string) {
+func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, portFlag int, headless bool, idleTimeout time.Duration, claudeArgs []string) {
 	otelMetricsTable = "main.claude_telemetry.claude_otel_metrics" // default
+	idleTimeout = 30 * time.Minute                                 // default
 
 	knownFlags := map[string]bool{
 		"--profile":            true,
@@ -453,6 +546,7 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 		"--tls-key":           true,
 		"--port":              true,
 		"--headless":          true,
+		"--idle-timeout":      true,
 	}
 
 	i := 0
@@ -570,6 +664,20 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 					}
 				case "--headless":
 					headless = true
+				case "--idle-timeout":
+					raw := value
+					if raw == "" && i+1 < len(args) {
+						i++
+						raw = args[i]
+					}
+					if raw != "" {
+						if d, err := time.ParseDuration(raw); err == nil {
+							idleTimeout = d
+						} else if mins, err := strconv.Atoi(raw); err == nil {
+							// Bare number: treat as minutes for convenience.
+							idleTimeout = time.Duration(mins) * time.Minute
+						}
+					}
 				}
 				i++
 				continue
@@ -608,6 +716,7 @@ Databricks-Claude Flags:
   --tls-key string             Path to TLS private key file (requires --tls-cert)
   --port int                   Fixed proxy port (default: 49153, saved to state)
   --headless                   Start proxy without launching claude (for IDE extensions)
+  --idle-timeout duration      Idle timeout for headless mode (default 30m, 0 disables, bare number = minutes)
   --version                    Print version and exit
   --help, -h                   Show this help message
 

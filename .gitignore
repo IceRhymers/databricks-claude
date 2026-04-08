@@ -1,3 +1,4 @@
 databricks-claude
 dist/
 *.exe
+.omc/
