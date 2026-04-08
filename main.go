@@ -132,10 +132,7 @@ func main() {
 		inferenceUpstream[:16] == "http://127.0.0.1" {
 		inferenceUpstream = ""
 	}
-	databricksHost := ""
-	if v, ok := env["DATABRICKS_HOST"].(string); ok {
-		databricksHost = v
-	}
+	databricksHost := readDatabricksCfgHost(resolvedProfile)
 
 	// Detect existing OTEL config.
 	otelConfigured := false
@@ -338,8 +335,6 @@ func main() {
 	}
 	if needsFullSetup {
 		// Also write Databricks-specific keys for full setup.
-		otelEnv["DATABRICKS_HOST"] = databricksHost
-		otelEnv["DATABRICKS_CONFIG_PROFILE"] = resolvedProfile
 		otelEnv["ANTHROPIC_DEFAULT_OPUS_MODEL"] = "databricks-claude-opus-4-6"
 		otelEnv["ANTHROPIC_DEFAULT_SONNET_MODEL"] = "databricks-claude-sonnet-4-6"
 		otelEnv["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = "databricks-claude-haiku-4-5"
