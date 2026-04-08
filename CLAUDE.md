@@ -24,7 +24,7 @@ go test ./pkg/proxy/... -v       # test a single package
 
 Six `.go` files act as thin facades wiring together `pkg/` sub-packages:
 
-- **main.go** — CLI entry point: flag parsing, config resolution (`~/.claude/settings.json` + `~/.claude/.databricks-claude.json`), token seeding, AI Gateway auto-discovery, proxy startup, settings patching, child launch, and explicit settings restore before `os.Exit`.
+- **main.go** — CLI entry point: flag parsing, config resolution (`~/.claude/settings.json` + `~/.claude/.databricks-claude.json`), token seeding, AI Gateway auto-discovery, proxy startup, settings patching, child launch, headless lifecycle management (`wrapWithLifecycle` for `/shutdown` endpoint and idle timeout), and explicit settings restore before `os.Exit`.
 - **proxy.go** — Facade over `pkg/proxy`: defines `ProxyConfig`, wires `NewProxyServer` and `StartProxy`.
 - **token.go** — Facade over `pkg/tokencache`: implements `databricksFetcher` (shells out to `databricks auth token`), host discovery, workspace ID resolution via SCIM, AI Gateway URL construction.
 - **process.go** — `SettingsManager` wrapping `pkg/settings`: full-setup and save/restore of settings.json env keys, OTEL key management, `RunChild`, `ForwardSignals`.
@@ -47,9 +47,10 @@ Each package is independently importable with no cross-dependencies:
 
 ### Key data flow
 
-1. `main.go` seeds token cache → starts proxy on `127.0.0.1:0` → patches `settings.json` to point `ANTHROPIC_BASE_URL` at proxy → launches `claude` as child
-2. Proxy intercepts every request, injects fresh OAuth token via `pkg/tokencache` → forwards to AI Gateway (inference) or Databricks OTEL endpoint
-3. On exit, `SettingsManager.Restore()` is called **explicitly before `os.Exit`** (not via defer — `os.Exit` skips defers). Smart handoff points `ANTHROPIC_BASE_URL` to a surviving session if one exists.
+1. `main.go` seeds token cache → starts proxy on `127.0.0.1:0` → patches `settings.json` to point `ANTHROPIC_BASE_URL` at proxy → launches `claude` as child (or enters headless mode)
+2. In headless mode, the handler is wrapped with `wrapWithLifecycle` which adds `POST /shutdown` (refcount decrement + conditional exit) and idle timeout (default 30m, resets on each proxied request)
+3. Proxy intercepts every request, injects fresh OAuth token via `pkg/tokencache` → forwards to AI Gateway (inference) or Databricks OTEL endpoint
+4. On exit, `SettingsManager.Restore()` is called **explicitly before `os.Exit`** (not via defer — `os.Exit` skips defers). Smart handoff points `ANTHROPIC_BASE_URL` to a surviving session if one exists.
 
 ## Key Design Constraints
 
