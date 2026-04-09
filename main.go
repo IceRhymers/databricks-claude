@@ -317,7 +317,7 @@ func main() {
 	handler := NewProxyServer(proxyConfig)
 
 	// --- Reference counting (before server start so lifecycle wrapper can use refcountPath) ---
-	refcountPath := filepath.Join(os.TempDir(), fmt.Sprintf(".databricks-claude-sessions-%d", port))
+	refcountPath := refcountPathForPort(port)
 	if err := refcount.Acquire(refcountPath); err != nil {
 		log.Printf("databricks-claude: refcount acquire warning: %v", err)
 	}
@@ -512,6 +512,11 @@ func runHeadless(proxyURL string, ln net.Listener, isOwner bool, refcountPath st
 	if n == 0 && isOwner {
 		ln.Close()
 	}
+}
+
+// refcountPathForPort returns the file path used for cross-process session counting.
+func refcountPathForPort(port int) string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf(".databricks-claude-sessions-%d", port))
 }
 
 // listenerPort extracts the port from a net.Listener, falling back to the

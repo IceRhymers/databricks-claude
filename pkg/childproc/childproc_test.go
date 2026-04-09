@@ -2,7 +2,11 @@ package childproc
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -56,5 +60,51 @@ func TestRun_Success(t *testing.T) {
 	}
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
+	}
+}
+
+func TestRun_EnvPropagation(t *testing.T) {
+	outFile := filepath.Join(t.TempDir(), "env-output.txt")
+	code, err := Run(context.Background(), Config{
+		BinaryName: "/bin/sh",
+		Args:       []string{"-c", fmt.Sprintf("printenv TEST_CHILDPROC_VAR > %s", outFile)},
+		Env:        []string{"TEST_CHILDPROC_VAR=hello123"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	got := strings.TrimSpace(string(data))
+	if got != "hello123" {
+		t.Errorf("env var = %q, want %q", got, "hello123")
+	}
+}
+
+func TestRun_NoEnvPreservesParent(t *testing.T) {
+	t.Setenv("TEST_PARENT_VAR", "parentval")
+	outFile := filepath.Join(t.TempDir(), "env-output.txt")
+	code, err := Run(context.Background(), Config{
+		BinaryName: "/bin/sh",
+		Args:       []string{"-c", fmt.Sprintf("printenv TEST_PARENT_VAR > %s", outFile)},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	got := strings.TrimSpace(string(data))
+	if got != "parentval" {
+		t.Errorf("env var = %q, want %q", got, "parentval")
 	}
 }

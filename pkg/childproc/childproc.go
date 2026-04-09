@@ -13,6 +13,7 @@ import (
 type Config struct {
 	BinaryName string
 	Args       []string
+	Env        []string // Additional env vars appended to the parent environment.
 }
 
 // Run starts a child process with the supplied config and waits for it to
@@ -22,6 +23,9 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if len(cfg.Env) > 0 {
+		cmd.Env = append(os.Environ(), cfg.Env...)
+	}
 
 	if err := cmd.Start(); err != nil {
 		return 1, fmt.Errorf("start %s: %w", cfg.BinaryName, err)

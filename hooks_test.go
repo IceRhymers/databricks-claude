@@ -1,0 +1,92 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// TestHeadlessEnsure_ManagedSessionSkips verifies that headlessEnsure returns
+// immediately when DATABRICKS_CLAUDE_MANAGED=1 is set, without attempting any
+// network connection. If the guard were absent, calling with port 99999 would
+// fatalf when the proxy cannot be started.
+func TestHeadlessEnsure_ManagedSessionSkips(t *testing.T) {
+	t.Setenv("DATABRICKS_CLAUDE_MANAGED", "1")
+	// Port 99999 has nothing listening. Without the guard this would fatalf.
+	headlessEnsure(99999)
+}
+
+// TestHeadlessRelease_ManagedSessionSkips verifies that headlessRelease returns
+// immediately when DATABRICKS_CLAUDE_MANAGED=1 is set, without making any HTTP
+// call. If the guard were absent, calling with port 99999 would log a connection
+// refused error (not fatal, but observable). The guard prevents even that attempt.
+func TestHeadlessRelease_ManagedSessionSkips(t *testing.T) {
+	t.Setenv("DATABRICKS_CLAUDE_MANAGED", "1")
+	// Port 99999 has nothing listening; the guard must prevent any HTTP attempt.
+	headlessRelease(99999)
+}
+
+// TestHeadlessEnsure_AcquiresRefcount verifies that headlessEnsure increments
+// the refcount file before checking proxy health. It starts a test HTTP server
+// that answers GET /health with 200 so headlessEnsure returns after the health
+// check without trying to spawn a new proxy.
+func TestHeadlessEnsure_AcquiresRefcount(t *testing.T) {
+	// Start a minimal health server.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	// Extract the port from the test server address.
+	addr := srv.Listener.Addr().String()
+	var port int
+	fmt.Sscanf(addr[len(addr)-len(addr)+len("127.0.0.1:"):], "%d", &port)
+	// Use net package-free port extraction: scan from the last ':'.
+	for i := len(addr) - 1; i >= 0; i-- {
+		if addr[i] == ':' {
+			fmt.Sscanf(addr[i+1:], "%d", &port)
+			break
+		}
+	}
+
+	// Ensure the refcount file doesn't exist before the call.
+	rcPath := refcountPathForPort(port)
+	os.Remove(rcPath)
+	t.Cleanup(func() { os.Remove(rcPath) })
+
+	headlessEnsure(port)
+
+	// Read and parse the refcount file.
+	data, err := os.ReadFile(rcPath)
+	if err != nil {
+		t.Fatalf("refcount file not found after headlessEnsure: %v", err)
+	}
+	type refcountFile struct {
+		Count int `json:"count"`
+	}
+	var rc refcountFile
+	if err := json.Unmarshal(data, &rc); err != nil {
+		t.Fatalf("unmarshal refcount file: %v", err)
+	}
+	if rc.Count != 1 {
+		t.Errorf("refcount = %d, want 1", rc.Count)
+	}
+}
+
+// TestRefcountPathForPort verifies that the refcount file path is constructed
+// correctly from the port number.
+func TestRefcountPathForPort(t *testing.T) {
+	want := filepath.Join(os.TempDir(), ".databricks-claude-sessions-12345")
+	got := refcountPathForPort(12345)
+	if got != want {
+		t.Errorf("refcountPathForPort(12345) = %q, want %q", got, want)
+	}
+}

@@ -13,6 +13,7 @@ func RunChild(ctx context.Context, claudeArgs []string) (int, error) {
 	return childproc.Run(ctx, childproc.Config{
 		BinaryName: "claude",
 		Args:       claudeArgs,
+		Env:        []string{"DATABRICKS_CLAUDE_MANAGED=1"},
 	})
 }
 

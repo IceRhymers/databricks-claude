@@ -9,18 +9,32 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/IceRhymers/databricks-claude/pkg/refcount"
 )
 
 // headlessEnsure checks whether the proxy is healthy on the given port.
 // If not, it starts a detached headless proxy and polls until ready (max 10s).
 // Called by the SessionStart hook via: databricks-claude --headless-ensure
 func headlessEnsure(port int) {
+	if os.Getenv("DATABRICKS_CLAUDE_MANAGED") == "1" {
+		log.Printf("databricks-claude: --headless-ensure: skipped (managed session)")
+		return
+	}
+
+	// Acquire refcount FIRST so every ensure/release pair is symmetric.
+	refcountPath := refcountPathForPort(port)
+	if err := refcount.Acquire(refcountPath); err != nil {
+		log.Printf("databricks-claude: --headless-ensure: refcount acquire warning: %v", err)
+	}
+
 	if isProxyHealthy(port) {
-		return // already running
+		return // already running, refcount incremented
 	}
 
 	self, err := os.Executable()
 	if err != nil {
+		refcount.Release(refcountPath) // undo acquire on failure
 		log.Fatalf("databricks-claude: --headless-ensure: cannot find self: %v", err)
 	}
 
@@ -28,6 +42,7 @@ func headlessEnsure(port int) {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
+		refcount.Release(refcountPath) // undo acquire on failure
 		log.Fatalf("databricks-claude: --headless-ensure: failed to start proxy: %v", err)
 	}
 	if err := cmd.Process.Release(); err != nil {
@@ -41,6 +56,7 @@ func headlessEnsure(port int) {
 			return
 		}
 	}
+	refcount.Release(refcountPath) // undo acquire on failure
 	log.Fatalf("databricks-claude: --headless-ensure: proxy did not become healthy within 10s")
 }
 
@@ -48,6 +64,11 @@ func headlessEnsure(port int) {
 // Called by the Stop hook via: databricks-claude --headless-release
 // Errors are logged but not fatal — proxy may already be stopped.
 func headlessRelease(port int) {
+	if os.Getenv("DATABRICKS_CLAUDE_MANAGED") == "1" {
+		log.Printf("databricks-claude: --headless-release: skipped (managed session)")
+		return
+	}
+
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Post(fmt.Sprintf("http://127.0.0.1:%d/shutdown", port), "application/json", nil)
 	if err != nil {
