@@ -34,7 +34,9 @@ func Run(args []string, flags []FlagDef, binaryName string) {
 		fmt.Fprintf(os.Stderr, "Usage: %s completion <bash|zsh|fish>\n", binaryName)
 		os.Exit(1)
 	}
-	switch args[0] {
+	// Homebrew may call `completion --shell=bash`; accept both forms.
+	shell := strings.TrimPrefix(args[0], "--shell=")
+	switch shell {
 	case "bash":
 		fmt.Print(GenerateBash(binaryName, flags))
 	case "zsh":
@@ -42,7 +44,7 @@ func Run(args []string, flags []FlagDef, binaryName string) {
 	case "fish":
 		fmt.Print(GenerateFish(binaryName, flags))
 	default:
-		fmt.Fprintf(os.Stderr, "%s completion: unknown shell %q (supported: bash zsh fish)\n", binaryName, args[0])
+		fmt.Fprintf(os.Stderr, "%s completion: unknown shell %q (supported: bash zsh fish)\n", binaryName, shell)
 		os.Exit(1)
 	}
 }
