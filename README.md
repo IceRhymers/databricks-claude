@@ -163,12 +163,13 @@ Removes only the databricks-claude hook entries. Other hooks in your settings ar
 - The proxy starts on the configured port (default `49153`). If you use a custom port via `--port`, the hooks will respect that setting automatically (port is saved to the state file)
 - Unclean exits (force-quit, OOM kill) are covered by the idle timeout — the proxy self-exits after 30 minutes with no inference traffic
 
-### Claude Code Plugin (for repo users)
+### Claude Code Plugin (marketplace install)
 
-If you work directly in the `databricks-claude` repo or install via a plugin marketplace, hooks are also available as a Claude Code plugin:
+Hooks are also distributed as a Claude Code plugin. Add this repo as a marketplace, then install the plugin:
 
-```bash
-claude --plugin-dir /path/to/databricks-claude
+```
+/plugin marketplace add IceRhymers/databricks-claude
+/plugin install databricks-claude@IceRhymers-databricks-claude
 ```
 
 The `.claude-plugin/` directory and `hooks/hooks.json` at the repo root define the plugin.
