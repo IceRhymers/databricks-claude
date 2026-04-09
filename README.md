@@ -239,6 +239,84 @@ make test
 make build
 ```
 
+## Shell Tab Completions
+
+`databricks-claude` includes a completion engine (`pkg/completion`) that generates shell scripts from the binary's own flag definitions. If you installed via Homebrew, completions are registered automatically — no manual setup required.
+
+### Manual Installation
+
+If you installed from source or want to set completions up yourself, source the output of the `completion` subcommand in your shell rc file:
+
+```bash
+# Bash (~/.bashrc)
+eval "$(databricks-claude completion bash)"
+
+# Zsh (~/.zshrc)
+eval "$(databricks-claude completion zsh)"
+
+# Fish (~/.config/fish/config.fish)
+databricks-claude completion fish | source
+```
+
+### What Gets Completed
+
+- **Flag names** — `--<Tab>` lists all flags (long and short forms).
+- **Flag values** — context-aware completions for flags that accept a value:
+  - `--profile` completes from `~/.databrickscfg` section headers.
+  - `--upstream`, `--log-file`, `--tls-cert`, `--tls-key` complete with local file paths.
+  - Flags like `--port` or `--otel-metrics-table` suppress file completion.
+- **Passthrough boundary** — after a bare `--`, completions stop. Everything beyond that is forwarded to the wrapped `claude` binary.
+
+### How the Engine Works
+
+This section documents the `pkg/completion` package for other projects that import it.
+
+The `completion` subcommand is the very first check in `main()`, before any config loading, auth, or state. This makes it safe to call in restricted environments like the Homebrew install sandbox.
+
+```
+main.go
+  └─ if os.Args[1] == "completion"
+       └─ completion.Run(args, flagDefs, binaryName)
+            ├─ "bash"  → GenerateBash()
+            ├─ "zsh"   → GenerateZsh()
+            └─ "fish"  → GenerateFish()
+```
+
+**`FlagDef` struct** — each flag is described by a single struct in `completion_flags.go`:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `Name` | `string` | Flag name without `--` (e.g. `"profile"`) |
+| `Short` | `string` | Single-char alias without `-` (e.g. `"v"`), or empty |
+| `Description` | `string` | Human-readable description shown in completions |
+| `TakesArg` | `bool` | `true` if the flag consumes the next token as its value |
+| `Completer` | `string` | Named completer function, or empty for no value completion |
+
+**Named completers** — two built-in completer names are supported:
+
+- `"__databricks_profiles"` — reads `[section]` headers from `~/.databrickscfg`.
+- `"__files"` — completes with local file paths (uses each shell's native mechanism).
+
+Completers are emitted as shell functions embedded in the generated script — no external dependencies at completion time.
+
+**Adding a new flag** — add an entry to the `flagDefs` slice. The completion script, `knownFlags` map, and flag parsing all derive from this single slice. Consistency tests enforce that every `FlagDef` appears in `knownFlags` and vice-versa.
+
+**Integrating in another binary** — import `pkg/completion`, define your own `[]FlagDef`, and add the early-exit check to `main()`:
+
+```go
+import "github.com/IceRhymers/databricks-claude/pkg/completion"
+
+var flagDefs = []completion.FlagDef{ /* ... */ }
+
+func main() {
+    if len(os.Args) >= 2 && os.Args[1] == "completion" {
+        completion.Run(os.Args[2:], flagDefs, "my-binary")
+        os.Exit(0)
+    }
+    // ... rest of main
+}
+```
+
 ## License
 
 MIT
