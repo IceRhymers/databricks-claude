@@ -33,7 +33,7 @@ func main() {
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
-	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, portFlag, headless, idleTimeout, claudeArgs := parseArgs(os.Args[1:])
+	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, portFlag, headless, idleTimeout, installHooksFlag, uninstallHooksFlag, headlessEnsureFlag, headlessReleaseFlag, claudeArgs := parseArgs(os.Args[1:])
 
 	if showHelp {
 		handleHelp(upstream)
@@ -42,6 +42,39 @@ func main() {
 
 	if version {
 		fmt.Printf("databricks-claude %s\n", Version)
+		os.Exit(0)
+	}
+
+	// --- Hook lifecycle commands (handled before auth/config setup) ---
+	if installHooksFlag || uninstallHooksFlag {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatalf("databricks-claude: cannot determine home dir: %v", err)
+		}
+		sp := filepath.Join(homeDir, ".claude", "settings.json")
+		if installHooksFlag {
+			if err := installHooks(sp); err != nil {
+				log.Fatalf("databricks-claude: --install-hooks: %v", err)
+			}
+			fmt.Fprintln(os.Stderr, "databricks-claude: hooks installed — SessionStart and Stop hooks added to ~/.claude/settings.json")
+		} else {
+			if err := uninstallHooks(sp); err != nil {
+				log.Fatalf("databricks-claude: --uninstall-hooks: %v", err)
+			}
+			fmt.Fprintln(os.Stderr, "databricks-claude: hooks removed from ~/.claude/settings.json")
+		}
+		os.Exit(0)
+	}
+
+	// --- Headless hook commands (called by installed hooks, not by end users) ---
+	if headlessEnsureFlag || headlessReleaseFlag {
+		state := loadState()
+		port := resolvePort(portFlag, state)
+		if headlessEnsureFlag {
+			headlessEnsure(port)
+		} else {
+			headlessRelease(port)
+		}
 		os.Exit(0)
 	}
 
@@ -284,9 +317,15 @@ func main() {
 	handler := NewProxyServer(proxyConfig)
 
 	// --- Reference counting (before server start so lifecycle wrapper can use refcountPath) ---
-	refcountPath := filepath.Join(os.TempDir(), fmt.Sprintf(".databricks-claude-sessions-%d", port))
-	if err := refcount.Acquire(refcountPath); err != nil {
-		log.Printf("databricks-claude: refcount acquire warning: %v", err)
+	// In headless mode, sessions manage the refcount via hooks (--headless-ensure
+	// acquires, --headless-release releases). The proxy itself does NOT self-acquire
+	// so the last session's release brings the count to 0 and triggers shutdown.
+	// In wrapper mode, the parent process acquires here and releases on exit.
+	refcountPath := refcountPathForPort(port)
+	if !headless {
+		if err := refcount.Acquire(refcountPath); err != nil {
+			log.Printf("databricks-claude: refcount acquire warning: %v", err)
+		}
 	}
 
 	// In headless mode, wrap handler with /shutdown endpoint and idle timeout.
@@ -481,6 +520,11 @@ func runHeadless(proxyURL string, ln net.Listener, isOwner bool, refcountPath st
 	}
 }
 
+// refcountPathForPort returns the file path used for cross-process session counting.
+func refcountPathForPort(port int) string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf(".databricks-claude-sessions-%d", port))
+}
+
 // listenerPort extracts the port from a net.Listener, falling back to the
 // configured port if the listener is nil (e.g., non-owner case).
 func listenerPort(ln net.Listener, fallback int) int {
@@ -520,7 +564,7 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 // databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-metrics-table, --otel-logs-table, --no-otel, --proxy-api-key, --tls-cert, --tls-key.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, portFlag int, headless bool, idleTimeout time.Duration, claudeArgs []string) {
+func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, portFlag int, headless bool, idleTimeout time.Duration, installHooksFlag bool, uninstallHooksFlag bool, headlessEnsureFlag bool, headlessReleaseFlag bool, claudeArgs []string) {
 	otelMetricsTable = "main.claude_telemetry.claude_otel_metrics" // default
 	idleTimeout = 30 * time.Minute                                 // default
 
@@ -542,6 +586,10 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 		"--port":              true,
 		"--headless":          true,
 		"--idle-timeout":      true,
+		"--install-hooks":     true,
+		"--uninstall-hooks":   true,
+		"--headless-ensure":   true,
+		"--headless-release":  true,
 	}
 
 	i := 0
@@ -659,6 +707,14 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 					}
 				case "--headless":
 					headless = true
+				case "--install-hooks":
+					installHooksFlag = true
+				case "--uninstall-hooks":
+					uninstallHooksFlag = true
+				case "--headless-ensure":
+					headlessEnsureFlag = true
+				case "--headless-release":
+					headlessReleaseFlag = true
 				case "--idle-timeout":
 					raw := value
 					if raw == "" && i+1 < len(args) {
@@ -711,7 +767,11 @@ Databricks-Claude Flags:
   --tls-key string             Path to TLS private key file (requires --tls-cert)
   --port int                   Fixed proxy port (default: 49153, saved to state)
   --headless                   Start proxy without launching claude (for IDE extensions)
+  --headless-ensure            Start proxy if not running (called by SessionStart hook)
+  --headless-release           Decrement proxy refcount (called by Stop hook)
   --idle-timeout duration      Idle timeout for headless mode (default 30m, 0 disables, bare number = minutes)
+  --install-hooks              Install SessionStart/Stop hooks into ~/.claude/settings.json
+  --uninstall-hooks            Remove databricks-claude hooks from ~/.claude/settings.json
   --version                    Print version and exit
   --help, -h                   Show this help message
 
