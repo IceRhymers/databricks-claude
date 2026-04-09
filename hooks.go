@@ -120,9 +120,12 @@ func installHooks(settingsPath string) error {
 	})
 	hooks["SessionStart"] = sessionStart
 
-	// Stop hook — decrements proxy refcount; proxy exits when last session ends.
-	stop, _ := hooks["Stop"].([]interface{})
-	stop = append(stop, map[string]interface{}{
+	// SessionEnd hook — decrements proxy refcount; proxy exits when last session ends.
+	// Uses SessionEnd (not Stop) because Stop only fires after API activity,
+	// while SessionEnd fires reliably on every exit path including immediate /exit.
+	sessionEnd, _ := hooks["SessionEnd"].([]interface{})
+	sessionEnd = append(sessionEnd, map[string]interface{}{
+		"matcher": "*",
 		"hooks": []interface{}{
 			map[string]interface{}{
 				"type":    "command",
@@ -131,7 +134,7 @@ func installHooks(settingsPath string) error {
 			},
 		},
 	})
-	hooks["Stop"] = stop
+	hooks["SessionEnd"] = sessionEnd
 
 	doc["hooks"] = hooks
 	return writeSettingsDoc(settingsPath, doc)

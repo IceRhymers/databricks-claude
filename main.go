@@ -317,9 +317,15 @@ func main() {
 	handler := NewProxyServer(proxyConfig)
 
 	// --- Reference counting (before server start so lifecycle wrapper can use refcountPath) ---
+	// In headless mode, sessions manage the refcount via hooks (--headless-ensure
+	// acquires, --headless-release releases). The proxy itself does NOT self-acquire
+	// so the last session's release brings the count to 0 and triggers shutdown.
+	// In wrapper mode, the parent process acquires here and releases on exit.
 	refcountPath := refcountPathForPort(port)
-	if err := refcount.Acquire(refcountPath); err != nil {
-		log.Printf("databricks-claude: refcount acquire warning: %v", err)
+	if !headless {
+		if err := refcount.Acquire(refcountPath); err != nil {
+			log.Printf("databricks-claude: refcount acquire warning: %v", err)
+		}
 	}
 
 	// In headless mode, wrap handler with /shutdown endpoint and idle timeout.
