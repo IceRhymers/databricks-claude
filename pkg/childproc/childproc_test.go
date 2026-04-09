@@ -52,8 +52,12 @@ func TestRun_ExitCode(t *testing.T) {
 }
 
 func TestRun_Success(t *testing.T) {
+	trueBin, err := exec.LookPath("true")
+	if err != nil {
+		t.Skipf("true not found in PATH: %v", err)
+	}
 	code, err := Run(context.Background(), Config{
-		BinaryName: "/bin/true",
+		BinaryName: trueBin,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
