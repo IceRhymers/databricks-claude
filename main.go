@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
+	"github.com/IceRhymers/databricks-claude/pkg/completion"
 	"github.com/IceRhymers/databricks-claude/pkg/portbind"
 	"github.com/IceRhymers/databricks-claude/pkg/proxy"
 	"github.com/IceRhymers/databricks-claude/pkg/refcount"
@@ -30,9 +31,17 @@ import (
 var Version = "dev"
 
 func main() {
+	// completion <shell> — must be the very first check, before any flag parsing,
+	// auth, or state loading. Safe to call in the Homebrew install sandbox.
+	if len(os.Args) >= 2 && os.Args[1] == "completion" {
+		completion.Run(os.Args[2:], flagDefs, "databricks-claude")
+		os.Exit(0)
+	}
+
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
+	// Tip: use "databricks-claude -- completion" to pass "completion" to claude.
 	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, portFlag, headless, idleTimeout, installHooksFlag, uninstallHooksFlag, headlessEnsureFlag, headlessReleaseFlag, claudeArgs := parseArgs(os.Args[1:])
 
 	if showHelp {
@@ -568,29 +577,8 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 	otelMetricsTable = "main.claude_telemetry.claude_otel_metrics" // default
 	idleTimeout = 30 * time.Minute                                 // default
 
-	knownFlags := map[string]bool{
-		"--profile":            true,
-		"--verbose":            true,
-		"--version":            true,
-		"--help":               true,
-		"--print-env":          true,
-		"--otel":               true,
-		"--no-otel":            true,
-		"--otel-metrics-table": true,
-		"--otel-logs-table":    true,
-		"--upstream":           true,
-		"--log-file":           true,
-		"--proxy-api-key":     true,
-		"--tls-cert":          true,
-		"--tls-key":           true,
-		"--port":              true,
-		"--headless":          true,
-		"--idle-timeout":      true,
-		"--install-hooks":     true,
-		"--uninstall-hooks":   true,
-		"--headless-ensure":   true,
-		"--headless-release":  true,
-	}
+	// knownFlags is defined at package level in completion_flags.go,
+	// derived from flagDefs so completions and parsing stay in sync.
 
 	i := 0
 	for i < len(args) {
