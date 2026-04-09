@@ -176,6 +176,37 @@ Hooks are also distributed as a Claude Code plugin. Add this repo as a marketpla
 
 The `.claude-plugin/` directory and `hooks/hooks.json` at the repo root define the plugin.
 
+## Shell Tab Completions
+
+`databricks-claude` can generate shell completion scripts for bash, zsh, and fish. Completions are derived from the binary's own flag metadata, so they stay in sync automatically.
+
+### Install (one-time)
+
+**bash** — add to `~/.bashrc`:
+```bash
+eval "$(databricks-claude completion bash)"
+```
+
+**zsh** — add to `~/.zshrc`:
+```zsh
+eval "$(databricks-claude completion zsh)"
+```
+
+**fish** — add to `~/.config/fish/config.fish`:
+```fish
+databricks-claude completion fish | source
+```
+
+### Homebrew
+
+If installed via `brew install IceRhymers/tap/databricks-claude`, completions are installed automatically — no extra setup needed.
+
+### What completes
+
+- `--profile <TAB>` — lists profiles from `~/.databrickscfg` (updated live, no rehash needed)
+- `--log-file`, `--tls-cert`, `--tls-key`, `--upstream <TAB>` — file path completion
+- All other flags — name completion when you type `-`
+
 ## Profile Resolution Order
 
 1. `--profile` CLI flag (writes to state file for future runs)
