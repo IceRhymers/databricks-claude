@@ -138,6 +138,8 @@ databricks-claude --headless
 
 Install hooks so every Claude Code session auto-starts the proxy on startup and releases it cleanly on exit — no manual `--headless` needed.
 
+> **First-time setup:** Run `databricks-claude` at least once before installing hooks. This writes the correct `ANTHROPIC_BASE_URL` to `~/.claude/settings.json` so the proxy is used for all Claude clients. Once set, the hooks keep the proxy running automatically — including for clients that don't use the `databricks-claude` wrapper directly, such as the [Claude VS Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-code) and JetBrains/IntelliJ plugin.
+
 ### Install
 
 ```bash
