@@ -54,3 +54,18 @@ jobs:
             -f "client_payload[tool]=databricks-claude" \
             -f "client_payload[tag]=${{ needs.release-please.outputs.tag_name }}" \
             -f "client_payload[version]=${{ needs.release-please.outputs.tag_name }}"
+  update-scoop:
+    needs: [release-please, build-and-upload]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch manifest update to scoop-bucket
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          VERSION="${{ needs.release-please.outputs.tag_name }}"
+          VERSION="${VERSION#v}"
+          gh api repos/IceRhymers/scoop-bucket/dispatches \
+            -f event_type=update-databricks-claude \
+            -f "client_payload[binary]=databricks-claude" \
+            -f "client_payload[version]=${VERSION}"
