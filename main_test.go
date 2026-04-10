@@ -14,8 +14,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/IceRhymers/databricks-claude/pkg/lifecycle"
 	"github.com/IceRhymers/databricks-claude/pkg/refcount"
 )
+
+// shutdownResp mirrors the JSON body returned by POST /shutdown for test decoding.
+type shutdownResp struct {
+	Remaining int  `json:"remaining"`
+	Exiting   bool `json:"exiting"`
+}
 
 // --- parseArgs tests ---
 
@@ -864,7 +871,7 @@ func TestShutdown_DecrementsRefcount(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := wrapWithLifecycle(inner, refcountPath, true, 0, "", doneCh)
+	handler := lifecycle.WrapWithLifecycle(lifecycle.Config{Inner: inner, RefcountPath: refcountPath, IsOwner: true, DoneCh: doneCh, LogPrefix: "test"})
 
 	// First shutdown: refcount goes from 2 to 1.
 	req := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
@@ -874,7 +881,7 @@ func TestShutdown_DecrementsRefcount(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	var resp shutdownResponse
+	var resp shutdownResp
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatal(err)
 	}
@@ -894,7 +901,7 @@ func TestShutdown_DecrementsRefcount(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	handler.ServeHTTP(rec2, req2)
 
-	var resp2 shutdownResponse
+	var resp2 shutdownResp
 	if err := json.NewDecoder(rec2.Body).Decode(&resp2); err != nil {
 		t.Fatal(err)
 	}
@@ -915,7 +922,7 @@ func TestShutdown_MethodNotAllowed(t *testing.T) {
 	doneCh := make(chan struct{})
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
 	refcountPath := filepath.Join(t.TempDir(), "refcount")
-	handler := wrapWithLifecycle(inner, refcountPath, true, 0, "", doneCh)
+	handler := lifecycle.WrapWithLifecycle(lifecycle.Config{Inner: inner, RefcountPath: refcountPath, IsOwner: true, DoneCh: doneCh, LogPrefix: "test"})
 
 	req := httptest.NewRequest(http.MethodGet, "/shutdown", nil)
 	rec := httptest.NewRecorder()
@@ -930,7 +937,7 @@ func TestShutdown_RequiresAPIKey(t *testing.T) {
 	doneCh := make(chan struct{})
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
 	refcountPath := filepath.Join(t.TempDir(), "refcount")
-	handler := wrapWithLifecycle(inner, refcountPath, true, 0, "my-secret-key", doneCh)
+	handler := lifecycle.WrapWithLifecycle(lifecycle.Config{Inner: inner, RefcountPath: refcountPath, IsOwner: true, APIKey: "my-secret-key", DoneCh: doneCh, LogPrefix: "test"})
 
 	// No auth header → 401.
 	req := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
@@ -970,7 +977,7 @@ func TestShutdown_PassesThrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	refcountPath := filepath.Join(t.TempDir(), "refcount")
-	handler := wrapWithLifecycle(inner, refcountPath, true, 0, "", doneCh)
+	handler := lifecycle.WrapWithLifecycle(lifecycle.Config{Inner: inner, RefcountPath: refcountPath, IsOwner: true, DoneCh: doneCh, LogPrefix: "test"})
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/messages", nil)
 	rec := httptest.NewRecorder()
@@ -987,7 +994,7 @@ func TestIdleTimeout_TriggersShutdown(t *testing.T) {
 	doneCh := make(chan struct{})
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
 	refcountPath := filepath.Join(t.TempDir(), "refcount")
-	_ = wrapWithLifecycle(inner, refcountPath, true, 50*time.Millisecond, "", doneCh)
+	_ = lifecycle.WrapWithLifecycle(lifecycle.Config{Inner: inner, RefcountPath: refcountPath, IsOwner: true, IdleTimeout: 50 * time.Millisecond, DoneCh: doneCh, LogPrefix: "test"})
 
 	select {
 	case <-doneCh:
@@ -1003,7 +1010,7 @@ func TestIdleTimeout_ResetByRequest(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	refcountPath := filepath.Join(t.TempDir(), "refcount")
-	handler := wrapWithLifecycle(inner, refcountPath, true, 100*time.Millisecond, "", doneCh)
+	handler := lifecycle.WrapWithLifecycle(lifecycle.Config{Inner: inner, RefcountPath: refcountPath, IsOwner: true, IdleTimeout: 100 * time.Millisecond, DoneCh: doneCh, LogPrefix: "test"})
 
 	// Send a request at 60ms to reset the timer.
 	time.Sleep(60 * time.Millisecond)
@@ -1034,7 +1041,7 @@ func TestIdleTimeout_ZeroDisables(t *testing.T) {
 	doneCh := make(chan struct{})
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
 	refcountPath := filepath.Join(t.TempDir(), "refcount")
-	_ = wrapWithLifecycle(inner, refcountPath, true, 0, "", doneCh)
+	_ = lifecycle.WrapWithLifecycle(lifecycle.Config{Inner: inner, RefcountPath: refcountPath, IsOwner: true, DoneCh: doneCh, LogPrefix: "test"})
 
 	time.Sleep(100 * time.Millisecond)
 	select {
