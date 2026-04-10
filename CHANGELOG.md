@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/IceRhymers/databricks-claude/compare/v0.11.0...v0.11.1) (2026-04-10)
+
+
+### Bug Fixes
+
+* treat missing settings.json as empty document ([#81](https://github.com/IceRhymers/databricks-claude/issues/81)) ([e957c4f](https://github.com/IceRhymers/databricks-claude/commit/e957c4f0db558e797db1609878c111dacb2919c1))
+
 ## [0.11.0](https://github.com/IceRhymers/databricks-claude/compare/v0.10.1...v0.11.0) (2026-04-10)
 
 
