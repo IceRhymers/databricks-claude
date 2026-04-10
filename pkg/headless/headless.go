@@ -50,6 +50,9 @@ type Config struct {
 // Ensure checks whether the proxy is healthy on the given port.
 // If not, it starts a detached headless proxy and polls until ready (max 10s).
 func Ensure(cfg Config) {
+	if cfg.Scheme == "" {
+		cfg.Scheme = "http"
+	}
 	if cfg.ManagedEnvVar != "" && os.Getenv(cfg.ManagedEnvVar) == "1" {
 		log.Printf("%s: --headless-ensure: skipped (managed session)", cfg.LogPrefix)
 		return
