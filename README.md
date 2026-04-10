@@ -348,6 +348,50 @@ func main() {
 }
 ```
 
+## Automatic Update Check
+
+`databricks-claude` checks for newer releases on startup (once every 24 hours) and prints a one-line notice to stderr when an update is available. The check is synchronous with a 2-second timeout — if GitHub is unreachable it silently skips.
+
+### Update notification
+
+When a newer version exists you'll see:
+
+```
+# Direct install
+databricks-claude: update available (v0.11.0). Run: databricks-claude update
+
+# Homebrew install
+databricks-claude: update available (v0.11.0). Run: brew upgrade databricks-claude
+```
+
+### `update` subcommand
+
+```bash
+databricks-claude update
+```
+
+Force-checks GitHub for the latest release (bypasses the 24-hour cache) and prints upgrade instructions:
+
+| Install method | Output |
+|---|---|
+| Already latest | `databricks-claude v0.10.1 is already the latest version` |
+| Direct install | `Update available: v0.11.0. Download from: https://github.com/...` |
+| Homebrew | `Update available: v0.11.0. Run: brew upgrade databricks-claude` |
+
+No binary is replaced — the command prints instructions only. In-place self-update is planned for a future release.
+
+### Opt out
+
+```bash
+# Per-invocation flag
+databricks-claude --no-update-check
+
+# Per-session or permanent (add to shell profile)
+export DATABRICKS_NO_UPDATE_CHECK=1
+```
+
+Both suppress the startup check and disable the `update` subcommand.
+
 ## License
 
 MIT

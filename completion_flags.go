@@ -33,6 +33,7 @@ var flagDefs = []completion.FlagDef{
 	{Name: "uninstall-hooks", Description: "Remove databricks-claude hooks from ~/.claude/settings.json"},
 	{Name: "headless-ensure", Description: "Start proxy if not running — called by the SessionStart hook"},
 	{Name: "headless-release", Description: "Decrement proxy refcount — called by the Stop hook"},
+	{Name: "no-update-check", Description: "Skip the automatic update check on startup"},
 }
 
 // knownFlags is the set of flag names (with "--" prefix) that databricks-claude
