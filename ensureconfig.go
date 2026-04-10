@@ -55,9 +55,13 @@ func ensureConfig(proxyURL string, otelEnv map[string]string) error {
 }
 
 // readSettingsJSON reads and parses a settings.json file.
+// If the file does not exist, an empty document is returned.
 func readSettingsJSON(path string) (map[string]interface{}, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]interface{}{}, nil
+		}
 		return nil, err
 	}
 	var doc map[string]interface{}

@@ -580,9 +580,13 @@ func listenerPort(ln net.Listener, fallback int) int {
 }
 
 // readSettingsDoc reads and parses settings.json, returning the full document.
+// If the file does not exist, an empty document is returned.
 func readSettingsDoc(path string) (map[string]interface{}, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]interface{}{}, nil
+		}
 		return nil, err
 	}
 	var doc map[string]interface{}
