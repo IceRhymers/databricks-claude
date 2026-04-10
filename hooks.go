@@ -6,10 +6,10 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
+	"github.com/IceRhymers/databricks-claude/pkg/headless"
 	"github.com/IceRhymers/databricks-claude/pkg/refcount"
 )
 
@@ -17,47 +17,12 @@ import (
 // If not, it starts a detached headless proxy and polls until ready (max 10s).
 // Called by the SessionStart hook via: databricks-claude --headless-ensure
 func headlessEnsure(port int) {
-	if os.Getenv("DATABRICKS_CLAUDE_MANAGED") == "1" {
-		log.Printf("databricks-claude: --headless-ensure: skipped (managed session)")
-		return
-	}
-
-	// Acquire refcount FIRST so every ensure/release pair is symmetric.
-	refcountPath := refcountPathForPort(port)
-	if err := refcount.Acquire(refcountPath); err != nil {
-		log.Printf("databricks-claude: --headless-ensure: refcount acquire warning: %v", err)
-	}
-
-	if isProxyHealthy(port) {
-		return // already running, refcount incremented
-	}
-
-	self, err := os.Executable()
-	if err != nil {
-		refcount.Release(refcountPath) // undo acquire on failure
-		log.Fatalf("databricks-claude: --headless-ensure: cannot find self: %v", err)
-	}
-
-	cmd := exec.Command(self, "--headless", fmt.Sprintf("--port=%d", port))
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	if err := cmd.Start(); err != nil {
-		refcount.Release(refcountPath) // undo acquire on failure
-		log.Fatalf("databricks-claude: --headless-ensure: failed to start proxy: %v", err)
-	}
-	if err := cmd.Process.Release(); err != nil {
-		log.Printf("databricks-claude: --headless-ensure: release warning: %v", err)
-	}
-
-	// Poll until healthy or timeout.
-	for i := 0; i < 20; i++ {
-		time.Sleep(500 * time.Millisecond)
-		if isProxyHealthy(port) {
-			return
-		}
-	}
-	refcount.Release(refcountPath) // undo acquire on failure
-	log.Fatalf("databricks-claude: --headless-ensure: proxy did not become healthy within 10s")
+	headless.Ensure(headless.Config{
+		Port:          port,
+		ManagedEnvVar: "DATABRICKS_CLAUDE_MANAGED",
+		LogPrefix:     "databricks-claude",
+		RefcountPath:  refcount.PathForPort(".databricks-claude-sessions", port),
+	})
 }
 
 // headlessRelease calls POST /shutdown on the proxy to decrement the refcount.
@@ -76,17 +41,6 @@ func headlessRelease(port int) {
 		return
 	}
 	resp.Body.Close()
-}
-
-// isProxyHealthy returns true if the proxy on port responds to GET /health.
-func isProxyHealthy(port int) bool {
-	client := &http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
 }
 
 // installHooks merges the databricks-claude SessionStart and Stop hooks into

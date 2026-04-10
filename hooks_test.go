@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/IceRhymers/databricks-claude/pkg/refcount"
 )
 
 // TestHeadlessEnsure_ManagedSessionSkips verifies that headlessEnsure returns
@@ -58,7 +60,7 @@ func TestHeadlessEnsure_AcquiresRefcount(t *testing.T) {
 	}
 
 	// Ensure the refcount file doesn't exist before the call.
-	rcPath := refcountPathForPort(port)
+	rcPath := refcount.PathForPort(".databricks-claude-sessions", port)
 	os.Remove(rcPath)
 	t.Cleanup(func() { os.Remove(rcPath) })
 
@@ -82,11 +84,11 @@ func TestHeadlessEnsure_AcquiresRefcount(t *testing.T) {
 }
 
 // TestRefcountPathForPort verifies that the refcount file path is constructed
-// correctly from the port number.
+// correctly from the port number via the shared pkg/refcount function.
 func TestRefcountPathForPort(t *testing.T) {
 	want := filepath.Join(os.TempDir(), ".databricks-claude-sessions-12345")
-	got := refcountPathForPort(12345)
+	got := refcount.PathForPort(".databricks-claude-sessions", 12345)
 	if got != want {
-		t.Errorf("refcountPathForPort(12345) = %q, want %q", got, want)
+		t.Errorf("PathForPort(..., 12345) = %q, want %q", got, want)
 	}
 }
