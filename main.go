@@ -25,6 +25,7 @@ import (
 	"github.com/IceRhymers/databricks-claude/pkg/portbind"
 	"github.com/IceRhymers/databricks-claude/pkg/proxy"
 	"github.com/IceRhymers/databricks-claude/pkg/refcount"
+	"github.com/IceRhymers/databricks-claude/pkg/updater"
 )
 
 // Version is set at build time via -ldflags.
@@ -38,11 +39,38 @@ func main() {
 		os.Exit(0)
 	}
 
+	// update — force-check for a newer release and print instructions.
+	if len(os.Args) >= 2 && os.Args[1] == "update" {
+		if os.Getenv("DATABRICKS_NO_UPDATE_CHECK") == "1" {
+			fmt.Fprintln(os.Stderr, "databricks-claude: update check disabled via DATABRICKS_NO_UPDATE_CHECK")
+			os.Exit(0)
+		}
+		cfg := buildUpdaterConfig()
+		cfg.CacheTTL = 0 // force fresh check
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r, err := updater.Check(ctx, cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "databricks-claude: update check failed: %v\n", err)
+			os.Exit(1)
+		}
+		if !r.UpdateAvailable {
+			fmt.Fprintf(os.Stderr, "databricks-claude v%s is already the latest version\n", Version)
+			os.Exit(0)
+		}
+		if r.IsHomebrew {
+			fmt.Fprintf(os.Stderr, "Update available: v%s. Run: brew upgrade databricks-claude\n", r.LatestVersion)
+		} else {
+			fmt.Fprintf(os.Stderr, "Update available: v%s. Download from: %s\n", r.LatestVersion, r.ReleaseURL)
+		}
+		os.Exit(0)
+	}
+
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
 	// Tip: use "databricks-claude -- completion" to pass "completion" to claude.
-	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, portFlag, headless, idleTimeout, installHooksFlag, uninstallHooksFlag, headlessEnsureFlag, headlessReleaseFlag, claudeArgs := parseArgs(os.Args[1:])
+	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, portFlag, headless, idleTimeout, installHooksFlag, uninstallHooksFlag, headlessEnsureFlag, headlessReleaseFlag, noUpdateCheck, claudeArgs := parseArgs(os.Args[1:])
 
 	if showHelp {
 		handleHelp(upstream)
@@ -407,6 +435,11 @@ func main() {
 		return
 	}
 
+	// --- Synchronous update check (before child to avoid stderr interleaving) ---
+	if !noUpdateCheck && os.Getenv("DATABRICKS_NO_UPDATE_CHECK") != "1" {
+		printUpdateNotice(buildUpdaterConfig())
+	}
+
 	// --- Run child ---
 	exitCode, err := RunChild(context.Background(), claudeArgs)
 	if err != nil {
@@ -573,7 +606,7 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 // databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-metrics-table, --otel-logs-table, --no-otel, --proxy-api-key, --tls-cert, --tls-key.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, portFlag int, headless bool, idleTimeout time.Duration, installHooksFlag bool, uninstallHooksFlag bool, headlessEnsureFlag bool, headlessReleaseFlag bool, claudeArgs []string) {
+func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, portFlag int, headless bool, idleTimeout time.Duration, installHooksFlag bool, uninstallHooksFlag bool, headlessEnsureFlag bool, headlessReleaseFlag bool, noUpdateCheck bool, claudeArgs []string) {
 	otelMetricsTable = "main.claude_telemetry.claude_otel_metrics" // default
 	idleTimeout = 30 * time.Minute                                 // default
 
@@ -703,6 +736,8 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 					headlessEnsureFlag = true
 				case "--headless-release":
 					headlessReleaseFlag = true
+				case "--no-update-check":
+					noUpdateCheck = true
 				case "--idle-timeout":
 					raw := value
 					if raw == "" && i+1 < len(args) {
@@ -760,8 +795,13 @@ Databricks-Claude Flags:
   --idle-timeout duration      Idle timeout for headless mode (default 30m, 0 disables, bare number = minutes)
   --install-hooks              Install SessionStart/Stop hooks into ~/.claude/settings.json
   --uninstall-hooks            Remove databricks-claude hooks from ~/.claude/settings.json
+  --no-update-check            Skip the automatic update check on startup
   --version                    Print version and exit
   --help, -h                   Show this help message
+
+Subcommands:
+  completion <shell>           Generate shell completions (bash, zsh, fish)
+  update                       Check for a newer release and print upgrade instructions
 
 Example Unity Catalog table setup (run in a Databricks SQL warehouse):
 
@@ -796,6 +836,38 @@ Claude CLI Options:
 	cmd.Stderr = &buf
 	_ = cmd.Run()
 	fmt.Print(buf.String())
+}
+
+// buildUpdaterConfig returns the standard updater.Config for databricks-claude.
+func buildUpdaterConfig() updater.Config {
+	home, _ := os.UserHomeDir()
+	return updater.Config{
+		RepoSlug:       "IceRhymers/databricks-claude",
+		CurrentVersion: Version,
+		BinaryName:     "databricks-claude",
+		CacheFile:      filepath.Join(home, ".claude", ".update-check.json"),
+		CacheTTL:       24 * time.Hour,
+	}
+}
+
+// printUpdateNotice checks for a newer release and prints a one-line notice
+// to stderr. The 2-second timeout ensures cold misses don't delay startup.
+func printUpdateNotice(cfg updater.Config) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r, err := updater.Check(ctx, cfg)
+	if err != nil {
+		log.Printf("databricks-claude: update check: %v", err)
+		return
+	}
+	if !r.UpdateAvailable {
+		return
+	}
+	if r.IsHomebrew {
+		fmt.Fprintf(os.Stderr, "databricks-claude: update available (v%s). Run: brew upgrade databricks-claude\n", r.LatestVersion)
+	} else {
+		fmt.Fprintf(os.Stderr, "databricks-claude: update available (v%s). Run: databricks-claude update\n", r.LatestVersion)
+	}
 }
 
 // handlePrintEnv prints resolved configuration with the token redacted.
