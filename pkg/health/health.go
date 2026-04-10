@@ -27,14 +27,3 @@ func ProxyHealthy(port int, scheme string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// IsProxyHealthy returns true if the proxy on port responds to GET /health
-// over plain HTTP.
-func IsProxyHealthy(port int) bool {
-	client := &http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}

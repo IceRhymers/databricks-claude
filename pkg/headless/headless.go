@@ -37,6 +37,14 @@ type Config struct {
 	// refcount around the operation (claude behavior). When empty, refcount
 	// is skipped (codex/opencode behavior).
 	RefcountPath string
+
+	// TLSCert is the path to the TLS certificate file.
+	// When non-empty, --tls-cert is forwarded to the subprocess.
+	TLSCert string
+
+	// TLSKey is the path to the TLS key file.
+	// When non-empty, --tls-key is forwarded to the subprocess.
+	TLSKey string
 }
 
 // Ensure checks whether the proxy is healthy on the given port.
@@ -54,7 +62,7 @@ func Ensure(cfg Config) {
 		}
 	}
 
-	if health.IsProxyHealthy(cfg.Port) {
+	if health.ProxyHealthy(cfg.Port, cfg.Scheme) {
 		return // already running, refcount incremented
 	}
 
@@ -70,7 +78,7 @@ func Ensure(cfg Config) {
 		}
 	}
 
-	cmd := exec.Command(self, "--headless", fmt.Sprintf("--port=%d", cfg.Port))
+	cmd := exec.Command(self, buildArgs(cfg)...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
@@ -86,7 +94,7 @@ func Ensure(cfg Config) {
 	// Poll until healthy or timeout.
 	for i := 0; i < 20; i++ {
 		time.Sleep(500 * time.Millisecond)
-		if health.IsProxyHealthy(cfg.Port) {
+		if health.ProxyHealthy(cfg.Port, cfg.Scheme) {
 			return
 		}
 	}
@@ -94,4 +102,16 @@ func Ensure(cfg Config) {
 		refcount.Release(cfg.RefcountPath) // undo acquire on failure
 	}
 	log.Fatalf("%s: --headless-ensure: proxy did not become healthy within 10s", cfg.LogPrefix)
+}
+
+// buildArgs constructs the CLI arguments for the detached proxy subprocess.
+func buildArgs(cfg Config) []string {
+	args := []string{"--headless", fmt.Sprintf("--port=%d", cfg.Port)}
+	if cfg.TLSCert != "" {
+		args = append(args, "--tls-cert="+cfg.TLSCert)
+	}
+	if cfg.TLSKey != "" {
+		args = append(args, "--tls-key="+cfg.TLSKey)
+	}
+	return args
 }

@@ -49,7 +49,8 @@ func TestProxyHealthy_Non200(t *testing.T) {
 	}
 }
 
-func TestIsProxyHealthy_Healthy(t *testing.T) {
+func TestProxyHealthy_SchemeMismatch(t *testing.T) {
+	// Plain-HTTP server should not be detected as healthy when scheme is "https".
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
 			w.WriteHeader(http.StatusOK)
@@ -60,20 +61,8 @@ func TestIsProxyHealthy_Healthy(t *testing.T) {
 	defer srv.Close()
 
 	port := srv.Listener.Addr().(*net.TCPAddr).Port
-	if !IsProxyHealthy(port) {
-		t.Error("expected IsProxyHealthy to return true for healthy server")
+	if ProxyHealthy(port, "https") {
+		t.Error("expected ProxyHealthy to return false for HTTP server checked with https scheme")
 	}
 }
 
-func TestIsProxyHealthy_Unhealthy(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-
-	if IsProxyHealthy(port) {
-		t.Error("expected IsProxyHealthy to return false for closed port")
-	}
-}

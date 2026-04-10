@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -32,6 +33,43 @@ func TestEnsure_AlreadyHealthy(t *testing.T) {
 	// Should return immediately without trying to start a new proxy.
 	Ensure(Config{
 		Port:      port,
+		Scheme:    "http",
 		LogPrefix: "test",
 	})
+}
+
+func TestBuildArgs_NoTLS(t *testing.T) {
+	args := buildArgs(Config{Port: 8080})
+	expected := []string{"--headless", "--port=8080"}
+	if !reflect.DeepEqual(args, expected) {
+		t.Errorf("expected %v, got %v", expected, args)
+	}
+}
+
+func TestBuildArgs_WithTLSCert(t *testing.T) {
+	args := buildArgs(Config{Port: 8080, TLSCert: "/path/to/cert.pem"})
+	expected := []string{"--headless", "--port=8080", "--tls-cert=/path/to/cert.pem"}
+	if !reflect.DeepEqual(args, expected) {
+		t.Errorf("expected %v, got %v", expected, args)
+	}
+}
+
+func TestBuildArgs_WithTLSKey(t *testing.T) {
+	args := buildArgs(Config{Port: 8080, TLSKey: "/path/to/key.pem"})
+	expected := []string{"--headless", "--port=8080", "--tls-key=/path/to/key.pem"}
+	if !reflect.DeepEqual(args, expected) {
+		t.Errorf("expected %v, got %v", expected, args)
+	}
+}
+
+func TestBuildArgs_WithTLSCertAndKey(t *testing.T) {
+	args := buildArgs(Config{
+		Port:    8443,
+		TLSCert: "/cert.pem",
+		TLSKey:  "/key.pem",
+	})
+	expected := []string{"--headless", "--port=8443", "--tls-cert=/cert.pem", "--tls-key=/key.pem"}
+	if !reflect.DeepEqual(args, expected) {
+		t.Errorf("expected %v, got %v", expected, args)
+	}
 }
