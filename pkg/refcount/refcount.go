@@ -2,6 +2,18 @@
 // on Windows).
 package refcount
 
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+// PathForPort returns the file path used for cross-process session counting.
+// prefix is the tool-specific prefix (e.g. ".databricks-claude-sessions").
+func PathForPort(prefix string, port int) string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("%s-%d", prefix, port))
+}
+
 // Acquire atomically increments the session counter at path.
 func Acquire(path string) error {
 	return withLock(path, func(c *counter) { c.Count++ })

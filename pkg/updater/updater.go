@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -225,6 +226,27 @@ func readCache(path string) (cacheEntry, error) {
 		return cacheEntry{}, fmt.Errorf("parsing cache: %w", err)
 	}
 	return entry, nil
+}
+
+// PrintUpdateNotice checks for a newer release and prints a one-line notice
+// to stderr. The 2-second timeout ensures cold misses don't delay startup.
+// Uses cfg.BinaryName for the log prefix and output message.
+func PrintUpdateNotice(cfg Config) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	r, err := Check(ctx, cfg)
+	if err != nil {
+		log.Printf("%s: update check: %v", cfg.BinaryName, err)
+		return
+	}
+	if !r.UpdateAvailable {
+		return
+	}
+	if r.IsHomebrew {
+		fmt.Fprintf(os.Stderr, "%s: update available (v%s). Run: brew upgrade %s\n", cfg.BinaryName, r.LatestVersion, cfg.BinaryName)
+	} else {
+		fmt.Fprintf(os.Stderr, "%s: update available (v%s). Run: %s update\n", cfg.BinaryName, r.LatestVersion, cfg.BinaryName)
+	}
 }
 
 // writeCache writes the cache file atomically (temp + rename).

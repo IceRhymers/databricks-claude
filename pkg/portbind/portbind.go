@@ -33,6 +33,18 @@ func Bind(toolName string, port int) (net.Listener, bool, error) {
 	return ln, true, nil
 }
 
+// ListenerPort extracts the port from a net.Listener, falling back to the
+// given fallback if the listener is nil (e.g., non-owner case).
+func ListenerPort(ln net.Listener, fallback int) int {
+	if ln == nil {
+		return fallback
+	}
+	if addr, ok := ln.Addr().(*net.TCPAddr); ok {
+		return addr.Port
+	}
+	return fallback
+}
+
 // HealthResponse is the response from GET /health.
 type HealthResponse struct {
 	Tool    string `json:"tool"`
