@@ -30,7 +30,16 @@ brew tap IceRhymers/tap
 brew install databricks-claude
 ```
 
-Via Go:
+### Via Scoop (Windows)
+
+```powershell
+scoop bucket add icerhymers https://github.com/IceRhymers/scoop-bucket
+scoop install databricks-claude
+```
+
+### Direct binary (Windows)
+
+Download the latest release from the [releases page](https://github.com/IceRhymers/databricks-claude/releases), pick `databricks-claude-windows-amd64.exe` (or `arm64`), rename it to `databricks-claude.exe`, and place it somewhere on your `PATH`.
 
 ### From source
 
