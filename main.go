@@ -66,6 +66,26 @@ func main() {
 		os.Exit(0)
 	}
 
+	// --credential-helper — invoked by Claude Desktop (inferenceCredentialHelper).
+	// Must be handled VERY early: outputs only the raw token to stdout, exits.
+	// Profile resolution mirrors the main flow (state file > "DEFAULT").
+	if hasFlag(os.Args[1:], "--credential-helper") {
+		runCredentialHelper(extractProfileFlag(os.Args[1:]))
+		// runCredentialHelper always calls os.Exit; this return is unreachable.
+		return
+	}
+
+	// --generate-desktop-config — write the platform-specific Claude Desktop
+	// MDM config file (mobileconfig on macOS, .reg on Windows). Optional
+	// --output <path> selects an explicit target.
+	if hasFlag(os.Args[1:], "--generate-desktop-config") {
+		runGenerateDesktopConfig(
+			extractProfileFlag(os.Args[1:]),
+			extractOutputFlag(os.Args[1:]),
+		)
+		return
+	}
+
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
@@ -717,6 +737,11 @@ Databricks-Claude Flags:
   --install-hooks              Install SessionStart/Stop hooks into ~/.claude/settings.json
   --uninstall-hooks            Remove databricks-claude hooks from ~/.claude/settings.json
   --no-update-check            Skip the automatic update check on startup
+  --credential-helper          Print a fresh Databricks token to stdout (called by Claude
+                               Desktop's inferenceCredentialHelper); honours --profile
+  --generate-desktop-config    Write a Claude Desktop MDM config (.mobileconfig on macOS,
+                               .reg on Windows); honours --profile and --output
+  --output string              Explicit output path for --generate-desktop-config
   --version                    Print version and exit
   --help, -h                   Show this help message
 
