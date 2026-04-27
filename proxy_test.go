@@ -203,7 +203,7 @@ func TestProxy_PathAlgebra_OTEL(t *testing.T) {
 
 // TestProxy_PreservesRequestBody verifies that POST bodies are forwarded intact.
 func TestProxy_PreservesRequestBody(t *testing.T) {
-	body := `{"model":"claude-opus-4-6","messages":[]}`
+	body := `{"model":"claude-opus-4-7","messages":[]}`
 	var gotBody string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)

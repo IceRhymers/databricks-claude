@@ -259,7 +259,7 @@ databricks-claude configuration:
   DATABRICKS_HOST:      https://adb-1234567890123456.7.azuredatabricks.net
   ANTHROPIC_BASE_URL:   https://1234567890123456.ai-gateway.cloud.databricks.com/anthropic
   ANTHROPIC_AUTH_TOKEN: dapi-***
-  ANTHROPIC_MODEL:
+  ANTHROPIC_MODEL: databricks-claude-opus-4-7
   Upstream binary:      /usr/local/bin/claude
   OTEL enabled:         false
 ```
