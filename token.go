@@ -6,12 +6,75 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/IceRhymers/databricks-claude/pkg/tokencache"
 )
+
+// fallbackCLIDirs lists install locations to probe when "databricks" is not on
+// PATH. Order matters: most-likely first. GUI-launched subprocesses (e.g.
+// Claude Desktop invoking the credential helper) inherit launchd's minimal
+// PATH (/usr/bin:/bin:/usr/sbin:/sbin), which omits all of these.
+var fallbackCLIDirs = []string{
+	"/usr/local/bin",
+	"/opt/homebrew/bin",
+	"/opt/homebrew/sbin",
+	".local/bin", // resolved against $HOME
+	"go/bin",     // resolved against $HOME
+	"bin",        // resolved against $HOME
+}
+
+// resolveDatabricksCLI returns an executable path for the Databricks CLI.
+// Lookup order:
+//  1. Absolute or path-qualified cmdName → returned unchanged (back-compat for tests).
+//  2. $DATABRICKS_CLI env override, if set and executable.
+//  3. exec.LookPath(cmdName), which honors the inherited PATH.
+//  4. A scan of common install dirs (/usr/local/bin, /opt/homebrew/bin, ~/.local/bin, ~/go/bin, ~/bin).
+//
+// If none match, cmdName is returned unchanged so the eventual exec error
+// surfaces with its original message.
+func resolveDatabricksCLI(cmdName string) string {
+	if cmdName == "" {
+		cmdName = "databricks"
+	}
+	if filepath.IsAbs(cmdName) || filepath.Base(cmdName) != cmdName {
+		return cmdName
+	}
+	if override := os.Getenv("DATABRICKS_CLI"); override != "" {
+		if isExecutableFile(override) {
+			return override
+		}
+	}
+	if p, err := exec.LookPath(cmdName); err == nil {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	for _, dir := range fallbackCLIDirs {
+		if !filepath.IsAbs(dir) {
+			if home == "" {
+				continue
+			}
+			dir = filepath.Join(home, dir)
+		}
+		candidate := filepath.Join(dir, cmdName)
+		if isExecutableFile(candidate) {
+			return candidate
+		}
+	}
+	return cmdName
+}
+
+func isExecutableFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return info.Mode()&0o111 != 0
+}
 
 // TokenProvider is an alias to the pkg type for backward compatibility.
 type TokenProvider = tokencache.TokenProvider
@@ -32,7 +95,7 @@ func (f *databricksFetcher) FetchToken(ctx context.Context) (string, time.Time, 
 	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(fetchCtx, f.cmdName, "auth", "token", "--profile", f.profile)
+	cmd := exec.CommandContext(fetchCtx, resolveDatabricksCLI(f.cmdName), "auth", "token", "--profile", f.profile)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("databricks auth token failed: %w", err)
@@ -99,7 +162,7 @@ func DiscoverHost(profile, cmdName string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, cmdName, "auth", "env", "--profile", profile, "--output", "json")
+	cmd := exec.CommandContext(ctx, resolveDatabricksCLI(cmdName), "auth", "env", "--profile", profile, "--output", "json")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("databricks auth env failed: %w", err)

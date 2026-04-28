@@ -66,6 +66,23 @@ func main() {
 		os.Exit(0)
 	}
 
+	// argv[0] alias `databricks-claude-credential-helper` — Desktop's
+	// mobileconfig accepts only a path with no arguments; install methods
+	// drop a symlink at this name pointing at the main binary so Desktop's
+	// inferenceCredentialHelper can target a stable path.
+	if isCredentialHelperBinaryName(os.Args[0]) {
+		runCredentialHelper(extractProfileFlag(os.Args[1:]))
+		return
+	}
+
+	// `desktop` subcommand — Claude Desktop integration setup. Encapsulates
+	// `generate-config` and an explicit `credential-helper` action so these
+	// flags don't pollute the root flag namespace.
+	if len(os.Args) >= 2 && os.Args[1] == "desktop" {
+		runDesktopCommand(os.Args[2:])
+		return
+	}
+
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
@@ -723,6 +740,8 @@ Databricks-Claude Flags:
 Subcommands:
   completion <shell>           Generate shell completions (bash, zsh, fish)
   update                       Check for a newer release and print upgrade instructions
+  desktop <action>             Claude Desktop integration. Run 'databricks-claude desktop'
+                               for actions (generate-config, credential-helper) and flags.
 
 Example Unity Catalog table setup (run in a Databricks SQL warehouse):
 
