@@ -69,7 +69,13 @@ func main() {
 	// --credential-helper — invoked by Claude Desktop (inferenceCredentialHelper).
 	// Must be handled VERY early: outputs only the raw token to stdout, exits.
 	// Profile resolution mirrors the main flow (state file > "DEFAULT").
-	if hasFlag(os.Args[1:], "--credential-helper") {
+	//
+	// Two dispatch paths:
+	//   1. Explicit `--credential-helper` flag — useful for scripting/debug.
+	//   2. argv[0] alias `databricks-claude-credential-helper` — Desktop's
+	//      mobileconfig accepts only a path, no args; install methods drop a
+	//      symlink at this name pointing at the main binary.
+	if hasFlag(os.Args[1:], "--credential-helper") || isCredentialHelperBinaryName(os.Args[0]) {
 		runCredentialHelper(extractProfileFlag(os.Args[1:]))
 		// runCredentialHelper always calls os.Exit; this return is unreachable.
 		return
@@ -82,6 +88,7 @@ func main() {
 		runGenerateDesktopConfig(
 			extractProfileFlag(os.Args[1:]),
 			extractOutputFlag(os.Args[1:]),
+			extractBinaryPathFlag(os.Args[1:]),
 		)
 		return
 	}
@@ -737,11 +744,16 @@ Databricks-Claude Flags:
   --install-hooks              Install SessionStart/Stop hooks into ~/.claude/settings.json
   --uninstall-hooks            Remove databricks-claude hooks from ~/.claude/settings.json
   --no-update-check            Skip the automatic update check on startup
-  --credential-helper          Print a fresh Databricks token to stdout (called by Claude
-                               Desktop's inferenceCredentialHelper); honours --profile
+  --credential-helper          Print a fresh Databricks token to stdout (also dispatched
+                               via the databricks-claude-credential-helper symlink that
+                               Claude Desktop's inferenceCredentialHelper points at);
+                               honours --profile
   --generate-desktop-config    Write a Claude Desktop MDM config (.mobileconfig on macOS,
-                               .reg on Windows); honours --profile and --output
+                               .reg on Windows); honours --profile, --output, --binary-path
   --output string              Explicit output path for --generate-desktop-config
+  --binary-path string         Credential-helper path to embed in the generated config
+                               (default: derived from the running binary). Use this for
+                               MDM rollouts so one config works on every endpoint.
   --version                    Print version and exit
   --help, -h                   Show this help message
 

@@ -1,4 +1,7 @@
 databricks-claude
+databricks-claude-credential-helper
 dist/
 *.exe
 .omc/
+*.mobileconfig
+*.reg

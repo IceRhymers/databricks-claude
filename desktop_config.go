@@ -7,14 +7,59 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
+
+// helperDebugLog appends a single diagnostic line to
+// ~/Library/Logs/databricks-claude/credential-helper.log (or the platform
+// equivalent). Best-effort: failures are silent. Used only to diagnose how
+// Claude Desktop spawns the helper.
+func helperDebugLog(format string, args ...any) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return
+	}
+	dir := filepath.Join(home, "Library", "Logs", "databricks-claude")
+	if runtime.GOOS != "darwin" {
+		dir = filepath.Join(home, ".cache", "databricks-claude")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "credential-helper.log"),
+		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s pid=%d ppid=%d ", time.Now().Format(time.RFC3339Nano), os.Getpid(), os.Getppid())
+	fmt.Fprintf(f, format, args...)
+	fmt.Fprintln(f)
+}
 
 // inferenceModelsJSON is the JSON-encoded model list embedded in the generated
 // Claude Desktop configuration. Kept as a single source of truth so the macOS
 // and Windows generators stay aligned.
 const inferenceModelsJSON = `[{"name":"databricks-claude-opus-4-7","supports1m":true},{"name":"databricks-claude-opus-4-6","supports1m":true},{"name":"databricks-claude-sonnet-4-6","supports1m":true},{"name":"databricks-claude-sonnet-4-5","supports1m":true},{"name":"databricks-claude-haiku-4-5"}]`
+
+// credentialHelperBinaryName is the basename used to dispatch into
+// runCredentialHelper via argv[0]. Each install method is expected to install
+// a symlink (or hard copy) at this name pointing at the main binary so that
+// Claude Desktop's mobileconfig — which can only specify a path, not args —
+// can target it directly.
+const credentialHelperBinaryName = "databricks-claude-credential-helper"
+
+// isCredentialHelperBinaryName returns true if the program was invoked under
+// the credential-helper alias. Pass os.Args[0] (or any argv[0]-like value).
+func isCredentialHelperBinaryName(arg0 string) bool {
+	base := filepath.Base(arg0)
+	// On Windows the symlink name will carry an .exe suffix.
+	base = strings.TrimSuffix(base, ".exe")
+	return base == credentialHelperBinaryName
+}
 
 // runCredentialHelper fetches a fresh Databricks OAuth token and writes only
 // the raw token to stdout. Intended to be called by Claude Desktop via the
@@ -27,6 +72,9 @@ func runCredentialHelper(profile string) {
 	// anything onto stderr while Claude Desktop is watching.
 	log.SetOutput(io.Discard)
 
+	helperDebugLog("invoked args=%q HOME=%q PATH=%q USER=%q",
+		os.Args, os.Getenv("HOME"), os.Getenv("PATH"), os.Getenv("USER"))
+
 	resolved := profile
 	if resolved == "" {
 		if saved := loadState(); saved.Profile != "" {
@@ -36,20 +84,25 @@ func runCredentialHelper(profile string) {
 	if resolved == "" {
 		resolved = "DEFAULT"
 	}
+	helperDebugLog("profile resolved=%q (input=%q)", resolved, profile)
 
 	tp := NewTokenProvider(resolved, "")
 	tok, err := tp.Token(context.Background())
 	if err != nil {
+		helperDebugLog("FAIL profile=%q err=%v", resolved, err)
 		fmt.Fprintf(os.Stderr, "databricks-claude: credential helper failed: %v\n", err)
 		os.Exit(1)
 	}
 	tok = strings.TrimSpace(tok)
 	if tok == "" {
+		helperDebugLog("FAIL profile=%q empty token", resolved)
 		fmt.Fprintln(os.Stderr, "databricks-claude: credential helper got empty token")
 		os.Exit(1)
 	}
+	helperDebugLog("OK profile=%q tok_len=%d tok_prefix=%q", resolved, len(tok), tok[:min(20, len(tok))])
 	// Write raw token, no trailing newline. Desktop reads stdout verbatim.
 	if _, err := io.WriteString(os.Stdout, tok); err != nil {
+		helperDebugLog("FAIL stdout write err=%v", err)
 		os.Exit(1)
 	}
 	os.Exit(0)
@@ -64,7 +117,12 @@ func runCredentialHelper(profile string) {
 //
 // If outputPath is non-empty, that single path is used (the platform is
 // inferred from the file extension when present, otherwise from runtime.GOOS).
-func runGenerateDesktopConfig(profile, outputPath string) {
+//
+// binaryPathOverride lets MDM admins bake a fleet-wide path into the generated
+// config (e.g. /usr/local/bin/databricks-claude-credential-helper) so the same
+// .mobileconfig works on every endpoint regardless of the generating user's
+// install layout. When empty, the path is derived from the running binary.
+func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride string) {
 	log.SetOutput(io.Discard)
 
 	resolved := profile
@@ -92,14 +150,14 @@ func runGenerateDesktopConfig(profile, outputPath string) {
 	}
 	gatewayURL := ConstructGatewayURL(host, tok)
 
-	exe, err := os.Executable()
+	helperPath, err := resolveHelperPath(binaryPathOverride)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "databricks-claude: cannot resolve own executable path: %v\n", err)
+		fmt.Fprintf(os.Stderr, "databricks-claude: %v\n", err)
 		os.Exit(1)
 	}
 
 	if outputPath != "" {
-		if err := writeDesktopConfigByPath(outputPath, gatewayURL, exe); err != nil {
+		if err := writeDesktopConfigByPath(outputPath, gatewayURL, helperPath); err != nil {
 			fmt.Fprintf(os.Stderr, "databricks-claude: %v\n", err)
 			os.Exit(1)
 		}
@@ -111,7 +169,7 @@ func runGenerateDesktopConfig(profile, outputPath string) {
 	wrote := []string{}
 	if runtime.GOOS == "darwin" || (runtime.GOOS != "darwin" && runtime.GOOS != "windows") {
 		path := "databricks-claude-desktop.mobileconfig"
-		content, err := buildMobileconfig(gatewayURL, exe)
+		content, err := buildMobileconfig(gatewayURL, helperPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "databricks-claude: %v\n", err)
 			os.Exit(1)
@@ -124,7 +182,7 @@ func runGenerateDesktopConfig(profile, outputPath string) {
 	}
 	if runtime.GOOS == "windows" || (runtime.GOOS != "darwin" && runtime.GOOS != "windows") {
 		path := "databricks-claude-desktop.reg"
-		content := buildRegFile(gatewayURL, exe)
+		content := buildRegFile(gatewayURL, helperPath)
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			fmt.Fprintf(os.Stderr, "databricks-claude: write %s: %v\n", path, err)
 			os.Exit(1)
@@ -139,6 +197,28 @@ func runGenerateDesktopConfig(profile, outputPath string) {
 		printInstallInstructions(p)
 	}
 	os.Exit(0)
+}
+
+// resolveHelperPath returns the absolute path embedded into the generated
+// Claude Desktop config. Order:
+//  1. explicit override (e.g. /usr/local/bin/databricks-claude-credential-helper)
+//  2. derived from the running binary: replace its basename with the
+//     credential-helper alias name, preserving the install dir and any .exe
+//     suffix on Windows.
+func resolveHelperPath(override string) (string, error) {
+	if override != "" {
+		return override, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve own executable path: %w", err)
+	}
+	dir := filepath.Dir(exe)
+	name := credentialHelperBinaryName
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(dir, name), nil
 }
 
 // writeDesktopConfigByPath chooses the format based on file extension (or the
@@ -239,8 +319,6 @@ func buildMobileconfig(gatewayURL, helperPath string) (string, error) {
 				<string>gateway</string>
 				<key>inferenceGatewayBaseUrl</key>
 				<string>` + plistEscape(gatewayURL) + `</string>
-				<key>inferenceGatewayApiKey</key>
-				<string>managed-by-credential-helper</string>
 				<key>inferenceGatewayAuthScheme</key>
 				<string>bearer</string>
 				<key>inferenceModels</key>
@@ -303,7 +381,6 @@ func buildRegFile(gatewayURL, helperPath string) string {
 	b.WriteString(`"disableDeploymentModeChooser"=dword:00000001` + "\r\n")
 	b.WriteString(`"inferenceProvider"="gateway"` + "\r\n")
 	fmt.Fprintf(&b, "\"inferenceGatewayBaseUrl\"=\"%s\"\r\n", regEscape(gatewayURL))
-	b.WriteString(`"inferenceGatewayApiKey"="managed-by-credential-helper"` + "\r\n")
 	b.WriteString(`"inferenceGatewayAuthScheme"="bearer"` + "\r\n")
 	fmt.Fprintf(&b, "\"inferenceModels\"=\"%s\"\r\n", regEscape(inferenceModelsJSON))
 	fmt.Fprintf(&b, "\"inferenceCredentialHelper\"=\"%s\"\r\n", regEscape(helperPath))
@@ -351,6 +428,22 @@ func extractOutputFlag(args []string) string {
 		}
 		if strings.HasPrefix(a, "--output=") {
 			return strings.TrimPrefix(a, "--output=")
+		}
+	}
+	return ""
+}
+
+// extractBinaryPathFlag is the analogous helper for --binary-path. Used by
+// MDM admins to override the credential-helper path embedded in the generated
+// Claude Desktop config.
+func extractBinaryPathFlag(args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--binary-path" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(a, "--binary-path=") {
+			return strings.TrimPrefix(a, "--binary-path=")
 		}
 	}
 	return ""

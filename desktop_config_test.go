@@ -1,7 +1,9 @@
 package main
 
 import (
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -105,7 +107,6 @@ func TestBuildRegFile_ContainsRequiredKeys(t *testing.T) {
 		`"disableDeploymentModeChooser"=dword:00000001`,
 		`"inferenceProvider"="gateway"`,
 		`"inferenceGatewayBaseUrl"="` + gateway + `"`,
-		`"inferenceGatewayApiKey"="managed-by-credential-helper"`,
 		`"inferenceGatewayAuthScheme"="bearer"`,
 		`"inferenceCredentialHelperTtlSec"="55"`,
 		`"isClaudeCodeForDesktopEnabled"=dword:00000001`,
@@ -217,5 +218,81 @@ func TestHasFlag(t *testing.T) {
 	}
 	if hasFlag(nil, "--credential-helper") {
 		t.Error("hasFlag on nil should return false")
+	}
+}
+
+func TestIsCredentialHelperBinaryName(t *testing.T) {
+	cases := []struct {
+		arg0 string
+		want bool
+	}{
+		{"databricks-claude-credential-helper", true},
+		{"/usr/local/bin/databricks-claude-credential-helper", true},
+		{"/opt/homebrew/bin/databricks-claude-credential-helper", true},
+		{"databricks-claude-credential-helper.exe", true},
+		// Backslash path-separator handling is exercised in the platform-specific
+		// test below; filepath.Base on darwin/linux treats backslashes as
+		// literal characters, so we don't include a Windows-style path here.
+		// Main binary name must NOT trigger helper dispatch.
+		{"databricks-claude", false},
+		{"/usr/local/bin/databricks-claude", false},
+		{"databricks-claude.exe", false},
+		// Near-misses must not match.
+		{"databricks-claude-credential-helper-extra", false},
+		{"my-databricks-claude-credential-helper", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isCredentialHelperBinaryName(c.arg0); got != c.want {
+			t.Errorf("isCredentialHelperBinaryName(%q) = %v, want %v", c.arg0, got, c.want)
+		}
+	}
+}
+
+func TestExtractBinaryPathFlag(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{}, ""},
+		{[]string{"--generate-desktop-config"}, ""},
+		{[]string{"--binary-path", "/usr/local/bin/databricks-claude-credential-helper"}, "/usr/local/bin/databricks-claude-credential-helper"},
+		{[]string{"--binary-path=/opt/homebrew/bin/databricks-claude-credential-helper"}, "/opt/homebrew/bin/databricks-claude-credential-helper"},
+		{[]string{"--generate-desktop-config", "--binary-path", "/x"}, "/x"},
+		// Bare --binary-path without a value must not panic and must return "".
+		{[]string{"--binary-path"}, ""},
+	}
+	for _, c := range cases {
+		if got := extractBinaryPathFlag(c.args); got != c.want {
+			t.Errorf("extractBinaryPathFlag(%v) = %q, want %q", c.args, got, c.want)
+		}
+	}
+}
+
+func TestResolveHelperPath_Override(t *testing.T) {
+	override := "/usr/local/bin/databricks-claude-credential-helper"
+	got, err := resolveHelperPath(override)
+	if err != nil {
+		t.Fatalf("resolveHelperPath: %v", err)
+	}
+	if got != override {
+		t.Errorf("resolveHelperPath(%q) = %q, want %q", override, got, override)
+	}
+}
+
+func TestResolveHelperPath_DerivedFromExecutable(t *testing.T) {
+	// With no override, the helper path is the running test binary's
+	// directory + the credential-helper alias name. We can't predict the
+	// exact dir but we can assert the basename.
+	got, err := resolveHelperPath("")
+	if err != nil {
+		t.Fatalf("resolveHelperPath: %v", err)
+	}
+	wantBase := credentialHelperBinaryName
+	if runtime.GOOS == "windows" {
+		wantBase += ".exe"
+	}
+	if filepath.Base(got) != wantBase {
+		t.Errorf("resolveHelperPath(\"\") basename = %q, want %q (full=%q)", filepath.Base(got), wantBase, got)
 	}
 }

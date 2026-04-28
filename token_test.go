@@ -393,3 +393,73 @@ func TestConstructGatewayURL_Fallback(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// TestResolveDatabricksCLI_AbsolutePathPassthrough: absolute path is returned unchanged.
+func TestResolveDatabricksCLI_AbsolutePathPassthrough(t *testing.T) {
+	tmp := t.TempDir()
+	absPath := filepath.Join(tmp, "myexec")
+	if err := os.WriteFile(absPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	got := resolveDatabricksCLI(absPath)
+	if got != absPath {
+		t.Errorf("got %q, want %q", got, absPath)
+	}
+}
+
+// TestResolveDatabricksCLI_EnvOverride: $DATABRICKS_CLI is used when set and executable.
+func TestResolveDatabricksCLI_EnvOverride(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0o755 not portable on windows")
+	}
+	tmp := t.TempDir()
+	overridePath := filepath.Join(tmp, "override-databricks")
+	if err := os.WriteFile(overridePath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	t.Setenv("DATABRICKS_CLI", overridePath)
+	got := resolveDatabricksCLI("databricks")
+	if got != overridePath {
+		t.Errorf("got %q, want %q", got, overridePath)
+	}
+}
+
+// TestResolveDatabricksCLI_FallbackDirScan: binary found in ~/.local/bin when PATH is empty.
+// Uses a name that cannot exist in the absolute fallback dirs (/usr/local/bin, /opt/homebrew/bin).
+func TestResolveDatabricksCLI_FallbackDirScan(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0o755 not portable on windows")
+	}
+	tmp := t.TempDir()
+	localBin := filepath.Join(tmp, ".local", "bin")
+	if err := os.MkdirAll(localBin, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Use a name that is guaranteed not to exist in any absolute fallback dir.
+	uniqueName := "databricks-test-resolve-fallback-unique"
+	fakeBin := filepath.Join(localBin, uniqueName)
+	if err := os.WriteFile(fakeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	t.Setenv("PATH", "")
+	t.Setenv("HOME", tmp)
+	t.Setenv("DATABRICKS_CLI", "")
+	got := resolveDatabricksCLI(uniqueName)
+	if got != fakeBin {
+		t.Errorf("got %q, want %q", got, fakeBin)
+	}
+}
+
+// TestResolveDatabricksCLI_NotFoundReturnsBareName: no binary anywhere → bare name returned.
+func TestResolveDatabricksCLI_NotFoundReturnsBareName(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PATH", "")
+	t.Setenv("HOME", tmp)
+	t.Setenv("DATABRICKS_CLI", "")
+	// Use a name that is guaranteed not to exist anywhere on this machine.
+	uniqueName := "databricks-test-resolve-notfound-unique"
+	got := resolveDatabricksCLI(uniqueName)
+	if got != uniqueName {
+		t.Errorf("got %q, want %q", got, uniqueName)
+	}
+}
