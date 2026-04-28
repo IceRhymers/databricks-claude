@@ -38,6 +38,7 @@ var flagDefs = []completion.FlagDef{
 	{Name: "generate-desktop-config", Description: "Generate a Claude Desktop MDM config file (.mobileconfig on macOS, .reg on Windows)"},
 	{Name: "output", Description: "Explicit output path for --generate-desktop-config", TakesArg: true, Completer: "__files"},
 	{Name: "binary-path", Description: "Override the credential-helper path embedded in the generated config (for MDM rollouts)", TakesArg: true, Completer: "__files"},
+	{Name: "databricks-cli-path", Description: "Pin the absolute path to the `databricks` CLI used by the credential helper subprocess", TakesArg: true, Completer: "__files"},
 }
 
 // knownFlags is the set of flag names (with "--" prefix) that databricks-claude

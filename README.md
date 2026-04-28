@@ -115,6 +115,11 @@ databricks-claude --tls-cert cert.pem --tls-key key.pem "explain this codebase"
 | `--version` | | Print version and exit |
 | `--print-env` | | Print resolved configuration (token redacted) and exit |
 | `--help`, `-h` | | Print wrapper flags and the full `claude --help` output, then exit |
+| `--credential-helper` | | Print a fresh Databricks token to stdout (used as Claude Desktop's `inferenceCredentialHelper`). Also dispatched automatically when invoked under the `databricks-claude-credential-helper` symlink. |
+| `--generate-desktop-config` | | Write Claude Desktop MDM configs. Without `--output`, writes both `databricks-claude-desktop.mobileconfig` and `databricks-claude-desktop.reg` so one invocation covers macOS and Windows. |
+| `--output` | | Single output path for `--generate-desktop-config`; format inferred from `.mobileconfig` / `.reg` extension or host OS. |
+| `--binary-path` | derived from running binary | Credential-helper path baked into the generated config. Set this for MDM rollouts so one config works on every endpoint. |
+| `--databricks-cli-path` | | Pin the absolute path of the `databricks` CLI used by the credential helper subprocess. Persisted to `~/.claude/.databricks-claude.json`. Useful when the CLI is installed somewhere the launchd-PATH fallback dir scan can't see. |
 
 All other flags and args are forwarded to `claude`.
 
@@ -127,6 +132,56 @@ On first run (when `ANTHROPIC_BASE_URL` is not set), `databricks-claude` auto-di
 - Constructs the AI Gateway URL: `https://<workspace-id>.ai-gateway.cloud.databricks.com/anthropic`
 
 If workspace ID resolution fails, it falls back to `<host>/serving-endpoints/anthropic`.
+
+## Claude Desktop Integration
+
+`databricks-claude` can act as the credential helper for the Claude Desktop app's third-party-inference mode. Desktop calls a single executable (no args allowed) once per token TTL and uses whatever it prints to stdout as the bearer token for AI Gateway requests.
+
+### One-time setup
+
+1. **Install** `databricks-claude` (Homebrew, `make install`, or `go install`). All install methods drop a `databricks-claude-credential-helper` symlink next to the main binary; that symlink is the path Claude Desktop will invoke.
+2. **Authenticate** with the workspace you want Desktop to talk to: `databricks auth login --profile <name>`.
+3. **Generate the desktop config:**
+   ```bash
+   databricks-claude --profile <name> --generate-desktop-config
+   ```
+   This writes both `databricks-claude-desktop.mobileconfig` (macOS) and `databricks-claude-desktop.reg` (Windows) into the current directory.
+4. **Install the config:**
+   - **macOS**: `open databricks-claude-desktop.mobileconfig`, then approve in System Settings → Privacy & Security → Profiles.
+   - **Windows**: double-click the `.reg` file, or `reg import databricks-claude-desktop.reg`.
+5. **Restart Claude Desktop.**
+
+After this, Desktop's third-party-inference path runs against your Databricks AI Gateway, with tokens refreshed automatically by the credential helper.
+
+### How dispatch works
+
+The `inferenceCredentialHelper` MDM key in the generated config points at `…/databricks-claude-credential-helper` (the symlink). When invoked under that name, the binary checks `argv[0]` and routes directly to the credential-helper code path — no flags required. The same binary still runs as a Claude Code wrapper when invoked under its primary name.
+
+### MDM / fleet rollout
+
+For rolling this out to a fleet via Jamf, Kandji, Intune, etc., generate the config from a reference workstation with paths that match your endpoint layout:
+
+```bash
+# Bake fleet-wide paths into the generated config
+databricks-claude \
+  --profile <name> \
+  --generate-desktop-config \
+  --binary-path /usr/local/bin/databricks-claude-credential-helper \
+  --databricks-cli-path /usr/local/bin/databricks
+```
+
+- `--binary-path` is the absolute path of the credential-helper symlink (or hardlink/copy) on every target endpoint.
+- `--databricks-cli-path` pins the `databricks` CLI absolute path. It's persisted to `~/.claude/.databricks-claude.json` on the generating machine; admins should arrange for the same field to be set on every endpoint (either by running this command per-user, or by dropping the state file via the same MDM tooling).
+
+The packaging method (`.pkg` installer, custom `brew` formula, etc.) is responsible for ensuring `databricks-claude` and its `databricks-claude-credential-helper` symlink land at the paths you embed in the config.
+
+### Troubleshooting
+
+The helper logs every invocation (best-effort, silent on failure) to:
+- macOS: `~/Library/Logs/databricks-claude/credential-helper.log`
+- Linux: `~/.cache/databricks-claude/credential-helper.log`
+
+Each entry records the resolved profile, CLI path, and either the token length on success or the underlying error. If Desktop reports `invalid_config` or 401, check this log first.
 
 ## Headless Mode
 

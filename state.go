@@ -12,6 +12,14 @@ import (
 type persistentState struct {
 	Profile string `json:"profile,omitempty"`
 	Port    int    `json:"port,omitempty"`
+	// DatabricksCLIPath pins the absolute path to the `databricks` CLI binary.
+	// Used by the credential helper running under Claude Desktop's GUI subprocess
+	// context, where the inherited PATH (launchd's /usr/bin:/bin:/usr/sbin:/sbin)
+	// can't see standard install locations like /opt/homebrew/bin or
+	// ~/.local/bin. Falls back to PATH search and the fallback dir scan when
+	// empty. Set via `--generate-desktop-config --databricks-cli-path …` for
+	// per-user pinning, or by an MDM admin dropping the state file directly.
+	DatabricksCLIPath string `json:"databricks_cli_path,omitempty"`
 }
 
 const defaultPort = 49153

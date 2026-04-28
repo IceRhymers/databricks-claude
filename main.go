@@ -89,6 +89,7 @@ func main() {
 			extractProfileFlag(os.Args[1:]),
 			extractOutputFlag(os.Args[1:]),
 			extractBinaryPathFlag(os.Args[1:]),
+			extractDatabricksCLIPathFlag(os.Args[1:]),
 		)
 		return
 	}
@@ -748,12 +749,22 @@ Databricks-Claude Flags:
                                via the databricks-claude-credential-helper symlink that
                                Claude Desktop's inferenceCredentialHelper points at);
                                honours --profile
-  --generate-desktop-config    Write a Claude Desktop MDM config (.mobileconfig on macOS,
-                               .reg on Windows); honours --profile, --output, --binary-path
-  --output string              Explicit output path for --generate-desktop-config
+  --generate-desktop-config    Write Claude Desktop MDM configs. By default writes BOTH
+                               databricks-claude-desktop.mobileconfig (macOS) and
+                               databricks-claude-desktop.reg (Windows) so one invocation
+                               covers every supported platform. Honours --profile,
+                               --output, --binary-path, --databricks-cli-path.
+  --output string              Explicit output path; the format is chosen from the file
+                               extension (.mobileconfig / .reg) or the host OS. When set,
+                               only this single file is written.
   --binary-path string         Credential-helper path to embed in the generated config
                                (default: derived from the running binary). Use this for
                                MDM rollouts so one config works on every endpoint.
+  --databricks-cli-path string Pin the absolute path of the 'databricks' CLI binary used
+                               by the credential helper subprocess. Persisted to the
+                               state file (~/.claude/.databricks-claude.json). Useful
+                               when the CLI is installed somewhere the launchd-PATH
+                               fallback dir scan can't see.
   --version                    Print version and exit
   --help, -h                   Show this help message
 

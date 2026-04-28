@@ -75,18 +75,19 @@ func runCredentialHelper(profile string) {
 	helperDebugLog("invoked args=%q HOME=%q PATH=%q USER=%q",
 		os.Args, os.Getenv("HOME"), os.Getenv("PATH"), os.Getenv("USER"))
 
+	state := loadState()
 	resolved := profile
-	if resolved == "" {
-		if saved := loadState(); saved.Profile != "" {
-			resolved = saved.Profile
-		}
+	if resolved == "" && state.Profile != "" {
+		resolved = state.Profile
 	}
 	if resolved == "" {
 		resolved = "DEFAULT"
 	}
-	helperDebugLog("profile resolved=%q (input=%q)", resolved, profile)
+	helperDebugLog("profile resolved=%q (input=%q) cli_path=%q", resolved, profile, state.DatabricksCLIPath)
 
-	tp := NewTokenProvider(resolved, "")
+	// state.DatabricksCLIPath ("" → fall through to PATH/fallback scan in
+	// resolveDatabricksCLI) overrides the default "databricks" lookup.
+	tp := NewTokenProvider(resolved, state.DatabricksCLIPath)
 	tok, err := tp.Token(context.Background())
 	if err != nil {
 		helperDebugLog("FAIL profile=%q err=%v", resolved, err)
@@ -122,7 +123,17 @@ func runCredentialHelper(profile string) {
 // config (e.g. /usr/local/bin/databricks-claude-credential-helper) so the same
 // .mobileconfig works on every endpoint regardless of the generating user's
 // install layout. When empty, the path is derived from the running binary.
-func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride string) {
+//
+// databricksCLIPath, when non-empty, is persisted to the state file so the
+// credential helper subprocess (which has no way to receive flags) can pin
+// the `databricks` binary location. Useful when the CLI is installed at a
+// non-standard path that the fallback dir scan in resolveDatabricksCLI
+// wouldn't find.
+//
+// When outputPath is empty, both .mobileconfig and .reg are always written so
+// one invocation produces artifacts for every supported Claude Desktop
+// platform. Use --output to write a single specific file.
+func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databricksCLIPath string) {
 	log.SetOutput(io.Discard)
 
 	resolved := profile
@@ -133,6 +144,26 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride string) {
 	}
 	if resolved == "" {
 		resolved = "DEFAULT"
+	}
+
+	// Validate and persist the databricks-cli-path BEFORE network calls so a
+	// bad path fails fast.
+	if databricksCLIPath != "" {
+		if !filepath.IsAbs(databricksCLIPath) {
+			fmt.Fprintf(os.Stderr, "databricks-claude: --databricks-cli-path must be absolute, got %q\n", databricksCLIPath)
+			os.Exit(1)
+		}
+		if !isExecutableFile(databricksCLIPath) {
+			fmt.Fprintf(os.Stderr, "databricks-claude: --databricks-cli-path %q is not an executable file\n", databricksCLIPath)
+			os.Exit(1)
+		}
+		st := loadState()
+		st.DatabricksCLIPath = databricksCLIPath
+		if err := saveState(st); err != nil {
+			fmt.Fprintf(os.Stderr, "databricks-claude: failed to persist databricks-cli-path: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "Pinned databricks CLI path: %s\n", databricksCLIPath)
 	}
 
 	host, err := DiscoverHost(resolved, "")
@@ -166,8 +197,11 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride string) {
 		os.Exit(0)
 	}
 
+	// When --output isn't given, write BOTH .mobileconfig and .reg by default
+	// so a single invocation produces an artifact for every supported Claude
+	// Desktop platform.
 	wrote := []string{}
-	if runtime.GOOS == "darwin" || (runtime.GOOS != "darwin" && runtime.GOOS != "windows") {
+	{
 		path := "databricks-claude-desktop.mobileconfig"
 		content, err := buildMobileconfig(gatewayURL, helperPath)
 		if err != nil {
@@ -180,7 +214,7 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride string) {
 		}
 		wrote = append(wrote, path)
 	}
-	if runtime.GOOS == "windows" || (runtime.GOOS != "darwin" && runtime.GOOS != "windows") {
+	{
 		path := "databricks-claude-desktop.reg"
 		content := buildRegFile(gatewayURL, helperPath)
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -444,6 +478,23 @@ func extractBinaryPathFlag(args []string) string {
 		}
 		if strings.HasPrefix(a, "--binary-path=") {
 			return strings.TrimPrefix(a, "--binary-path=")
+		}
+	}
+	return ""
+}
+
+// extractDatabricksCLIPathFlag is the analogous helper for --databricks-cli-path.
+// Pins the absolute path to the `databricks` binary that the credential
+// helper subprocess will exec. Persisted to the state file so the helper —
+// which can't receive flags — picks it up on each invocation.
+func extractDatabricksCLIPathFlag(args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--databricks-cli-path" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(a, "--databricks-cli-path=") {
+			return strings.TrimPrefix(a, "--databricks-cli-path=")
 		}
 	}
 	return ""

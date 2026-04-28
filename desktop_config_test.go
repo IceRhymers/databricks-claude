@@ -249,6 +249,26 @@ func TestIsCredentialHelperBinaryName(t *testing.T) {
 	}
 }
 
+func TestExtractDatabricksCLIPathFlag(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{}, ""},
+		{[]string{"--generate-desktop-config"}, ""},
+		{[]string{"--databricks-cli-path", "/usr/local/bin/databricks"}, "/usr/local/bin/databricks"},
+		{[]string{"--databricks-cli-path=/opt/homebrew/bin/databricks"}, "/opt/homebrew/bin/databricks"},
+		{[]string{"--generate-desktop-config", "--databricks-cli-path", "/x"}, "/x"},
+		// Bare flag without a value must not panic and must return "".
+		{[]string{"--databricks-cli-path"}, ""},
+	}
+	for _, c := range cases {
+		if got := extractDatabricksCLIPathFlag(c.args); got != c.want {
+			t.Errorf("extractDatabricksCLIPathFlag(%v) = %q, want %q", c.args, got, c.want)
+		}
+	}
+}
+
 func TestExtractBinaryPathFlag(t *testing.T) {
 	cases := []struct {
 		args []string
