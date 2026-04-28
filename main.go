@@ -107,10 +107,24 @@ func main() {
 		}
 		sp := filepath.Join(homeDir, ".claude", "settings.json")
 		if installHooksFlag {
+			// First-run env setup: persist profile/port and write
+			// ANTHROPIC_BASE_URL placeholder so users no longer need to run
+			// `databricks-claude` once before installing hooks. The placeholder
+			// URL is overwritten by --headless-ensure at session start with
+			// the discovered gateway URL.
+			resolvedProfile := profile
+			if resolvedProfile == "" {
+				resolvedProfile = "DEFAULT"
+			}
+			port := resolvePort(portFlag, loadState())
+			placeholder := fmt.Sprintf("http://127.0.0.1:%d", port)
+			if err := bootstrapSettings(portFlag, resolvedProfile, placeholder, nil); err != nil {
+				log.Fatalf("databricks-claude: --install-hooks bootstrap: %v", err)
+			}
 			if err := installHooks(sp); err != nil {
 				log.Fatalf("databricks-claude: --install-hooks: %v", err)
 			}
-			fmt.Fprintln(os.Stderr, "databricks-claude: hooks installed — SessionStart and Stop hooks added to ~/.claude/settings.json")
+			fmt.Fprintln(os.Stderr, "databricks-claude: hooks installed — SessionStart and SessionEnd hooks added to ~/.claude/settings.json")
 		} else {
 			if err := uninstallHooks(sp); err != nil {
 				log.Fatalf("databricks-claude: --uninstall-hooks: %v", err)
@@ -174,7 +188,7 @@ func main() {
 	}
 	settingsPath := filepath.Join(homeDir, ".claude", "settings.json")
 
-	settingsDoc, err := readSettingsDoc(settingsPath)
+	settingsDoc, err := readSettingsJSON(settingsPath)
 	if err != nil {
 		log.Fatalf("databricks-claude: cannot read settings.json: %v", err)
 	}
@@ -306,26 +320,12 @@ func main() {
 		ucLogsTable = deriveLogsTable(ucMetricsTable)
 	}
 
-	// --- Load persistent state and resolve port ---
-	state := loadState()
-
-	port := resolvePort(portFlag, state)
-	if portFlag > 0 {
-		state.Port = port
-		if err := saveState(state); err != nil {
-			log.Printf("databricks-claude: warning: failed to save port: %v", err)
-		}
-	}
-
-	// Persist profile so future runs don't need --profile.
-	if resolvedProfile != "DEFAULT" {
-		state.Profile = resolvedProfile
-		if err := saveState(state); err != nil {
-			log.Printf("databricks-claude: warning: failed to persist profile: %v", err)
-		} else {
-			log.Printf("databricks-claude: persisted profile %q", resolvedProfile)
-		}
-	}
+	// --- Resolve port for downstream binding ---
+	// State persistence (port + profile) and settings.json env-block writes
+	// happen together via bootstrapSettings near line 447. Note: --print-env
+	// (line 331) now exits before bootstrapSettings — diagnostic invocations
+	// no longer have write side effects.
+	port := resolvePort(portFlag, loadState())
 
 	// --- Print env and exit if requested ---
 	if printEnv {
@@ -444,7 +444,7 @@ func main() {
 		otelEnv["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
 	}
 
-	if err := ensureConfig(proxyURL, otelEnv); err != nil {
+	if err := bootstrapSettings(portFlag, resolvedProfile, proxyURL, otelEnv); err != nil {
 		if headless {
 			fmt.Fprintf(os.Stderr, "databricks-claude: warning: config write failed: %v\n", err)
 		} else {
@@ -512,23 +512,6 @@ func runHeadless(proxyURL string, ln net.Listener, isOwner bool, refcountPath st
 	}
 }
 
-
-// readSettingsDoc reads and parses settings.json, returning the full document.
-// If the file does not exist, an empty document is returned.
-func readSettingsDoc(path string) (map[string]interface{}, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return map[string]interface{}{}, nil
-		}
-		return nil, err
-	}
-	var doc map[string]interface{}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, err
-	}
-	return doc, nil
-}
 
 // envBlock returns the "env" sub-map from a settings document, or an empty map.
 func envBlock(doc map[string]interface{}) map[string]interface{} {
@@ -731,7 +714,9 @@ Databricks-Claude Flags:
   --headless-ensure            Start proxy if not running (called by SessionStart hook)
   --headless-release           Decrement proxy refcount (called by Stop hook)
   --idle-timeout duration      Idle timeout for headless mode (default 30m, 0 disables, bare number = minutes)
-  --install-hooks              Install SessionStart/Stop hooks into ~/.claude/settings.json
+  --install-hooks              Install SessionStart/SessionEnd hooks AND perform first-run
+                               env setup (idempotent). Accepts --profile and --port to
+                               persist them; no prior databricks-claude invocation needed.
   --uninstall-hooks            Remove databricks-claude hooks from ~/.claude/settings.json
   --no-update-check            Skip the automatic update check on startup
   --version                    Print version and exit

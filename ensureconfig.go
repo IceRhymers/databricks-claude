@@ -3,9 +3,47 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 )
+
+// bootstrapSettings persists profile + port to the state file and writes the
+// env block to settings.json. Idempotent: state is mutated in memory and
+// written via a single saveState call only when something actually changed;
+// settings.json is written only when ANTHROPIC_BASE_URL differs from proxyURL.
+//
+// portFlag is the raw --port CLI flag value (0 if absent). When portFlag > 0,
+// the resolved port is persisted to state — preserving the existing semantics
+// that the user's explicit --port choice is sticky.
+//
+// resolvedProfile is the post-resolution profile string ("DEFAULT" if no
+// override). Persisted only when non-empty and not "DEFAULT".
+//
+// proxyURL is the URL written into ANTHROPIC_BASE_URL. The first-run path
+// passes the discovered gateway URL; --install-hooks passes the placeholder
+// http://127.0.0.1:<port> (which the headless-ensure hook overwrites at
+// session start with the discovered URL).
+//
+// otelEnv is forwarded to ensureConfig; nil for the install-hooks path.
+func bootstrapSettings(portFlag int, resolvedProfile string, proxyURL string, otelEnv map[string]string) error {
+	state := loadState()
+	mutated := false
+	if portFlag > 0 {
+		state.Port = resolvePort(portFlag, state)
+		mutated = true
+	}
+	if resolvedProfile != "" && resolvedProfile != "DEFAULT" && state.Profile != resolvedProfile {
+		state.Profile = resolvedProfile
+		mutated = true
+	}
+	if mutated {
+		if err := saveState(state); err != nil {
+			return fmt.Errorf("persist state: %w", err)
+		}
+	}
+	return ensureConfig(proxyURL, otelEnv)
+}
 
 // ensureConfig writes the env block to ~/.claude/settings.json only if
 // ANTHROPIC_BASE_URL doesn't already point at proxyURL. Idempotent.
@@ -71,13 +109,18 @@ func readSettingsJSON(path string) (map[string]interface{}, error) {
 	return doc, nil
 }
 
-// writeSettingsJSON atomically writes a settings.json file.
+// writeSettingsJSON atomically writes a settings.json file. Creates the parent
+// directory with mode 0700 if absent. Atomic via temp+rename in the same
+// directory (cross-device rename impossible by construction).
 func writeSettingsJSON(path string, doc map[string]interface{}) error {
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err

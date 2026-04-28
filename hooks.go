@@ -1,12 +1,10 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/IceRhymers/databricks-claude/pkg/headless"
@@ -46,7 +44,7 @@ func headlessRelease(port int) {
 // installHooks merges the databricks-claude SessionStart and Stop hooks into
 // ~/.claude/settings.json. Idempotent — safe to run after upgrades.
 func installHooks(settingsPath string) error {
-	doc, err := readSettingsDoc(settingsPath)
+	doc, err := readSettingsJSON(settingsPath)
 	if err != nil {
 		// File may not exist yet — start with an empty document.
 		doc = map[string]interface{}{}
@@ -91,12 +89,12 @@ func installHooks(settingsPath string) error {
 	hooks["SessionEnd"] = sessionEnd
 
 	doc["hooks"] = hooks
-	return writeSettingsDoc(settingsPath, doc)
+	return writeSettingsJSON(settingsPath, doc)
 }
 
 // uninstallHooks removes the databricks-claude hooks from ~/.claude/settings.json.
 func uninstallHooks(settingsPath string) error {
-	doc, err := readSettingsDoc(settingsPath)
+	doc, err := readSettingsJSON(settingsPath)
 	if err != nil {
 		return nil // nothing to remove
 	}
@@ -120,7 +118,7 @@ func uninstallHooks(settingsPath string) error {
 		doc["hooks"] = hooks
 	}
 
-	return writeSettingsDoc(settingsPath, doc)
+	return writeSettingsJSON(settingsPath, doc)
 }
 
 // removeDBXHooks removes any hook entries whose command contains "databricks-claude --headless".
@@ -156,15 +154,3 @@ func isDBXHookEntry(entry interface{}) bool {
 	return false
 }
 
-// writeSettingsDoc writes a settings document back to disk as indented JSON.
-func writeSettingsDoc(path string, doc map[string]interface{}) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("creating settings dir: %w", err)
-	}
-	data, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshalling settings: %w", err)
-	}
-	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o600)
-}
