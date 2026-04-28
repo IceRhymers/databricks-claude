@@ -61,6 +61,74 @@ func isCredentialHelperBinaryName(arg0 string) bool {
 	return base == credentialHelperBinaryName
 }
 
+// runDesktopCommand handles the `databricks-claude desktop ...` subcommand.
+// args is everything after the literal "desktop" token in os.Args.
+func runDesktopCommand(args []string) {
+	if len(args) == 0 {
+		printDesktopHelp()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "-h", "--help":
+		printDesktopHelp()
+		os.Exit(0)
+	case "generate-config":
+		runGenerateDesktopConfig(
+			extractProfileFlag(args[1:]),
+			extractOutputFlag(args[1:]),
+			extractBinaryPathFlag(args[1:]),
+			extractDatabricksCLIPathFlag(args[1:]),
+		)
+	case "credential-helper":
+		runCredentialHelper(extractProfileFlag(args[1:]))
+	default:
+		fmt.Fprintf(os.Stderr, "databricks-claude: unknown desktop action %q\n\n", args[0])
+		printDesktopHelp()
+		os.Exit(1)
+	}
+}
+
+func printDesktopHelp() {
+	fmt.Fprint(os.Stderr, `Usage: databricks-claude desktop <action> [flags]
+
+Set up Claude Desktop's third-party-inference integration with Databricks.
+
+Actions:
+  generate-config     Write Claude Desktop MDM configs. Without --output, writes
+                      both databricks-claude-desktop.mobileconfig (macOS) and
+                      databricks-claude-desktop.reg (Windows) into the current
+                      directory.
+  credential-helper   Print a fresh Databricks token to stdout — the same code
+                      path Claude Desktop's inferenceCredentialHelper invokes
+                      via the databricks-claude-credential-helper symlink.
+                      Useful for scripting and debug.
+
+Flags:
+  --profile string              Databricks CLI profile (default: state file > DEFAULT)
+  --output string               Single output path for generate-config; format
+                                inferred from .mobileconfig/.reg extension or host OS.
+  --binary-path string          generate-config: credential-helper path embedded in
+                                the generated config (default: derived from the
+                                running binary). Use this for MDM rollouts so one
+                                config works on every endpoint.
+  --databricks-cli-path string  generate-config: pin the absolute path of the
+                                'databricks' CLI used by the credential helper.
+                                Persisted to ~/.claude/.databricks-claude.json.
+
+Examples:
+  # First-time setup on your Mac.
+  databricks-claude desktop generate-config --profile myws
+
+  # MDM rollout — bake fleet-wide paths into one config.
+  databricks-claude desktop generate-config --profile myws \
+    --binary-path /usr/local/bin/databricks-claude-credential-helper \
+    --databricks-cli-path /usr/local/bin/databricks
+
+  # Print a token directly (debug; equivalent to invoking the helper symlink).
+  databricks-claude desktop credential-helper --profile myws
+`)
+}
+
 // runCredentialHelper fetches a fresh Databricks OAuth token and writes only
 // the raw token to stdout. Intended to be called by Claude Desktop via the
 // inferenceCredentialHelper MDM key. Stays silent on stderr on success.

@@ -115,13 +115,9 @@ databricks-claude --tls-cert cert.pem --tls-key key.pem "explain this codebase"
 | `--version` | | Print version and exit |
 | `--print-env` | | Print resolved configuration (token redacted) and exit |
 | `--help`, `-h` | | Print wrapper flags and the full `claude --help` output, then exit |
-| `--credential-helper` | | Print a fresh Databricks token to stdout (used as Claude Desktop's `inferenceCredentialHelper`). Also dispatched automatically when invoked under the `databricks-claude-credential-helper` symlink. |
-| `--generate-desktop-config` | | Write Claude Desktop MDM configs. Without `--output`, writes both `databricks-claude-desktop.mobileconfig` and `databricks-claude-desktop.reg` so one invocation covers macOS and Windows. |
-| `--output` | | Single output path for `--generate-desktop-config`; format inferred from `.mobileconfig` / `.reg` extension or host OS. |
-| `--binary-path` | derived from running binary | Credential-helper path baked into the generated config. Set this for MDM rollouts so one config works on every endpoint. |
-| `--databricks-cli-path` | | Pin the absolute path of the `databricks` CLI used by the credential helper subprocess. Persisted to `~/.claude/.databricks-claude.json`. Useful when the CLI is installed somewhere the launchd-PATH fallback dir scan can't see. |
-
 All other flags and args are forwarded to `claude`.
+
+Claude Desktop integration lives under the `desktop` subcommand — see [Claude Desktop Integration](#claude-desktop-integration) below or run `databricks-claude desktop` for its action list and flags.
 
 ## Auto-Discovery
 
@@ -143,9 +139,9 @@ If workspace ID resolution fails, it falls back to `<host>/serving-endpoints/ant
 2. **Authenticate** with the workspace you want Desktop to talk to: `databricks auth login --profile <name>`.
 3. **Generate the desktop config:**
    ```bash
-   databricks-claude --profile <name> --generate-desktop-config
+   databricks-claude desktop generate-config --profile <name>
    ```
-   This writes both `databricks-claude-desktop.mobileconfig` (macOS) and `databricks-claude-desktop.reg` (Windows) into the current directory.
+   This writes both `databricks-claude-desktop.mobileconfig` (macOS) and `databricks-claude-desktop.reg` (Windows) into the current directory. Pass `--output <path>` for a single file.
 4. **Install the config:**
    - **macOS**: `open databricks-claude-desktop.mobileconfig`, then approve in System Settings → Privacy & Security → Profiles.
    - **Windows**: double-click the `.reg` file, or `reg import databricks-claude-desktop.reg`.
@@ -163,9 +159,8 @@ For rolling this out to a fleet via Jamf, Kandji, Intune, etc., generate the con
 
 ```bash
 # Bake fleet-wide paths into the generated config
-databricks-claude \
+databricks-claude desktop generate-config \
   --profile <name> \
-  --generate-desktop-config \
   --binary-path /usr/local/bin/databricks-claude-credential-helper \
   --databricks-cli-path /usr/local/bin/databricks
 ```

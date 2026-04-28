@@ -34,11 +34,6 @@ var flagDefs = []completion.FlagDef{
 	{Name: "headless-ensure", Description: "Start proxy if not running — called by the SessionStart hook"},
 	{Name: "headless-release", Description: "Decrement proxy refcount — called by the Stop hook"},
 	{Name: "no-update-check", Description: "Skip the automatic update check on startup"},
-	{Name: "credential-helper", Description: "Print a fresh Databricks token to stdout (called by Claude Desktop inferenceCredentialHelper)"},
-	{Name: "generate-desktop-config", Description: "Generate a Claude Desktop MDM config file (.mobileconfig on macOS, .reg on Windows)"},
-	{Name: "output", Description: "Explicit output path for --generate-desktop-config", TakesArg: true, Completer: "__files"},
-	{Name: "binary-path", Description: "Override the credential-helper path embedded in the generated config (for MDM rollouts)", TakesArg: true, Completer: "__files"},
-	{Name: "databricks-cli-path", Description: "Pin the absolute path to the `databricks` CLI used by the credential helper subprocess", TakesArg: true, Completer: "__files"},
 }
 
 // knownFlags is the set of flag names (with "--" prefix) that databricks-claude

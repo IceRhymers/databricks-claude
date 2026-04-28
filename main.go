@@ -66,31 +66,20 @@ func main() {
 		os.Exit(0)
 	}
 
-	// --credential-helper — invoked by Claude Desktop (inferenceCredentialHelper).
-	// Must be handled VERY early: outputs only the raw token to stdout, exits.
-	// Profile resolution mirrors the main flow (state file > "DEFAULT").
-	//
-	// Two dispatch paths:
-	//   1. Explicit `--credential-helper` flag — useful for scripting/debug.
-	//   2. argv[0] alias `databricks-claude-credential-helper` — Desktop's
-	//      mobileconfig accepts only a path, no args; install methods drop a
-	//      symlink at this name pointing at the main binary.
-	if hasFlag(os.Args[1:], "--credential-helper") || isCredentialHelperBinaryName(os.Args[0]) {
+	// argv[0] alias `databricks-claude-credential-helper` — Desktop's
+	// mobileconfig accepts only a path with no arguments; install methods
+	// drop a symlink at this name pointing at the main binary so Desktop's
+	// inferenceCredentialHelper can target a stable path.
+	if isCredentialHelperBinaryName(os.Args[0]) {
 		runCredentialHelper(extractProfileFlag(os.Args[1:]))
-		// runCredentialHelper always calls os.Exit; this return is unreachable.
 		return
 	}
 
-	// --generate-desktop-config — write the platform-specific Claude Desktop
-	// MDM config file (mobileconfig on macOS, .reg on Windows). Optional
-	// --output <path> selects an explicit target.
-	if hasFlag(os.Args[1:], "--generate-desktop-config") {
-		runGenerateDesktopConfig(
-			extractProfileFlag(os.Args[1:]),
-			extractOutputFlag(os.Args[1:]),
-			extractBinaryPathFlag(os.Args[1:]),
-			extractDatabricksCLIPathFlag(os.Args[1:]),
-		)
+	// `desktop` subcommand — Claude Desktop integration setup. Encapsulates
+	// `generate-config` and an explicit `credential-helper` action so these
+	// flags don't pollute the root flag namespace.
+	if len(os.Args) >= 2 && os.Args[1] == "desktop" {
+		runDesktopCommand(os.Args[2:])
 		return
 	}
 
@@ -745,32 +734,14 @@ Databricks-Claude Flags:
   --install-hooks              Install SessionStart/Stop hooks into ~/.claude/settings.json
   --uninstall-hooks            Remove databricks-claude hooks from ~/.claude/settings.json
   --no-update-check            Skip the automatic update check on startup
-  --credential-helper          Print a fresh Databricks token to stdout (also dispatched
-                               via the databricks-claude-credential-helper symlink that
-                               Claude Desktop's inferenceCredentialHelper points at);
-                               honours --profile
-  --generate-desktop-config    Write Claude Desktop MDM configs. By default writes BOTH
-                               databricks-claude-desktop.mobileconfig (macOS) and
-                               databricks-claude-desktop.reg (Windows) so one invocation
-                               covers every supported platform. Honours --profile,
-                               --output, --binary-path, --databricks-cli-path.
-  --output string              Explicit output path; the format is chosen from the file
-                               extension (.mobileconfig / .reg) or the host OS. When set,
-                               only this single file is written.
-  --binary-path string         Credential-helper path to embed in the generated config
-                               (default: derived from the running binary). Use this for
-                               MDM rollouts so one config works on every endpoint.
-  --databricks-cli-path string Pin the absolute path of the 'databricks' CLI binary used
-                               by the credential helper subprocess. Persisted to the
-                               state file (~/.claude/.databricks-claude.json). Useful
-                               when the CLI is installed somewhere the launchd-PATH
-                               fallback dir scan can't see.
   --version                    Print version and exit
   --help, -h                   Show this help message
 
 Subcommands:
   completion <shell>           Generate shell completions (bash, zsh, fish)
   update                       Check for a newer release and print upgrade instructions
+  desktop <action>             Claude Desktop integration. Run 'databricks-claude desktop'
+                               for actions (generate-config, credential-helper) and flags.
 
 Example Unity Catalog table setup (run in a Databricks SQL warehouse):
 
