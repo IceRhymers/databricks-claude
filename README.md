@@ -110,13 +110,45 @@ The `.claude-plugin/` directory and `hooks/hooks.json` at the repo root define t
    ```bash
    databricks-claude desktop generate-config --profile <name>
    ```
-   This writes both `databricks-claude-desktop.mobileconfig` (macOS) and `databricks-claude-desktop.reg` (Windows) into the current directory. Pass `--output <path>` for a single file.
+   This writes three artifacts into the current directory, all encoding the same Databricks gateway / credential-helper defaults:
+   - `databricks-claude-desktop.mobileconfig` — ready-to-install macOS configuration profile.
+   - `databricks-claude-desktop.reg` — ready-to-merge Windows registry script.
+   - `databricks-claude-desktop.json` — editable source. Import into Claude Desktop's developer mode if you need to customize allow-lists, tools, branding, etc. — Desktop can then export your edits back to `.mobileconfig` / `.reg` for MDM rollout.
+
+   Pass `--output <path>` for a single file (extension `.mobileconfig`, `.reg`, or `.json` selects the format).
 4. **Install the config:**
    - **macOS**: `open databricks-claude-desktop.mobileconfig`, then approve in System Settings → Privacy & Security → Profiles.
    - **Windows**: double-click the `.reg` file, or `reg import databricks-claude-desktop.reg`.
+
+   For fleet rollout via Jamf / Kandji / Intune / Group Policy, ship the same `.mobileconfig` or `.reg` to your endpoints. See [MDM / fleet rollout](#mdm--fleet-rollout) for path-pinning flags.
 5. **Restart Claude Desktop.**
 
 After this, Desktop's third-party-inference path runs against your Databricks AI Gateway, with tokens refreshed automatically by the credential helper.
+
+### Customizing the configuration
+
+The defaults baked into the generated artifacts (model list, gateway URL, credential-helper path, telemetry/extension toggles) are all you need to get Claude Desktop talking to Databricks. If you want to tweak Claude Desktop's full set of policy keys — allow-lists, available tools, branding, telemetry policy, extension behavior, etc. — load `databricks-claude-desktop.json` into Claude Desktop's developer mode and edit from there:
+
+1. **Enable developer mode** — in the menu bar:
+   **Help → Troubleshooting → Enable Developer mode**.
+2. **Open the third-party inference UI**:
+   **Developer → Configure third-party inference**.
+3. **Create a new configuration**. Click the configuration name in the top-right of the UI to open the **CONFIGURATIONS** menu, then choose **New configuration**. Give it a name (e.g. `Databricks`).
+4. **Reveal the configuration on disk**. Open the same **CONFIGURATIONS** menu and choose **Reveal in Finder** (macOS) / **Reveal in Explorer** (Windows). This opens the configuration library directory:
+   - **macOS**: `~/Library/Application Support/Claude-3p/configLibrary/`
+   - **Windows**: `%APPDATA%\Claude-3p\configLibrary\` (use *Reveal in Explorer* to confirm the exact path on your install)
+
+   Inside that directory you'll find:
+   - One JSON file per configuration, named `<uuid>.json` — the same schema as `databricks-claude-desktop.json`.
+   - An index file (`{ "appliedId": "<uuid>", "entries": [ { "id": "<uuid>", "name": "<config name>" } ] }`) that tracks which configuration is currently applied.
+5. **Replace the new configuration's JSON file** with the contents of `databricks-claude-desktop.json`. Keep the original filename (the `<uuid>.json` Claude Desktop generated) — only the contents change. Do not edit the index file.
+6. **Apply and edit** in Claude Desktop. Switch back to the app, select your new configuration in the dropdown, then edit any of the [Claude Desktop configuration keys](https://support.claude.com/en/articles/14680741-install-and-configure-claude-cowork-with-third-party-platforms) (allow-lists, tools, branding, etc.) directly in the UI.
+7. **Export** for fleet rollout. Claude Desktop's UI has an Export action that writes the configuration out as `.mobileconfig` (macOS) or `.reg` (Windows), ready to ship to MDM (Jamf, Kandji, Intune, Group Policy).
+8. **Restart Claude Desktop**, or distribute the exported file to your fleet.
+
+> Claude Desktop does not have a "Import JSON" UI today — file replacement under `configLibrary/` is the supported import path.
+
+Reference: [Install and configure Claude with third-party platforms](https://support.claude.com/en/articles/14680741-install-and-configure-claude-cowork-with-third-party-platforms) — full list of Claude Desktop configuration keys and the developer-mode workflow.
 
 ### How dispatch works
 

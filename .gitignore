@@ -5,3 +5,4 @@ dist/
 .omc/
 *.mobileconfig
 *.reg
+databricks-claude-desktop.json
