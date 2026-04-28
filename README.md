@@ -187,7 +187,7 @@ The proxy can be wired into Claude Code in two different ways:
 1. **Session hooks** (`databricks-claude --install-hooks`) — registered in `~/.claude/settings.json`. Every Claude Code session that reads that file fires `SessionStart` to bring up the local proxy and points `ANTHROPIC_BASE_URL` at it.
 2. **Claude Desktop mobileconfig** (`databricks-claude desktop generate-config` + install) — installs an MDM profile that points Claude Desktop's third-party-inference path at the AI Gateway via the credential helper.
 
-**Both can be installed on the same machine.** Claude Desktop's inference is governed by the MDM-managed `inferenceCredentialHelper` and does not consult `ANTHROPIC_BASE_URL`, so the SessionStart hook's proxy lifecycle has no effect on Desktop — it simply runs unused for the brief embedded-Code session and exits cleanly. Pick whichever modes match your workflow; you don't have to choose.
+**Both can be installed on the same machine.** Claude Desktop's inference is governed by the Claude's `inferenceCredentialHelper` and does not consult `ANTHROPIC_BASE_URL`, so the SessionStart hook's proxy lifecycle has no effect on Desktop — it simply runs unused for the brief embedded-Code session and exits cleanly. Pick whichever modes match your workflow; you don't have to choose.
 
 | Primary client | Recommended setup |
 |----------------|-------------------|
