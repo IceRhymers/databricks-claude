@@ -6,7 +6,7 @@ Transparent proxy wrapper for Claude Code that auto-refreshes Databricks OAuth t
 
 ## The Problem
 
-Databricks AI Gateway uses short-lived OAuth tokens. Claude Code only supports a static `ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json`. Without this tool, you'd need to manually refresh and paste a new token every hour.
+Databricks AI Gateway supports short-lived OAuth tokens. Claude Code only supports a static `ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json`. Without this tool, you'd need to configure long-living credentials with PAT tokens.
 
 ## Prerequisites
 
