@@ -2,26 +2,20 @@
 
 > **Disclaimer:** This is an unofficial, community-built workaround to enable Databricks OAuth SSO authentication with this AI coding tool. It is not supported, endorsed, or recognized by Databricks. Use at your own risk.
 
-
 Transparent proxy wrapper for Claude Code that auto-refreshes Databricks OAuth tokens — so you never manually paste a token again.
 
 ## The Problem
 
 Databricks AI Gateway uses short-lived OAuth tokens. Claude Code only supports a static `ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json`. Without this tool, you'd need to manually refresh and paste a new token every hour.
 
-## How It Works
+## Prerequisites
 
-`databricks-claude` wraps the `claude` binary. It:
+- [Databricks CLI](https://docs.databricks.com/dev-tools/cli/databricks-cli.html) installed and authenticated (`databricks auth login`)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
+- A Databricks Model Serving endpoint with [AI Gateway](https://docs.databricks.com/aws/en/ai-gateway/) enabled (currently in public Beta)
+- Go 1.22+ (only required if building from source)
 
-1. Binds a local HTTP proxy on `127.0.0.1:49153` (fixed port — shared across concurrent sessions)
-2. Writes `~/.claude/settings.json` once to point `ANTHROPIC_BASE_URL` at the proxy (idempotent — no restore on exit)
-3. Launches `claude` with your args — fully transparent
-4. Injects fresh Databricks OAuth tokens on every request (auto-refreshed from `databricks auth token`)
-5. Tracks concurrent sessions with a ref-count; the last session out closes the listener
-
-You use it exactly like `claude`. Every flag and argument is forwarded.
-
-## Installation
+## Install
 
 Via Homebrew (recommended):
 
@@ -47,93 +41,66 @@ Download the latest release from the [releases page](https://github.com/IceRhyme
 go install github.com/IceRhymers/databricks-claude@latest
 ```
 
-### Alias (optional but recommended)
+## Pick Your Setup
+
+There are three ways to use `databricks-claude`. Most people want **session hooks** — set it once and `claude` just works everywhere, including IDE extensions. Pick whichever rows match your workflow; you can install more than one.
+
+| Primary client | Recommended setup |
+|----------------|-------------------|
+| CLI Claude Code, VS Code extension, JetBrains plugin | **Session hooks** — `databricks-claude --install-hooks --profile <name>`. |
+| Claude Desktop (chat UI and/or embedded Claude Code) | **Mobileconfig** — `databricks-claude desktop generate-config` + install in System Settings. |
+| Both | Install both. They coexist without conflict. |
+| One-off / scripted invocations | Use the [raw wrapper](#cli-usage) directly. |
+
+The two automated modes are independent — neither requires the other — and the binary supports either or both.
+
+## Session Hooks (recommended)
+
+Install hooks so every Claude Code session auto-starts the proxy on startup and releases it cleanly on exit — no manual `--headless` needed. The hooks keep the proxy running for all Claude clients — including ones that don't use the `databricks-claude` wrapper directly, such as the [Claude VS Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-code) and JetBrains/IntelliJ plugin.
+
+> **Coexists with Claude Desktop.** If you've also installed the Claude Desktop mobileconfig, the hook's proxy lifecycle is harmless inside Desktop sessions — Desktop's inference does not consult `ANTHROPIC_BASE_URL` (it uses its own MDM-driven `inferenceCredentialHelper`).
+
+### Install
 
 ```bash
-echo 'alias claude="databricks-claude"' >> ~/.zshrc  # or ~/.bashrc
+databricks-claude --install-hooks --profile <name>
 ```
 
-## Prerequisites
+This is one-step setup: it persists your profile/port, writes `ANTHROPIC_BASE_URL` to `~/.claude/settings.json`, and registers the SessionStart and SessionEnd hooks. No prior `databricks-claude` invocation needed. Re-running is idempotent.
 
-- Go 1.22+
-- [Databricks CLI](https://docs.databricks.com/dev-tools/cli/databricks-cli.html) installed and authenticated (`databricks auth login`)
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
-- A Databricks Model Serving endpoint with [AI Gateway](https://docs.databricks.com/aws/en/ai-gateway/) enabled (currently in public Beta)
+- **SessionStart** — calls `databricks-claude --headless-ensure` on session startup: starts the proxy if it isn't already running.
+- **SessionEnd** — calls `databricks-claude --headless-release` on session end: decrements the refcount; proxy exits when the last session closes.
 
-## Usage
+### Uninstall
 
 ```bash
-# Use exactly like claude:
-databricks-claude "explain this codebase"
-
-# With a specific Databricks CLI profile:
-databricks-claude --profile my-workspace "write tests for auth.py"
-
-# Verbose logging (debug output to stderr):
-databricks-claude --verbose "fix the bug in main.go"
-
-# Log to file:
-databricks-claude --log-file /tmp/dc.log "fix the bug in main.go"
-
-# Both stderr and file:
-databricks-claude -v --log-file /tmp/dc.log "fix the bug in main.go"
-
-# With OTEL telemetry:
-databricks-claude --otel "summarize this PR"
-
-# With custom OTEL tables:
-databricks-claude --otel --otel-metrics-table main.catalog.metrics --otel-logs-table main.catalog.logs "summarize this PR"
-
-# Disable OTEL (clears persisted keys):
-databricks-claude --no-otel
-
-# With proxy API key authentication:
-databricks-claude --proxy-api-key my-secret-key "explain this codebase"
-
-# With TLS:
-databricks-claude --tls-cert cert.pem --tls-key key.pem "explain this codebase"
+databricks-claude --uninstall-hooks
 ```
 
-## Flags
+Removes only the databricks-claude hook entries. Other hooks in your settings are untouched.
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--profile` | `DEFAULT` | Databricks CLI profile |
-| `--verbose`, `-v` | `false` | Enable debug logging to stderr |
-| `--log-file` | | Write debug logs to a file (combinable with `--verbose`) |
-| `--otel` | `false` | Enable OTEL telemetry proxying |
-| `--no-otel` | | Clear persisted OTEL keys and disable OTEL for future sessions |
-| `--otel-metrics-table` | `main.claude_telemetry.claude_otel_metrics` | Unity Catalog table for OTEL metrics |
-| `--otel-logs-table` | derived from metrics table | Unity Catalog table for OTEL logs |
-| `--upstream` | auto-discovered | Override the AI Gateway URL |
-| `--proxy-api-key` | | Require Bearer token auth on all proxy requests |
-| `--port` | `49153` | Proxy listen port (saved for future sessions) |
-| `--tls-cert` | | Path to TLS certificate file (requires `--tls-key`) |
-| `--tls-key` | | Path to TLS private key file (requires `--tls-cert`) |
-| `--headless` | `false` | Start proxy without launching claude (for IDE extensions) |
-| `--idle-timeout` | `30m` | Idle timeout in headless mode (`0` disables) |
-| `--version` | | Print version and exit |
-| `--print-env` | | Print resolved configuration (token redacted) and exit |
-| `--help`, `-h` | | Print wrapper flags and the full `claude --help` output, then exit |
-All other flags and args are forwarded to `claude`.
+### Notes
 
-Claude Desktop integration lives under the `desktop` subcommand — see [Claude Desktop Integration](#claude-desktop-integration) below or run `databricks-claude desktop` for its action list and flags.
+- Idempotent — safe to re-run after upgrades.
+- The proxy starts on the configured port (default `49153`). If you use a custom port via `--port`, the hooks will respect that setting automatically (port is saved to the state file).
+- Unclean exits (force-quit, OOM kill) are covered by the idle timeout — the proxy self-exits after 30 minutes with no inference traffic.
 
-## Auto-Discovery
+### Claude Code Plugin (marketplace install)
 
-On first run (when `ANTHROPIC_BASE_URL` is not set), `databricks-claude` auto-discovers:
+Hooks are also distributed as a Claude Code plugin. Add this repo as a marketplace, then install the plugin:
 
-- Your workspace host from `databricks auth env`
-- Your workspace ID via the SCIM API (`x-databricks-org-id` header)
-- Constructs the AI Gateway URL: `https://<workspace-id>.ai-gateway.cloud.databricks.com/anthropic`
+```
+/plugin marketplace add IceRhymers/databricks-claude
+/plugin install databricks-claude@IceRhymers-databricks-claude
+```
 
-If workspace ID resolution fails, it falls back to `<host>/serving-endpoints/anthropic`.
+The `.claude-plugin/` directory and `hooks/hooks.json` at the repo root define the plugin.
 
 ## Claude Desktop Integration
 
 `databricks-claude` can act as the credential helper for the Claude Desktop app's third-party-inference mode. Desktop calls a single executable (no args allowed) once per token TTL and uses whatever it prints to stdout as the bearer token for AI Gateway requests.
 
-> ⚠️ **Uninstall the session hooks first** if you previously installed them: `databricks-claude --uninstall-hooks`. Otherwise the SessionStart hook will fire whenever you use Claude Code embedded in Desktop and start an unused proxy in the background. See [Hooks vs Claude Desktop](#hooks-vs-claude-desktop) for the full reasoning.
+> ⚠️ **Uninstall the session hooks first** if you previously installed them: `databricks-claude --uninstall-hooks`. Otherwise the SessionStart hook will fire whenever you use Claude Code embedded in Desktop and start an unused proxy in the background.
 
 ### One-time setup
 
@@ -180,22 +147,49 @@ The helper logs every invocation (best-effort, silent on failure) to:
 
 Each entry records the resolved profile, CLI path, and either the token length on success or the underlying error. If Desktop reports `invalid_config` or 401, check this log first.
 
-### Hooks vs Claude Desktop
+## CLI Usage
 
-The proxy can be wired into Claude Code in two different ways:
+If you'd rather invoke the wrapper directly (no hooks installed), use it exactly like `claude`. Every flag and argument is forwarded.
 
-1. **Session hooks** (`databricks-claude --install-hooks`) — registered in `~/.claude/settings.json`. Every Claude Code session that reads that file fires `SessionStart` to bring up the local proxy and points `ANTHROPIC_BASE_URL` at it.
-2. **Claude Desktop mobileconfig** (`databricks-claude desktop generate-config` + install) — installs an MDM profile that points Claude Desktop's third-party-inference path at the AI Gateway via the credential helper.
+```bash
+# Use exactly like claude:
+databricks-claude "explain this codebase"
 
-**Both can be installed on the same machine.** Claude Desktop's inference is governed by the Claude's `inferenceCredentialHelper` and does not consult `ANTHROPIC_BASE_URL`, so the SessionStart hook's proxy lifecycle has no effect on Desktop — it simply runs unused for the brief embedded-Code session and exits cleanly. Pick whichever modes match your workflow; you don't have to choose.
+# With a specific Databricks CLI profile:
+databricks-claude --profile my-workspace "write tests for auth.py"
 
-| Primary client | Recommended setup |
-|----------------|-------------------|
-| CLI Claude Code, VS Code extension, JetBrains plugin | **Hooks** (`databricks-claude --install-hooks --profile <name>`). |
-| Claude Desktop (chat UI and/or embedded Claude Code) | **Mobileconfig** (`databricks-claude desktop generate-config` + install in System Settings). |
-| Both | Install both. They coexist without conflict. |
+# Verbose logging (debug output to stderr):
+databricks-claude --verbose "fix the bug in main.go"
 
-The two modes are independent — neither requires the other — and the binary supports either or both.
+# Log to file:
+databricks-claude --log-file /tmp/dc.log "fix the bug in main.go"
+
+# Both stderr and file:
+databricks-claude -v --log-file /tmp/dc.log "fix the bug in main.go"
+
+# With OTEL telemetry:
+databricks-claude --otel "summarize this PR"
+
+# With custom OTEL tables:
+databricks-claude --otel --otel-metrics-table main.catalog.metrics --otel-logs-table main.catalog.logs "summarize this PR"
+
+# Disable OTEL (clears persisted keys):
+databricks-claude --no-otel
+
+# With proxy API key authentication:
+databricks-claude --proxy-api-key my-secret-key "explain this codebase"
+
+# With TLS:
+databricks-claude --tls-cert cert.pem --tls-key key.pem "explain this codebase"
+```
+
+### Alias (optional)
+
+```bash
+echo 'alias claude="databricks-claude"' >> ~/.zshrc  # or ~/.bashrc
+```
+
+Claude Desktop integration lives under the `desktop` subcommand — run `databricks-claude desktop` for its action list and flags.
 
 ## Headless Mode
 
@@ -212,82 +206,53 @@ databricks-claude --headless
 - **`POST /shutdown`** — decrements the session refcount; when it reaches 0, the proxy exits. Returns `{"remaining": N, "exiting": true/false}`
 - **Idle timeout** — after 30 minutes with no proxied requests, the proxy shuts down automatically. Configure with `--idle-timeout <duration>` (e.g. `10m`, `1h`). Use `--idle-timeout 0` to disable.
 
-## Session Hooks (automatic proxy lifecycle)
+## How It Works
 
-Install hooks so every Claude Code session auto-starts the proxy on startup and releases it cleanly on exit — no manual `--headless` needed.
+`databricks-claude` wraps the `claude` binary. It:
 
-> **Coexists with Claude Desktop.** If you've also installed the Claude Desktop mobileconfig, the hook's proxy lifecycle is harmless inside Desktop sessions — Desktop's inference does not consult `ANTHROPIC_BASE_URL` (it uses its own MDM-driven `inferenceCredentialHelper`). See [Hooks vs Claude Desktop](#hooks-vs-claude-desktop) for details.
+1. Binds a local HTTP proxy on `127.0.0.1:49153` (fixed port — shared across concurrent sessions)
+2. Writes `~/.claude/settings.json` once to point `ANTHROPIC_BASE_URL` at the proxy (idempotent — no restore on exit)
+3. Launches `claude` with your args — fully transparent
+4. Injects fresh Databricks OAuth tokens on every request (auto-refreshed from `databricks auth token`)
+5. Tracks concurrent sessions with a ref-count; the last session out closes the listener
 
-> **One-step setup:** `databricks-claude --install-hooks --profile <name>` does everything in one shot — it persists your profile/port and writes `ANTHROPIC_BASE_URL` to `~/.claude/settings.json`, then registers the SessionStart and SessionEnd hooks. No prior `databricks-claude` invocation needed. Re-running is idempotent. The hooks keep the proxy running for all Claude clients — including ones that don't use the `databricks-claude` wrapper directly, such as the [Claude VS Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-code) and JetBrains/IntelliJ plugin.
+## Reference
 
-### Install
+### Flags
 
-```bash
-databricks-claude --install-hooks --profile <name>
-```
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--profile` | `DEFAULT` | Databricks CLI profile |
+| `--verbose`, `-v` | `false` | Enable debug logging to stderr |
+| `--log-file` | | Write debug logs to a file (combinable with `--verbose`) |
+| `--otel` | `false` | Enable OTEL telemetry proxying |
+| `--no-otel` | | Clear persisted OTEL keys and disable OTEL for future sessions |
+| `--otel-metrics-table` | `main.claude_telemetry.claude_otel_metrics` | Unity Catalog table for OTEL metrics |
+| `--otel-logs-table` | derived from metrics table | Unity Catalog table for OTEL logs |
+| `--upstream` | auto-discovered | Override the AI Gateway URL |
+| `--proxy-api-key` | | Require Bearer token auth on all proxy requests |
+| `--port` | `49153` | Proxy listen port (saved for future sessions) |
+| `--tls-cert` | | Path to TLS certificate file (requires `--tls-key`) |
+| `--tls-key` | | Path to TLS private key file (requires `--tls-cert`) |
+| `--headless` | `false` | Start proxy without launching claude (for IDE extensions) |
+| `--idle-timeout` | `30m` | Idle timeout in headless mode (`0` disables) |
+| `--version` | | Print version and exit |
+| `--print-env` | | Print resolved configuration (token redacted) and exit |
+| `--help`, `-h` | | Print wrapper flags and the full `claude --help` output, then exit |
 
-This merges two hooks into `~/.claude/settings.json` AND performs first-run env setup (persists profile/port, writes `ANTHROPIC_BASE_URL`). No prior `databricks-claude` invocation needed; idempotent on re-run.
+All other flags and args are forwarded to `claude`.
 
-- **SessionStart** — calls `databricks-claude --headless-ensure` on session startup: starts the proxy if it isn't already running
-- **SessionEnd** — calls `databricks-claude --headless-release` on session end: decrements the refcount; proxy exits when the last session closes
+### Auto-Discovery
 
-### Uninstall
+On first run (when `ANTHROPIC_BASE_URL` is not set), `databricks-claude` auto-discovers:
 
-```bash
-databricks-claude --uninstall-hooks
-```
+- Your workspace host from `databricks auth env`
+- Your workspace ID via the SCIM API (`x-databricks-org-id` header)
+- Constructs the AI Gateway URL: `https://<workspace-id>.ai-gateway.cloud.databricks.com/anthropic`
 
-Removes only the databricks-claude hook entries. Other hooks in your settings are untouched.
+If workspace ID resolution fails, it falls back to `<host>/serving-endpoints/anthropic`.
 
-### Notes
-
-- Idempotent — safe to re-run after upgrades
-- The proxy starts on the configured port (default `49153`). If you use a custom port via `--port`, the hooks will respect that setting automatically (port is saved to the state file)
-- Unclean exits (force-quit, OOM kill) are covered by the idle timeout — the proxy self-exits after 30 minutes with no inference traffic
-
-### Claude Code Plugin (marketplace install)
-
-Hooks are also distributed as a Claude Code plugin. Add this repo as a marketplace, then install the plugin:
-
-```
-/plugin marketplace add IceRhymers/databricks-claude
-/plugin install databricks-claude@IceRhymers-databricks-claude
-```
-
-The `.claude-plugin/` directory and `hooks/hooks.json` at the repo root define the plugin.
-
-## Shell Tab Completions
-
-`databricks-claude` can generate shell completion scripts for bash, zsh, and fish. Completions are derived from the binary's own flag metadata, so they stay in sync automatically.
-
-### Install (one-time)
-
-**bash** — add to `~/.bashrc`:
-```bash
-eval "$(databricks-claude completion bash)"
-```
-
-**zsh** — add to `~/.zshrc`:
-```zsh
-eval "$(databricks-claude completion zsh)"
-```
-
-**fish** — add to `~/.config/fish/config.fish`:
-```fish
-databricks-claude completion fish | source
-```
-
-### Homebrew
-
-If installed via `brew install IceRhymers/tap/databricks-claude`, completions are installed automatically — no extra setup needed.
-
-### What completes
-
-- `--profile <TAB>` — lists profiles from `~/.databrickscfg` (updated live, no rehash needed)
-- `--log-file`, `--tls-cert`, `--tls-key`, `--upstream <TAB>` — file path completion
-- All other flags — name completion when you type `-`
-
-## Profile Resolution Order
+### Profile Resolution Order
 
 1. `--profile` CLI flag (writes to state file for future runs)
 2. `profile` from `~/.claude/.databricks-claude.json` (state file)
@@ -298,7 +263,7 @@ If installed via `brew install IceRhymers/tap/databricks-claude`, completions ar
 > which would override the user's explicit `--profile` choice persisted in the
 > state file.
 
-## Persistent Config (`~/.claude/.databricks-claude.json`)
+### Persistent Config (`~/.claude/.databricks-claude.json`)
 
 On first setup (when `ANTHROPIC_BASE_URL` is not yet configured), `databricks-claude` saves your resolved profile to `~/.claude/.databricks-claude.json`. This file persists independently of `settings.json` — your profile is never lost when config is rewritten.
 
@@ -341,20 +306,11 @@ If the token shows as empty or the base URL looks wrong, check your Databricks C
 
 `databricks-claude --help` (or `-h`) prints the wrapper's own flags followed by the complete `claude --help` output, so you see everything in one place.
 
-## Development
-
-```bash
-git clone https://github.com/IceRhymers/databricks-claude
-cd databricks-claude
-make test
-make build
-```
-
 ## Shell Tab Completions
 
-`databricks-claude` includes a completion engine (`pkg/completion`) that generates shell scripts from the binary's own flag definitions. If you installed via Homebrew, completions are registered automatically — no manual setup required.
+`databricks-claude` includes a completion engine (`pkg/completion`) that generates shell scripts from the binary's own flag definitions, so they stay in sync automatically. If you installed via Homebrew, completions are registered automatically — no manual setup required.
 
-### Manual Installation
+### Manual installation
 
 If you installed from source or want to set completions up yourself, source the output of the `completion` subcommand in your shell rc file:
 
@@ -369,16 +325,16 @@ eval "$(databricks-claude completion zsh)"
 databricks-claude completion fish | source
 ```
 
-### What Gets Completed
+### What gets completed
 
 - **Flag names** — `--<Tab>` lists all flags (long and short forms).
 - **Flag values** — context-aware completions for flags that accept a value:
-  - `--profile` completes from `~/.databrickscfg` section headers.
+  - `--profile` completes from `~/.databrickscfg` section headers (updated live, no rehash needed).
   - `--upstream`, `--log-file`, `--tls-cert`, `--tls-key` complete with local file paths.
   - Flags like `--port` or `--otel-metrics-table` suppress file completion.
 - **Passthrough boundary** — after a bare `--`, completions stop. Everything beyond that is forwarded to the wrapped `claude` binary.
 
-### How the Engine Works
+### How the engine works
 
 This section documents the `pkg/completion` package for other projects that import it.
 
@@ -471,6 +427,15 @@ export DATABRICKS_NO_UPDATE_CHECK=1
 ```
 
 Both suppress the startup check and disable the `update` subcommand.
+
+## Development
+
+```bash
+git clone https://github.com/IceRhymers/databricks-claude
+cd databricks-claude
+make test
+make build
+```
 
 ## License
 
