@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -55,6 +58,10 @@ func TestBuildMobileconfig_ContainsRequiredKeys(t *testing.T) {
 		`<integer>55</integer>`,
 		`<key>inferenceModels</key>`,
 		`databricks-claude-opus-4-7`,
+		`<key>disableAutoUpdates</key>`,
+		`<key>disableEssentialTelemetry</key>`,
+		`<key>disableNonessentialTelemetry</key>`,
+		`<key>disableNonessentialServices</key>`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("mobileconfig missing %q", want)
@@ -112,6 +119,10 @@ func TestBuildRegFile_ContainsRequiredKeys(t *testing.T) {
 		`"isClaudeCodeForDesktopEnabled"=dword:00000001`,
 		`"isDesktopExtensionSignatureRequired"=dword:00000000`,
 		`"isLocalDevMcpEnabled"=dword:00000001`,
+		`"disableAutoUpdates"=dword:00000000`,
+		`"disableEssentialTelemetry"=dword:00000000`,
+		`"disableNonessentialTelemetry"=dword:00000000`,
+		`"disableNonessentialServices"=dword:00000000`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf(".reg missing %q", want)
@@ -314,5 +325,373 @@ func TestResolveHelperPath_DerivedFromExecutable(t *testing.T) {
 	}
 	if filepath.Base(got) != wantBase {
 		t.Errorf("resolveHelperPath(\"\") basename = %q, want %q (full=%q)", filepath.Base(got), wantBase, got)
+	}
+}
+
+// ---- buildDevModeJSON ------------------------------------------------------
+
+const (
+	devTestGateway = "https://abc-123.ai-gateway.cloud.databricks.com/anthropic"
+	devTestHelper  = "/usr/local/bin/databricks-claude-credential-helper"
+)
+
+func decodeDevJSON(t *testing.T) map[string]any {
+	t.Helper()
+	out, err := buildDevModeJSON(devTestGateway, devTestHelper)
+	if err != nil {
+		t.Fatalf("buildDevModeJSON: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("decode dev-mode JSON: %v\nbody: %s", err, out)
+	}
+	return m
+}
+
+func TestBuildDevModeJSON_ContainsRequiredKeys(t *testing.T) {
+	m := decodeDevJSON(t)
+	wantBool := map[string]bool{
+		"disableDeploymentModeChooser":        true,
+		"isClaudeCodeForDesktopEnabled":       true,
+		"isDesktopExtensionEnabled":           true,
+		"isDesktopExtensionDirectoryEnabled":  true,
+		"isDesktopExtensionSignatureRequired": false,
+		"isLocalDevMcpEnabled":                true,
+		"disableAutoUpdates":                  false,
+		"disableEssentialTelemetry":           false,
+		"disableNonessentialTelemetry":        false,
+		"disableNonessentialServices":         false,
+	}
+	for k, want := range wantBool {
+		got, ok := m[k].(bool)
+		if !ok {
+			t.Errorf("dev JSON key %q: not a bool (got %T = %v)", k, m[k], m[k])
+			continue
+		}
+		if got != want {
+			t.Errorf("dev JSON key %q = %v, want %v", k, got, want)
+		}
+	}
+	wantStr := map[string]string{
+		"inferenceProvider":          "gateway",
+		"inferenceGatewayBaseUrl":    devTestGateway,
+		"inferenceGatewayAuthScheme": "bearer",
+		"inferenceCredentialHelper":  devTestHelper,
+	}
+	for k, want := range wantStr {
+		got, ok := m[k].(string)
+		if !ok {
+			t.Errorf("dev JSON key %q: not a string (got %T = %v)", k, m[k], m[k])
+			continue
+		}
+		if got != want {
+			t.Errorf("dev JSON key %q = %q, want %q", k, got, want)
+		}
+	}
+}
+
+func TestBuildDevModeJSON_ValidJSONAndTrailingNewline(t *testing.T) {
+	out, err := buildDevModeJSON(devTestGateway, devTestHelper)
+	if err != nil {
+		t.Fatalf("buildDevModeJSON: %v", err)
+	}
+	if len(out) == 0 || out[len(out)-1] != '\n' {
+		t.Errorf("dev-mode JSON must end with newline; last byte = %q", out[len(out)-1])
+	}
+	var sink map[string]any
+	if err := json.Unmarshal(out, &sink); err != nil {
+		t.Errorf("output is not valid JSON: %v", err)
+	}
+}
+
+func TestBuildDevModeJSON_NoInferenceGatewayApiKey(t *testing.T) {
+	out, err := buildDevModeJSON(devTestGateway, devTestHelper)
+	if err != nil {
+		t.Fatalf("buildDevModeJSON: %v", err)
+	}
+	if strings.Contains(string(out), "inferenceGatewayApiKey") {
+		t.Errorf("dev-mode JSON must NOT contain inferenceGatewayApiKey (UI placeholder, OAuth via helper)")
+	}
+}
+
+func TestBuildDevModeJSON_ModelsArrayShape(t *testing.T) {
+	m := decodeDevJSON(t)
+	models, ok := m["inferenceModels"].([]any)
+	if !ok {
+		t.Fatalf("inferenceModels: not a JSON array, got %T", m["inferenceModels"])
+	}
+	// Should match the count in inferenceModelsJSON.
+	var want []json.RawMessage
+	if err := json.Unmarshal([]byte(inferenceModelsJSON), &want); err != nil {
+		t.Fatalf("inferenceModelsJSON malformed: %v", err)
+	}
+	if len(models) != len(want) {
+		t.Fatalf("inferenceModels length = %d, want %d", len(models), len(want))
+	}
+	first, ok := models[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first model: not an object, got %T", models[0])
+	}
+	if first["name"] != "databricks-claude-opus-4-7" {
+		t.Errorf("first model name = %v, want databricks-claude-opus-4-7", first["name"])
+	}
+	if first["supports1m"] != true {
+		t.Errorf("first model supports1m = %v, want true", first["supports1m"])
+	}
+}
+
+func TestBuildDevModeJSON_TtlIs55(t *testing.T) {
+	m := decodeDevJSON(t)
+	ttl, ok := m["inferenceCredentialHelperTtlSec"].(float64)
+	if !ok {
+		t.Fatalf("inferenceCredentialHelperTtlSec: not a number, got %T", m["inferenceCredentialHelperTtlSec"])
+	}
+	if ttl != 55 {
+		t.Errorf("inferenceCredentialHelperTtlSec = %v, want 55 (matches MDM TTL; do not drift to 3600)", ttl)
+	}
+}
+
+func TestBuildDevModeJSON_PreservesPaths(t *testing.T) {
+	gateway := "https://example.com/anthropic?a=1&b=2"
+	helper := "/Applications/Foo Bar/databricks-claude-credential-helper"
+	out, err := buildDevModeJSON(gateway, helper)
+	if err != nil {
+		t.Fatalf("buildDevModeJSON: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if m["inferenceGatewayBaseUrl"] != gateway {
+		t.Errorf("gateway URL not preserved: got %q", m["inferenceGatewayBaseUrl"])
+	}
+	if m["inferenceCredentialHelper"] != helper {
+		t.Errorf("helper path not preserved: got %q", m["inferenceCredentialHelper"])
+	}
+}
+
+// TestInferenceModelsConsistencyAcrossArtifacts proves the model list is
+// byte-identical across all three artifacts so a future model addition
+// to inferenceModelsJSON propagates everywhere automatically.
+func TestInferenceModelsConsistencyAcrossArtifacts(t *testing.T) {
+	gateway := "https://x.example.com/anthropic"
+	helper := "/path/to/helper"
+
+	// JSON: models array elements should byte-equal the constant elements.
+	devOut, err := buildDevModeJSON(gateway, helper)
+	if err != nil {
+		t.Fatalf("buildDevModeJSON: %v", err)
+	}
+	var devShape struct {
+		Models []json.RawMessage `json:"inferenceModels"`
+	}
+	if err := json.Unmarshal(devOut, &devShape); err != nil {
+		t.Fatalf("decode dev JSON: %v", err)
+	}
+	var want []json.RawMessage
+	if err := json.Unmarshal([]byte(inferenceModelsJSON), &want); err != nil {
+		t.Fatalf("inferenceModelsJSON malformed: %v", err)
+	}
+	if len(devShape.Models) != len(want) {
+		t.Fatalf("dev JSON model count = %d, want %d", len(devShape.Models), len(want))
+	}
+	// MarshalIndent re-indents json.RawMessage elements, so compare the
+	// compact form of each side. Compact bytes are byte-equal iff the JSON
+	// is semantically identical down to key order — which is what "single
+	// source of truth" demands.
+	for i := range want {
+		gotC, errG := compactJSON(devShape.Models[i])
+		wantC, errW := compactJSON(want[i])
+		if errG != nil || errW != nil {
+			t.Fatalf("compact: got err=%v want err=%v", errG, errW)
+		}
+		if !bytes.Equal(gotC, wantC) {
+			t.Errorf("dev JSON model[%d] (compact) = %s, want %s", i, gotC, wantC)
+		}
+	}
+
+	// Mobileconfig: extract the <string>...</string> body for inferenceModels
+	// and reverse plistEscape; should equal inferenceModelsJSON verbatim.
+	mc, err := buildMobileconfig(gateway, helper)
+	if err != nil {
+		t.Fatalf("buildMobileconfig: %v", err)
+	}
+	mcModels := extractMobileconfigModels(t, mc)
+	mcUnescaped := unescapePlist(mcModels)
+	if mcUnescaped != inferenceModelsJSON {
+		t.Errorf("mobileconfig models (unescaped) = %q,\nwant %q", mcUnescaped, inferenceModelsJSON)
+	}
+
+	// Reg: extract the inferenceModels="..." value and reverse regEscape.
+	reg := buildRegFile(gateway, helper)
+	regModels := extractRegModels(t, reg)
+	regUnescaped := unescapeReg(regModels)
+	if regUnescaped != inferenceModelsJSON {
+		t.Errorf("reg models (unescaped) = %q,\nwant %q", regUnescaped, inferenceModelsJSON)
+	}
+}
+
+// compactJSON returns the canonical compact form of a JSON byte slice. Two
+// byte slices that compact-equal are semantically identical to encoding/json,
+// regardless of whitespace or MarshalIndent re-formatting.
+func compactJSON(in []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, in); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func extractMobileconfigModels(t *testing.T, plist string) string {
+	t.Helper()
+	re := regexp.MustCompile(`<key>inferenceModels</key>\s*<string>([^<]*)</string>`)
+	m := re.FindStringSubmatch(plist)
+	if len(m) != 2 {
+		t.Fatalf("could not find inferenceModels <string> in mobileconfig")
+	}
+	return m[1]
+}
+
+func unescapePlist(s string) string {
+	r := strings.NewReplacer(
+		"&apos;", "'",
+		"&quot;", `"`,
+		"&gt;", ">",
+		"&lt;", "<",
+		"&amp;", "&",
+	)
+	return r.Replace(s)
+}
+
+func extractRegModels(t *testing.T, reg string) string {
+	t.Helper()
+	re := regexp.MustCompile(`"inferenceModels"="([^"\\]*(?:\\.[^"\\]*)*)"`)
+	m := re.FindStringSubmatch(reg)
+	if len(m) != 2 {
+		t.Fatalf("could not find inferenceModels in reg file")
+	}
+	return m[1]
+}
+
+func unescapeReg(s string) string {
+	// Reverse regEscape: \" → ", \\ → \. Order matters: \" first, then \\.
+	r := strings.NewReplacer(
+		`\"`, `"`,
+		`\\`, `\`,
+	)
+	return r.Replace(s)
+}
+
+// ---- writeFileAtomic & writeDesktopConfigByPath ----------------------------
+
+func TestWriteFileAtomic_RenamesFromTempInSameDir(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "out.json")
+	want := []byte("hello\n")
+	if err := writeFileAtomic(target, want, 0o600); err != nil {
+		t.Fatalf("writeFileAtomic: %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("contents = %q, want %q", got, want)
+	}
+	// .tmp must not exist after success.
+	if _, err := os.Stat(target + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf(".tmp file leaked: stat err = %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf("perm = %o, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestWriteDesktopConfigByPath_JsonExtension(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "out.json")
+	if err := writeDesktopConfigByPath(target, "https://x.example.com/anthropic", "/bin/h"); err != nil {
+		t.Fatalf("writeDesktopConfigByPath: %v", err)
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("file is not valid JSON: %v", err)
+	}
+	if m["inferenceProvider"] != "gateway" {
+		t.Errorf("inferenceProvider = %v, want gateway", m["inferenceProvider"])
+	}
+}
+
+// ---- guardDevJSONOutputPath ------------------------------------------------
+
+func TestGuardDevJSONOutputPath_NonExistent(t *testing.T) {
+	dir := t.TempDir()
+	if err := guardDevJSONOutputPath(filepath.Join(dir, "does-not-exist.json")); err != nil {
+		t.Errorf("expected nil for non-existent file, got %v", err)
+	}
+}
+
+func TestGuardDevJSONOutputPath_Empty(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "empty.json")
+	if err := os.WriteFile(p, []byte{}, 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := guardDevJSONOutputPath(p); err != nil {
+		t.Errorf("expected nil for empty file, got %v", err)
+	}
+}
+
+func TestGuardDevJSONOutputPath_OurOwnConfig(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "ours.json")
+	body, err := buildDevModeJSON("https://x", "/bin/h")
+	if err != nil {
+		t.Fatalf("buildDevModeJSON: %v", err)
+	}
+	if err := os.WriteFile(p, body, 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := guardDevJSONOutputPath(p); err != nil {
+		t.Errorf("expected nil for our own config (regeneration is allowed), got %v", err)
+	}
+}
+
+func TestGuardDevJSONOutputPath_ClaudeSettingsJSON(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "settings.json")
+	settings := []byte(`{"env":{"FOO":"bar"},"hooks":{}}`)
+	if err := os.WriteFile(p, settings, 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	err := guardDevJSONOutputPath(p)
+	if err == nil {
+		t.Fatalf("expected error refusing to overwrite settings.json-shaped file, got nil")
+	}
+	if !strings.Contains(err.Error(), p) {
+		t.Errorf("error must mention the path %q, got %v", p, err)
+	}
+}
+
+func TestGuardDevJSONOutputPath_NotJSON(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "garbage.json")
+	if err := os.WriteFile(p, []byte("not json at all <<<"), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	err := guardDevJSONOutputPath(p)
+	if err == nil {
+		t.Fatalf("expected error refusing to overwrite non-JSON file, got nil")
+	}
+	if !strings.Contains(err.Error(), p) {
+		t.Errorf("error must mention the path %q, got %v", p, err)
 	}
 }

@@ -15,6 +15,8 @@ Transparent proxy wrapper for Claude Code that auto-refreshes Databricks OAuth t
 | `process.go` | `SettingsManager` (wraps `pkg/settings`): full-setup and save/restore of `~/.claude/settings.json` env keys, OTEL key management, `ClearOTELKeys`, `RunChild`, `ForwardSignals` |
 | `lock.go` | Type alias forwarding `pkg/filelock.FileLock` to package main |
 | `registry.go` | Type alias forwarding `pkg/registry.SessionRegistry` to package main |
+| `desktop_config.go` | `desktop` subcommand handlers: credential-helper alias, `generate-config` (writes `.mobileconfig`, `.reg`, and `.json` artifacts for Claude Desktop), atomic file writes, output safety guard, per-OS install instructions |
+| `desktop_config_test.go` | Tests for `buildMobileconfig`, `buildRegFile`, `buildDevModeJSON`, `writeDesktopConfigByPath`, `guardDevJSONOutputPath`, `writeFileAtomic`, install-instruction routing, and model-list consistency across all three artifacts |
 | `main_test.go` | Tests for `parseArgs`, `handlePrintEnv`, persistent config, `deriveLogsTable`, full integration scenarios |
 | `process_test.go` | Tests for `SettingsManager` save/restore, atomic writes, OTEL handling, signal forwarding, exit code propagation |
 | `proxy_test.go` | Tests for inference and OTEL proxy routing, token injection, panic recovery |

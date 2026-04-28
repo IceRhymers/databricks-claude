@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -41,9 +43,14 @@ func helperDebugLog(format string, args ...any) {
 }
 
 // inferenceModelsJSON is the JSON-encoded model list embedded in the generated
-// Claude Desktop configuration. Kept as a single source of truth so the macOS
-// and Windows generators stay aligned.
+// Claude Desktop configuration. Kept as a single source of truth so the macOS,
+// Windows, and developer-mode JSON generators stay aligned.
 const inferenceModelsJSON = `[{"name":"databricks-claude-opus-4-7","supports1m":true},{"name":"databricks-claude-opus-4-6","supports1m":true},{"name":"databricks-claude-sonnet-4-6","supports1m":true},{"name":"databricks-claude-sonnet-4-5","supports1m":true},{"name":"databricks-claude-haiku-4-5"}]`
+
+// desktopDeveloperModeArticleURL is the canonical Anthropic support article
+// describing how to import a JSON config into Claude Desktop's developer mode.
+// Pinned in one place so updates are a single-line edit.
+const desktopDeveloperModeArticleURL = "https://support.claude.com/en/articles/14680741-install-and-configure-claude-cowork-with-third-party-platforms"
 
 // credentialHelperBinaryName is the basename used to dispatch into
 // runCredentialHelper via argv[0]. Each install method is expected to install
@@ -94,10 +101,18 @@ func printDesktopHelp() {
 Set up Claude Desktop's third-party-inference integration with Databricks.
 
 Actions:
-  generate-config     Write Claude Desktop MDM configs. Without --output, writes
-                      both databricks-claude-desktop.mobileconfig (macOS) and
-                      databricks-claude-desktop.reg (Windows) into the current
-                      directory.
+  generate-config     Write Claude Desktop configuration artifacts. Without
+                      --output, writes three files into the current directory.
+                      All three encode the same Databricks gateway and
+                      credential-helper defaults:
+                        databricks-claude-desktop.mobileconfig (install on macOS)
+                        databricks-claude-desktop.reg          (install on Windows)
+                        databricks-claude-desktop.json         (editable source —
+                                                                import into Claude
+                                                                Desktop developer
+                                                                mode to customize
+                                                                further, then
+                                                                re-export for MDM)
   credential-helper   Print a fresh Databricks token to stdout — the same code
                       path Claude Desktop's inferenceCredentialHelper invokes
                       via the databricks-claude-credential-helper symlink.
@@ -106,7 +121,8 @@ Actions:
 Flags:
   --profile string              Databricks CLI profile (default: state file > DEFAULT)
   --output string               Single output path for generate-config; format
-                                inferred from .mobileconfig/.reg extension or host OS.
+                                inferred from .mobileconfig/.reg/.json extension
+                                or host OS.
   --binary-path string          generate-config: credential-helper path embedded in
                                 the generated config (default: derived from the
                                 running binary). Use this for MDM rollouts so one
@@ -265,31 +281,43 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databrick
 		os.Exit(0)
 	}
 
-	// When --output isn't given, write BOTH .mobileconfig and .reg by default
-	// so a single invocation produces an artifact for every supported Claude
-	// Desktop platform.
-	wrote := []string{}
-	{
-		path := "databricks-claude-desktop.mobileconfig"
-		content, err := buildMobileconfig(gatewayURL, helperPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "databricks-claude: %v\n", err)
-			os.Exit(1)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			fmt.Fprintf(os.Stderr, "databricks-claude: write %s: %v\n", path, err)
-			os.Exit(1)
-		}
-		wrote = append(wrote, path)
+	// When --output isn't given, write all three artifacts so a single
+	// invocation produces install-ready files for both desktop platforms
+	// plus an editable source:
+	//   - .mobileconfig: ready-to-install macOS configuration profile
+	//   - .reg:          ready-to-merge Windows registry script
+	//   - .json:         editable source for Claude Desktop developer mode.
+	//                    Users who want to customize allow-lists, tools,
+	//                    branding, etc. import this, edit in Desktop's UI,
+	//                    and export back to .mobileconfig / .reg for MDM.
+	// All three encode the same Databricks defaults; pick any one to
+	// install or use the .json as the starting point for customization.
+	type artifact struct {
+		path    string
+		content []byte
 	}
-	{
-		path := "databricks-claude-desktop.reg"
-		content := buildRegFile(gatewayURL, helperPath)
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			fmt.Fprintf(os.Stderr, "databricks-claude: write %s: %v\n", path, err)
+	mc, err := buildMobileconfig(gatewayURL, helperPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "databricks-claude: %v\n", err)
+		os.Exit(1)
+	}
+	dev, err := buildDevModeJSON(gatewayURL, helperPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "databricks-claude: %v\n", err)
+		os.Exit(1)
+	}
+	arts := []artifact{
+		{"databricks-claude-desktop.mobileconfig", []byte(mc)},
+		{"databricks-claude-desktop.reg", []byte(buildRegFile(gatewayURL, helperPath))},
+		{"databricks-claude-desktop.json", dev},
+	}
+	wrote := []string{}
+	for _, a := range arts {
+		if err := writeFileAtomic(a.path, a.content, 0o600); err != nil {
+			fmt.Fprintf(os.Stderr, "databricks-claude: write %s: %v\n", a.path, err)
 			os.Exit(1)
 		}
-		wrote = append(wrote, path)
+		wrote = append(wrote, a.path)
 	}
 
 	for _, p := range wrote {
@@ -324,28 +352,39 @@ func resolveHelperPath(override string) (string, error) {
 }
 
 // writeDesktopConfigByPath chooses the format based on file extension (or the
-// host OS when no recognised extension is present) and writes to outputPath.
+// host OS when no recognised extension is present) and writes to outputPath
+// atomically. For .json outputs, guardDevJSONOutputPath protects against
+// accidentally clobbering ~/.claude/settings.json via a typo.
 func writeDesktopConfigByPath(outputPath, gatewayURL, exe string) error {
 	lower := strings.ToLower(outputPath)
-	var content string
+	var data []byte
 	var err error
 	switch {
 	case strings.HasSuffix(lower, ".mobileconfig"):
-		content, err = buildMobileconfig(gatewayURL, exe)
+		var s string
+		s, err = buildMobileconfig(gatewayURL, exe)
+		data = []byte(s)
 	case strings.HasSuffix(lower, ".reg"):
-		content = buildRegFile(gatewayURL, exe)
+		data = []byte(buildRegFile(gatewayURL, exe))
+	case strings.HasSuffix(lower, ".json"):
+		if err := guardDevJSONOutputPath(outputPath); err != nil {
+			return err
+		}
+		data, err = buildDevModeJSON(gatewayURL, exe)
 	default:
 		// Fall back to host platform.
 		if runtime.GOOS == "windows" {
-			content = buildRegFile(gatewayURL, exe)
+			data = []byte(buildRegFile(gatewayURL, exe))
 		} else {
-			content, err = buildMobileconfig(gatewayURL, exe)
+			var s string
+			s, err = buildMobileconfig(gatewayURL, exe)
+			data = []byte(s)
 		}
 	}
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(outputPath, []byte(content), 0o600)
+	return writeFileAtomic(outputPath, data, 0o600)
 }
 
 // printInstallInstructions writes user-facing guidance for the produced file
@@ -368,6 +407,42 @@ To install on Windows:
      into HKEY_CURRENT_USER\SOFTWARE\Policies\Claude.
   2. Restart Claude Desktop.
 `, path, path)
+	case strings.HasSuffix(lower, ".json"):
+		libDir := "~/Library/Application Support/Claude-3p/configLibrary/"
+		if runtime.GOOS == "windows" {
+			libDir = "%APPDATA%\\Claude-3p\\configLibrary\\"
+		}
+		fmt.Fprintf(os.Stderr, `
+To customize the configuration further (allow-lists, tools, branding, etc.),
+load this JSON into Claude Desktop's developer mode:
+
+  1. Enable developer mode:
+     Help → Troubleshooting → Enable Developer mode
+  2. Open the third-party inference UI:
+     Developer → Configure third-party inference
+  3. Click the configuration name in the top-right and choose
+     "New configuration", then give it a name (e.g. "Databricks").
+  4. From the same dropdown, choose "Reveal in Finder" (macOS) or
+     "Reveal in Explorer" (Windows). This opens:
+       %s
+     The new configuration is stored as <uuid>.json inside that folder.
+  5. Replace that <uuid>.json file's contents with %q
+     (keep the original filename — only the contents change).
+  6. Switch back to Claude Desktop, select your new configuration, and
+     edit any Claude Desktop configuration keys in the UI.
+  7. Use Desktop's "Export" action to write the edited config out as
+     .mobileconfig (macOS) or .reg (Windows). Ship that to MDM
+     (Jamf, Kandji, Intune, Group Policy).
+  8. Restart Claude Desktop, or distribute the exported file to your fleet.
+
+The defaults in this JSON are sufficient on their own; only use this flow
+if you need to customize beyond the Databricks gateway + credential helper.
+
+Note: Claude Desktop does not have a "Import JSON" UI today — file
+replacement under configLibrary/ is the supported import path.
+
+Reference (full list of Claude Desktop configuration keys): %s
+`, libDir, path, desktopDeveloperModeArticleURL)
 	}
 }
 
@@ -439,6 +514,14 @@ func buildMobileconfig(gatewayURL, helperPath string) (string, error) {
 				<false/>
 				<key>isLocalDevMcpEnabled</key>
 				<true/>
+				<key>disableAutoUpdates</key>
+				<false/>
+				<key>disableEssentialTelemetry</key>
+				<false/>
+				<key>disableNonessentialTelemetry</key>
+				<false/>
+				<key>disableNonessentialServices</key>
+				<false/>
 			</dict>
 		</array>
 		<key>PayloadDisplayName</key>
@@ -492,7 +575,127 @@ func buildRegFile(gatewayURL, helperPath string) string {
 	b.WriteString(`"isDesktopExtensionDirectoryEnabled"=dword:00000001` + "\r\n")
 	b.WriteString(`"isDesktopExtensionSignatureRequired"=dword:00000000` + "\r\n")
 	b.WriteString(`"isLocalDevMcpEnabled"=dword:00000001` + "\r\n")
+	b.WriteString(`"disableAutoUpdates"=dword:00000000` + "\r\n")
+	b.WriteString(`"disableEssentialTelemetry"=dword:00000000` + "\r\n")
+	b.WriteString(`"disableNonessentialTelemetry"=dword:00000000` + "\r\n")
+	b.WriteString(`"disableNonessentialServices"=dword:00000000` + "\r\n")
 	return b.String()
+}
+
+// buildDevModeJSON renders the Claude Desktop developer-mode importable JSON.
+// Use case: an individual user wants to customize allow-lists, tools, or
+// branding via Desktop's developer-mode UI without touching the fleet MDM
+// artifacts. The .mobileconfig/.reg are the right format for fleet rollout;
+// this is the right format for per-user customization.
+//
+// inferenceCredentialHelperTtlSec is set to 55 (NOT the validated example's
+// 3600) to match the MDM artifacts. The OAuth helper refreshes tokens with a
+// 5-minute buffer, so a 55-second TTL forces Desktop to re-invoke the helper
+// at a cadence that always sees a fresh token. Diverging from the MDM TTL
+// would give dev-mode users different effective behavior than fleet users.
+//
+// inferenceGatewayApiKey is intentionally absent: the validated example shows
+// "••••••••" which is Desktop's UI placeholder. Our auth flow uses the OAuth
+// credential helper, so no static key is needed.
+//
+// inferenceModels is reused from inferenceModelsJSON via []json.RawMessage so
+// the model list never drifts between the three artifacts.
+func buildDevModeJSON(gatewayURL, helperPath string) ([]byte, error) {
+	var models []json.RawMessage
+	if err := json.Unmarshal([]byte(inferenceModelsJSON), &models); err != nil {
+		return nil, fmt.Errorf("inferenceModelsJSON is malformed: %w", err)
+	}
+
+	cfg := struct {
+		DisableDeploymentModeChooser        bool              `json:"disableDeploymentModeChooser"`
+		InferenceProvider                   string            `json:"inferenceProvider"`
+		InferenceGatewayBaseUrl             string            `json:"inferenceGatewayBaseUrl"`
+		InferenceGatewayAuthScheme          string            `json:"inferenceGatewayAuthScheme"`
+		InferenceModels                     []json.RawMessage `json:"inferenceModels"`
+		InferenceCredentialHelper           string            `json:"inferenceCredentialHelper"`
+		InferenceCredentialHelperTtlSec     int               `json:"inferenceCredentialHelperTtlSec"`
+		IsClaudeCodeForDesktopEnabled       bool              `json:"isClaudeCodeForDesktopEnabled"`
+		IsDesktopExtensionEnabled           bool              `json:"isDesktopExtensionEnabled"`
+		IsDesktopExtensionDirectoryEnabled  bool              `json:"isDesktopExtensionDirectoryEnabled"`
+		IsDesktopExtensionSignatureRequired bool              `json:"isDesktopExtensionSignatureRequired"`
+		IsLocalDevMcpEnabled                bool              `json:"isLocalDevMcpEnabled"`
+		DisableAutoUpdates                  bool              `json:"disableAutoUpdates"`
+		DisableEssentialTelemetry           bool              `json:"disableEssentialTelemetry"`
+		DisableNonessentialTelemetry        bool              `json:"disableNonessentialTelemetry"`
+		DisableNonessentialServices         bool              `json:"disableNonessentialServices"`
+	}{
+		DisableDeploymentModeChooser:        true,
+		InferenceProvider:                   "gateway",
+		InferenceGatewayBaseUrl:             gatewayURL,
+		InferenceGatewayAuthScheme:          "bearer",
+		InferenceModels:                     models,
+		InferenceCredentialHelper:           helperPath,
+		InferenceCredentialHelperTtlSec:     55,
+		IsClaudeCodeForDesktopEnabled:       true,
+		IsDesktopExtensionEnabled:           true,
+		IsDesktopExtensionDirectoryEnabled:  true,
+		IsDesktopExtensionSignatureRequired: false,
+		IsLocalDevMcpEnabled:                true,
+		DisableAutoUpdates:                  false,
+		DisableEssentialTelemetry:           false,
+		DisableNonessentialTelemetry:        false,
+		DisableNonessentialServices:         false,
+	}
+
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal dev-mode config: %w", err)
+	}
+	out = append(out, '\n')
+	return out, nil
+}
+
+// writeFileAtomic writes data to path atomically: write to <path>.tmp in the
+// same directory, then os.Rename. Mirrors the pattern used by pkg/settings to
+// satisfy the CLAUDE.md "atomic file writes everywhere" mandate.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// guardDevJSONOutputPath refuses to overwrite a JSON file that does not look
+// like a previously-generated dev-mode config. Specifically: if the target
+// exists, parses as JSON, and lacks an `inferenceProvider:"gateway"` field,
+// we abort. This protects against accidental clobbers of e.g.
+// ~/.claude/settings.json via a typo on --output.
+//
+// Non-existent file → allow.
+// Empty file        → allow (nothing to lose).
+// Valid JSON with inferenceProvider == "gateway" → allow (regeneration).
+// Any other case    → refuse with an explicit error mentioning the path.
+func guardDevJSONOutputPath(path string) error {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var probe struct {
+		InferenceProvider string `json:"inferenceProvider"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return fmt.Errorf("refusing to overwrite %q: not a databricks-claude dev-mode JSON (failed to parse as JSON: %v)", path, err)
+	}
+	if probe.InferenceProvider != "gateway" {
+		return fmt.Errorf("refusing to overwrite %q: not a databricks-claude dev-mode JSON (inferenceProvider=%q, expected %q)", path, probe.InferenceProvider, "gateway")
+	}
+	return nil
 }
 
 // regEscape escapes a string for use inside a Windows .reg REG_SZ value:
