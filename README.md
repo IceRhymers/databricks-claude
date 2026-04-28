@@ -187,16 +187,15 @@ The proxy can be wired into Claude Code in two different ways:
 1. **Session hooks** (`databricks-claude --install-hooks`) — registered in `~/.claude/settings.json`. Every Claude Code session that reads that file fires `SessionStart` to bring up the local proxy and points `ANTHROPIC_BASE_URL` at it.
 2. **Claude Desktop mobileconfig** (`databricks-claude desktop generate-config` + install) — installs an MDM profile that points Claude Desktop's third-party-inference path at the AI Gateway via the credential helper.
 
-Claude Desktop ships with Claude Code embedded, and the embedded Claude Code reads the same `~/.claude/settings.json` for skills, plugins, and hooks — so if both modes are configured, every Claude Code session inside Desktop also fires the hook. That spins up the local proxy on session start, but Claude Desktop's inference path is governed by the MDM profile (managed preferences), not by the `ANTHROPIC_BASE_URL` env var the hook sets. The result is a stray proxy that never receives traffic, plus settings churn from the hook lifecycle.
-
-**Pick one mode based on where you actually want to talk to Databricks from:**
+**Both can be installed on the same machine.** Claude Desktop's inference is governed by the MDM-managed `inferenceCredentialHelper` and does not consult `ANTHROPIC_BASE_URL`, so the SessionStart hook's proxy lifecycle has no effect on Desktop — it simply runs unused for the brief embedded-Code session and exits cleanly. Pick whichever modes match your workflow; you don't have to choose.
 
 | Primary client | Recommended setup |
 |----------------|-------------------|
-| CLI Claude Code, VS Code extension, JetBrains plugin | **Hooks** (`databricks-claude --install-hooks`). Don't install the Claude Desktop mobileconfig. |
-| Claude Desktop (chat UI and/or embedded Claude Code) | **Mobileconfig** (`databricks-claude desktop generate-config` + install in System Settings). Run `databricks-claude --uninstall-hooks` if hooks were previously installed. When you want a CLI Claude Code session against Databricks, invoke `databricks-claude` directly — the proxy runs for that session only. |
+| CLI Claude Code, VS Code extension, JetBrains plugin | **Hooks** (`databricks-claude --install-hooks --profile <name>`). |
+| Claude Desktop (chat UI and/or embedded Claude Code) | **Mobileconfig** (`databricks-claude desktop generate-config` + install in System Settings). |
+| Both | Install both. They coexist without conflict. |
 
-The two modes are independent — neither requires the other — and the binary supports either. The collision only shows up if you try to run both at once.
+The two modes are independent — neither requires the other — and the binary supports either or both.
 
 ## Headless Mode
 
@@ -217,26 +216,20 @@ databricks-claude --headless
 
 Install hooks so every Claude Code session auto-starts the proxy on startup and releases it cleanly on exit — no manual `--headless` needed.
 
-> ⚠️ **Don't combine hooks with Claude Desktop integration.** Claude Desktop's embedded Claude Code reads `~/.claude/settings.json` for skills, plugins, and hooks, so the SessionStart hook fires whenever you start a Claude Code session inside Desktop too. The proxy will spin up — but Desktop won't actually route inference through it (Desktop uses its own MDM-driven `inferenceCredentialHelper` config), so you end up with an unused proxy plus settings churn from the hook lifecycle.
->
-> **Pick one mode:**
-> - **Hooks only** — use Claude Code from your terminal (CLI, VS Code, JetBrains). Don't install the Claude Desktop mobileconfig.
-> - **Claude Desktop only** — install the mobileconfig (see [Claude Desktop Integration](#claude-desktop-integration) above) and run `databricks-claude --uninstall-hooks` if you'd installed the hooks. When you want a CLI Claude Code session, invoke `databricks-claude` directly so the proxy runs only for that session.
->
-> See [Hooks vs Claude Desktop](#hooks-vs-claude-desktop) below for the longer explanation.
+> **Coexists with Claude Desktop.** If you've also installed the Claude Desktop mobileconfig, the hook's proxy lifecycle is harmless inside Desktop sessions — Desktop's inference does not consult `ANTHROPIC_BASE_URL` (it uses its own MDM-driven `inferenceCredentialHelper`). See [Hooks vs Claude Desktop](#hooks-vs-claude-desktop) for details.
 
-> **First-time setup:** Run `databricks-claude` at least once before installing hooks. This writes the correct `ANTHROPIC_BASE_URL` to `~/.claude/settings.json` so the proxy is used for all Claude clients. Once set, the hooks keep the proxy running automatically — including for clients that don't use the `databricks-claude` wrapper directly, such as the [Claude VS Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-code) and JetBrains/IntelliJ plugin.
+> **One-step setup:** `databricks-claude --install-hooks --profile <name>` does everything in one shot — it persists your profile/port and writes `ANTHROPIC_BASE_URL` to `~/.claude/settings.json`, then registers the SessionStart and SessionEnd hooks. No prior `databricks-claude` invocation needed. Re-running is idempotent. The hooks keep the proxy running for all Claude clients — including ones that don't use the `databricks-claude` wrapper directly, such as the [Claude VS Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-code) and JetBrains/IntelliJ plugin.
 
 ### Install
 
 ```bash
-databricks-claude --install-hooks
+databricks-claude --install-hooks --profile <name>
 ```
 
-This merges two hooks into `~/.claude/settings.json`:
+This merges two hooks into `~/.claude/settings.json` AND performs first-run env setup (persists profile/port, writes `ANTHROPIC_BASE_URL`). No prior `databricks-claude` invocation needed; idempotent on re-run.
 
 - **SessionStart** — calls `databricks-claude --headless-ensure` on session startup: starts the proxy if it isn't already running
-- **Stop** — calls `databricks-claude --headless-release` on session end: decrements the refcount; proxy exits when the last session closes
+- **SessionEnd** — calls `databricks-claude --headless-release` on session end: decrements the refcount; proxy exits when the last session closes
 
 ### Uninstall
 
