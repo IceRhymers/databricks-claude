@@ -100,8 +100,6 @@ The `.claude-plugin/` directory and `hooks/hooks.json` at the repo root define t
 
 `databricks-claude` can act as the credential helper for the Claude Desktop app's third-party-inference mode. Desktop calls a single executable (no args allowed) once per token TTL and uses whatever it prints to stdout as the bearer token for AI Gateway requests.
 
-> ⚠️ **Uninstall the session hooks first** if you previously installed them: `databricks-claude --uninstall-hooks`. Otherwise the SessionStart hook will fire whenever you use Claude Code embedded in Desktop and start an unused proxy in the background.
-
 ### One-time setup
 
 1. **Install** `databricks-claude` (Homebrew, `make install`, or `go install`). All install methods drop a `databricks-claude-credential-helper` symlink next to the main binary; that symlink is the path Claude Desktop will invoke.
