@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.14.0](https://github.com/IceRhymers/databricks-claude/compare/v0.13.0...v0.14.0) (2026-04-28)
+
+
+### Features
+
+* --install-hooks performs first-run env setup; hook–desktop coexist ([da43ab9](https://github.com/IceRhymers/databricks-claude/commit/da43ab944e5cf4384061b6f08d17a7b59e372496))
+* --install-hooks performs first-run env setup; hook–desktop coexist ([abf9871](https://github.com/IceRhymers/databricks-claude/commit/abf9871e585ac730e15a88d5e4e8165bd61e893b))
+* emit databricks-claude-desktop.json for Claude Desktop dev mode ([313ae51](https://github.com/IceRhymers/databricks-claude/commit/313ae51ba0cbdbb3d32affc5d3ac9e13281f6f95))
+* emit databricks-claude-desktop.json for Claude Desktop dev mode ([9c1af01](https://github.com/IceRhymers/databricks-claude/commit/9c1af01934ac001512b648fc2757b4548248ec1a))
+
+
+### Bug Fixes
+
+* update README to clarify Claude Desktop's inference management ([cdb61d0](https://github.com/IceRhymers/databricks-claude/commit/cdb61d0a0573d1d3160b8afdb603221ca44d1e57))
+
 ## [0.13.0](https://github.com/IceRhymers/databricks-claude/compare/v0.12.1...v0.13.0) (2026-04-28)
 
 
