@@ -1,6 +1,14 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.Version=$(VERSION)
 
+# Subject identity for `make generate-signing-cert`. Override these for your
+# org before rotating into production — admins forking this repo MUST NOT
+# leave the defaults in place for a fleet rollout, as the defaults are
+# deliberately template-y to avoid impersonating any real organization.
+CERT_CN      ?= databricks-claude code signing (REPLACE FOR PROD)
+CERT_ORG     ?= databricks-claude self-signed (REPLACE FOR PROD)
+CERT_COUNTRY ?= US
+
 .DEFAULT_GOAL := build
 
 ## Build the databricks-claude binary (and the credential-helper symlink that
@@ -32,13 +40,102 @@ dist:
 	GOOS=windows GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o dist/databricks-claude-windows-amd64.exe .
 	GOOS=windows GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o dist/databricks-claude-windows-arm64.exe .
 
+## Build a universal2 macOS .pkg installer. Set APPLE_INTERNAL_SIGNING_IDENTITY
+## (and run inside `apple-actions/import-codesign-certs` keychain) to produce a
+## signed .pkg; otherwise the binary is ad-hoc signed and the .pkg is unsigned
+## (good enough for local dev).
+pkg:
+	rm -rf build root scripts/postinstall dist/databricks-claude*.pkg
+	mkdir -p build dist scripts root/usr/local/bin
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -o dist/databricks-claude-darwin-arm64 .
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -o dist/databricks-claude-darwin-amd64 .
+	lipo -create -output build/databricks-claude dist/databricks-claude-darwin-arm64 dist/databricks-claude-darwin-amd64
+	@if [ -n "$$APPLE_INTERNAL_SIGNING_IDENTITY" ]; then \
+		echo "Signing binary with identity: $$APPLE_INTERNAL_SIGNING_IDENTITY"; \
+		codesign --force --options runtime --timestamp --sign "$$APPLE_INTERNAL_SIGNING_IDENTITY" build/databricks-claude; \
+	else \
+		echo "APPLE_INTERNAL_SIGNING_IDENTITY unset — ad-hoc signing"; \
+		codesign --force --options runtime --sign - build/databricks-claude; \
+	fi
+	cp build/databricks-claude root/usr/local/bin/databricks-claude
+	printf '#!/bin/sh\nset -e\ncd /usr/local/bin\nln -sf databricks-claude databricks-claude-credential-helper\n' > scripts/postinstall
+	chmod +x scripts/postinstall
+	pkgbuild --root root --scripts scripts \
+		--identifier com.databricks.databricks-claude \
+		--version "$(VERSION)" \
+		--install-location / \
+		dist/databricks-claude-component.pkg
+	productbuild --package dist/databricks-claude-component.pkg \
+		--identifier com.databricks.databricks-claude.dist \
+		--version "$(VERSION)" \
+		dist/databricks-claude-unsigned.pkg
+	@if [ -n "$$APPLE_INTERNAL_SIGNING_IDENTITY" ]; then \
+		echo "Signing .pkg with identity: $$APPLE_INTERNAL_SIGNING_IDENTITY"; \
+		productsign --sign "$$APPLE_INTERNAL_SIGNING_IDENTITY" dist/databricks-claude-unsigned.pkg dist/databricks-claude.pkg; \
+		rm -f dist/databricks-claude-unsigned.pkg; \
+	else \
+		mv dist/databricks-claude-unsigned.pkg dist/databricks-claude.pkg; \
+	fi
+	rm -f dist/databricks-claude-component.pkg
+	@echo "Built dist/databricks-claude.pkg"
+
+## Emit the MDM trust profile (.mobileconfig) that establishes the signing cert
+## as a trusted root for code-signing on managed Macs. Requires
+## dist/signing-cert.pem (run `make generate-signing-cert` first).
+trust-profile: build
+	./databricks-claude desktop generate-trust-profile \
+		--cert dist/signing-cert.pem \
+		--output dist/databricks-claude-trust.mobileconfig
+
+## Generate a 5-year self-signed code-signing cert for the .pkg. Run once;
+## paste the printed values into GitHub repo secrets. Rotate ≥60 days before
+## expiry (see README rotation runbook).
+generate-signing-cert:
+	mkdir -p dist
+	@if [ -z "$$P12_PASSWORD" ]; then \
+		echo "ERROR: set P12_PASSWORD env var (a strong random password)"; \
+		exit 1; \
+	fi
+	@if [ -f dist/signing-cert.key ]; then \
+		echo "ERROR: dist/signing-cert.key already exists. Refusing to overwrite."; \
+		echo "       Move/archive the existing key first if you intend to rotate."; \
+		exit 1; \
+	fi
+	@echo "Generating cert with subject:"
+	@echo "  CN=$(CERT_CN)"
+	@echo "  O=$(CERT_ORG)"
+	@echo "  C=$(CERT_COUNTRY)"
+	@case "$(CERT_CN)$(CERT_ORG)" in *"REPLACE FOR PROD"*) \
+		echo ""; \
+		echo "WARNING: cert subject contains the placeholder 'REPLACE FOR PROD'."; \
+		echo "         For a real fleet rollout, override CERT_CN, CERT_ORG, and"; \
+		echo "         CERT_COUNTRY to your org's identity. Continuing in 3s — Ctrl-C to abort."; \
+		sleep 3 ;; \
+	esac
+	openssl req -x509 -newkey rsa:2048 -days 1825 -nodes \
+		-subj "/CN=$(CERT_CN)/O=$(CERT_ORG)/C=$(CERT_COUNTRY)" \
+		-addext "extendedKeyUsage=codeSigning" \
+		-keyout dist/signing-cert.key -out dist/signing-cert.pem
+	openssl pkcs12 -export -out dist/signing-cert.p12 \
+		-inkey dist/signing-cert.key -in dist/signing-cert.pem \
+		-passout pass:"$$P12_PASSWORD"
+	base64 -i dist/signing-cert.p12 -o dist/signing-cert.p12.b64
+	@echo
+	@echo "Cert generated. Paste the following into GitHub repo secrets:"
+	@echo "  APPLE_INTERNAL_SIGNING_P12_BASE64    = (contents of dist/signing-cert.p12.b64)"
+	@echo "  APPLE_INTERNAL_SIGNING_P12_PASSWORD  = (the value of P12_PASSWORD)"
+	@echo "  APPLE_INTERNAL_SIGNING_IDENTITY      = $(CERT_CN)"
+	@echo "  APPLE_INTERNAL_SIGNING_CERT_PEM      = (contents of dist/signing-cert.pem)"
+	@echo
+	@echo "Rotate this cert >=60 days before expiry."
+
 ## Remove build artifacts
 clean:
 	rm -f databricks-claude databricks-claude-credential-helper
-	rm -rf dist/
+	rm -rf dist/ build/ root/ scripts/postinstall
 
 ## Run go vet
 lint:
 	go vet ./...
 
-.PHONY: build install test dist clean lint
+.PHONY: build install test dist clean lint pkg trust-profile generate-signing-cert

@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -39,6 +40,75 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload ${{ needs.release-please.outputs.tag_name }} dist/*
+
+  package-macos:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
+        with:
+          go-version-file: go.mod
+      - name: Import code-signing cert
+        # SHA verified via: gh api repos/Apple-Actions/import-codesign-certs/git/refs/tags/v3
+        # Both v3 and v3.0.0 resolve to 63fff01cd422d4b7b855d40ca1e9d34d2de9427d (verified 2026-04-28)
+        uses: apple-actions/import-codesign-certs@63fff01cd422d4b7b855d40ca1e9d34d2de9427d # v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_INTERNAL_SIGNING_P12_BASE64 }}
+          p12-password: ${{ secrets.APPLE_INTERNAL_SIGNING_P12_PASSWORD }}
+      - name: Configure keychain trust for self-signed cert
+        env:
+          P12_PASSWORD: ${{ secrets.APPLE_INTERNAL_SIGNING_P12_PASSWORD }}
+        run: |
+          # apple-actions/import-codesign-certs creates a temp keychain but
+          # doesn't authorize productsign to use the key. set-key-partition-list
+          # adds the codesign:/apple-tool: ACL so productsign won't fail with
+          # errSecInternalComponent on headless runners.
+          KC="${KEYCHAIN_PATH:-${KEYCHAIN_NAME:-$(security default-keychain -d user | tr -d ' "')}}"
+          echo "Using keychain: $KC"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$P12_PASSWORD" "$KC"
+          security list-keychains -d user -s "$KC" login.keychain-db
+      - name: Write signing-cert PEM for trust profile
+        env:
+          CERT_PEM: ${{ secrets.APPLE_INTERNAL_SIGNING_CERT_PEM }}
+        run: |
+          mkdir -p dist
+          printf '%s\n' "$CERT_PEM" > dist/signing-cert.pem
+      - name: Build signed .pkg
+        env:
+          APPLE_INTERNAL_SIGNING_IDENTITY: ${{ secrets.APPLE_INTERNAL_SIGNING_IDENTITY }}
+        run: make pkg
+      - name: Verify hardened runtime
+        run: codesign -dv --verbose=4 build/databricks-claude 2>&1 | grep -E 'flags=.*runtime'
+      - name: Build trust profile
+        run: make trust-profile
+      - name: Validate trust profile plist
+        run: plutil -lint dist/databricks-claude-trust.mobileconfig
+      - name: Assert canonical helper path is embedded
+        run: |
+          # MUST match desktop_config.MacOSCanonicalHelperPath
+          # (locked by TestMacOSCanonicalHelperPathLiteral).
+          EXPECTED="/usr/local/bin/databricks-claude-credential-helper"
+          pkgutil --payload-files dist/databricks-claude.pkg | grep -F "$EXPECTED"
+      - name: Assert pkg signature
+        run: |
+          # Self-signed certs report 'signed by untrusted identifier' on
+          # runners without the trust profile installed; that's expected.
+          OUT=$(pkgutil --check-signature dist/databricks-claude.pkg)
+          echo "$OUT"
+          echo "$OUT" | grep -E "Status: (signed|signed by untrusted identifier)"
+          echo "$OUT" | grep -F "Databricks Claude Internal Code Signing"
+      - name: Upload pkg + trust profile to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.release-please.outputs.tag_name }}" \
+            dist/databricks-claude.pkg \
+            dist/databricks-claude-trust.mobileconfig
 
   update-homebrew:
     needs: [release-please, build-and-upload]
