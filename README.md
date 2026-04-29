@@ -118,7 +118,7 @@ The `.claude-plugin/` directory and `hooks/hooks.json` at the repo root define t
    - **macOS**: `open databricks-claude-desktop.mobileconfig`, then approve in System Settings → Privacy & Security → Profiles.
    - **Windows**: double-click the `.reg` file, or `reg import databricks-claude-desktop.reg`.
 
-   For fleet rollout via Jamf / Kandji / Intune / Group Policy, ship the same `.mobileconfig` or `.reg` to your endpoints. See [MDM / fleet rollout](#mdm--fleet-rollout) for path-pinning flags.
+   For fleet rollout via Jamf / Kandji / Intune / Group Policy, ship the same `.mobileconfig` or `.reg` to your endpoints. See [MDM / fleet rollout](#mdm--fleet-rollout) for path-pinning flags, or [MDM internal deployment (self-signed)](#mdm-internal-deployment-self-signed) if you are rolling out via a signed `.pkg` installer.
 5. **Restart Claude Desktop.**
 
 After this, Desktop's third-party-inference path runs against your Databricks AI Gateway, with tokens refreshed automatically by the credential helper.
@@ -168,6 +168,60 @@ databricks-claude desktop generate-config \
 - `--databricks-cli-path` pins the `databricks` CLI absolute path. It's persisted to `~/.claude/.databricks-claude.json` on the generating machine; admins should arrange for the same field to be set on every endpoint (either by running this command per-user, or by dropping the state file via the same MDM tooling).
 
 The packaging method (`.pkg` installer, custom `brew` formula, etc.) is responsible for ensuring `databricks-claude` and its `databricks-claude-credential-helper` symlink land at the paths you embed in the config.
+
+For fleet rollout via MDM using the signed `.pkg` installer, see [MDM deployment with signed `.pkg`](#mdm-deployment-with-signed-pkg-self-signed) below.
+
+### MDM deployment with signed `.pkg` (self-signed)
+
+> **Audience**: any admin rolling out Claude Desktop + Databricks AI Gateway to their workforce via MDM (Jamf, Kandji, Intune, etc.). This repo is a template — fork it, set your org's signing identity, and ship signed `.pkg`s to your managed Macs. The `.pkg` is signed with a self-signed certificate that is only trusted on endpoints where the matching trust profile has been deployed via MDM. For unmanaged Macs, use the Homebrew tap.
+
+#### The three artifacts
+
+Each release publishes three artifacts for managed fleet deployment:
+
+- `databricks-claude.pkg` — the installer. Deploys the binary and creates a `databricks-claude-credential-helper` symlink at `/usr/local/bin`.
+- `databricks-claude-trust.mobileconfig` — Configuration Profile that establishes the signing certificate as a trusted root for code-signing. Deploy this once per fleet before deploying the `.pkg`.
+- A workspace-specific `.mobileconfig` — generated per Databricks workspace by an MDM admin:
+  ```bash
+  databricks-claude desktop generate-config --for-pkg --profile <workspace-profile>
+  ```
+  The `--for-pkg` flag bakes the canonical `/usr/local/bin/databricks-claude-credential-helper` path so the credential-helper path matches what the `.pkg` installer places on disk.
+
+#### Deployment order
+
+1. Deploy `databricks-claude-trust.mobileconfig` (once per fleet — establishes cert trust before the signed binary arrives).
+2. Deploy `databricks-claude.pkg` (installs the binary and credential-helper symlink).
+3. Deploy the workspace-specific `.mobileconfig` (points Claude Desktop at the correct AI Gateway and credential helper).
+
+#### Cert rotation runbook
+
+**Cadence**: Rotate at least 60 days before the certificate expires. The cert is 5-year self-signed; track expiry via the `notBefore`/`notAfter` fields in `dist/signing-cert.pem`. Future work: add automated cert-expiry alerting.
+
+**Sequence**:
+
+1. Run `make generate-signing-cert` with `P12_PASSWORD` set to a strong random value, plus `CERT_CN` / `CERT_ORG` / `CERT_COUNTRY` set to your org's identity (see [Maintainer cert bootstrap](#maintainer-cert-bootstrap-one-time)). Keep the CN identical to the previous rotation unless you specifically intend to change the displayed signing identity.
+2. Update GitHub repo secrets: `APPLE_INTERNAL_SIGNING_P12_BASE64`, `APPLE_INTERNAL_SIGNING_P12_PASSWORD`, `APPLE_INTERNAL_SIGNING_CERT_PEM` (and `APPLE_INTERNAL_SIGNING_IDENTITY` only if the certificate CN changed).
+3. Cut a new release — release-please will dispatch the package-macos job, producing a new `.pkg` and a new `databricks-claude-trust.mobileconfig`.
+4. MDM admins deploy the new trust profile **alongside** the old one, before the old certificate expires. This overlap window prevents a gap where no trusted certificate covers endpoints in the middle of the rollout.
+5. Once the new release is broadly deployed, remove the old trust profile.
+
+**Rollback**: Keep the prior `.p12` and identity in a separate secret-vault entry. If the new certificate fails MDM acceptance: restore the old GitHub secrets, redeploy the old trust profile, and cut a hotfix release using the prior identity. Do not overwrite the prior P12 vault entry until the new certificate has been broadly accepted.
+
+#### Maintainer cert bootstrap (one-time)
+
+Generate the initial signing certificate with **your org's identity** baked into the cert subject, then load it into GitHub secrets:
+
+```bash
+P12_PASSWORD=<strong-random-value> \
+CERT_CN="<Your Org> Claude Desktop Code Signing" \
+CERT_ORG="<Your Org>" \
+CERT_COUNTRY=US \
+  make generate-signing-cert
+```
+
+`CERT_CN`, `CERT_ORG`, and `CERT_COUNTRY` set the cert subject. They default to deliberately template-y placeholders (`...REPLACE FOR PROD`) so an unconfigured run is obviously not production-ready; override them before rolling out to your fleet. The CN is what your endpoints will see in `pkgutil --check-signature` and Gatekeeper dialogs once the trust profile is deployed, so pick something your IT/security org will recognize as authoritative.
+
+The command prints the base64-encoded `.p12`, the PEM certificate, and the signing identity string. Paste each into the corresponding GitHub repo secret (`APPLE_INTERNAL_SIGNING_P12_BASE64`, `APPLE_INTERNAL_SIGNING_P12_PASSWORD`, `APPLE_INTERNAL_SIGNING_CERT_PEM`, `APPLE_INTERNAL_SIGNING_IDENTITY`). The `.p12` file itself must not be committed — it is covered by `.gitignore`.
 
 ### Troubleshooting
 
