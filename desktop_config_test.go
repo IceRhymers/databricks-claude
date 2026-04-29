@@ -302,7 +302,7 @@ func TestExtractBinaryPathFlag(t *testing.T) {
 
 func TestResolveHelperPath_Override(t *testing.T) {
 	override := "/usr/local/bin/databricks-claude-credential-helper"
-	got, err := resolveHelperPath(override)
+	got, err := resolveHelperPath(override, false)
 	if err != nil {
 		t.Fatalf("resolveHelperPath: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestResolveHelperPath_DerivedFromExecutable(t *testing.T) {
 	// With no override, the helper path is the running test binary's
 	// directory + the credential-helper alias name. We can't predict the
 	// exact dir but we can assert the basename.
-	got, err := resolveHelperPath("")
+	got, err := resolveHelperPath("", false)
 	if err != nil {
 		t.Fatalf("resolveHelperPath: %v", err)
 	}
@@ -325,6 +325,92 @@ func TestResolveHelperPath_DerivedFromExecutable(t *testing.T) {
 	}
 	if filepath.Base(got) != wantBase {
 		t.Errorf("resolveHelperPath(\"\") basename = %q, want %q (full=%q)", filepath.Base(got), wantBase, got)
+	}
+}
+
+func TestResolveHelperPath_ForPkgDarwin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skipf("forPkg darwin branch only fires on darwin; GOOS=%s", runtime.GOOS)
+	}
+	got, err := resolveHelperPath("", true)
+	if err != nil {
+		t.Fatalf("resolveHelperPath: %v", err)
+	}
+	if got != MacOSCanonicalHelperPath {
+		t.Errorf("resolveHelperPath(\"\", true) = %q, want %q", got, MacOSCanonicalHelperPath)
+	}
+}
+
+func TestResolveHelperPath_ForPkgPreservesOverride(t *testing.T) {
+	override := "/custom/path/foo"
+	got, err := resolveHelperPath(override, true)
+	if err != nil {
+		t.Fatalf("resolveHelperPath: %v", err)
+	}
+	if got != override {
+		t.Errorf("resolveHelperPath(%q, true) = %q, want %q (explicit override must win regardless of forPkg/GOOS)", override, got, override)
+	}
+}
+
+func TestExtractForPkgFlag(t *testing.T) {
+	cases := []struct {
+		name          string
+		args          []string
+		wantForPkg    bool
+		wantRemaining []string
+	}{
+		{
+			name:          "absent",
+			args:          []string{"--profile", "prod", "--output", "/tmp/x"},
+			wantForPkg:    false,
+			wantRemaining: []string{"--profile", "prod", "--output", "/tmp/x"},
+		},
+		{
+			name:          "bare flag present",
+			args:          []string{"--for-pkg"},
+			wantForPkg:    true,
+			wantRemaining: []string{},
+		},
+		{
+			name:          "mixed with other flags",
+			args:          []string{"--profile", "prod", "--for-pkg", "--output", "/tmp/x"},
+			wantForPkg:    true,
+			wantRemaining: []string{"--profile", "prod", "--output", "/tmp/x"},
+		},
+		{
+			name:          "explicit =true",
+			args:          []string{"--for-pkg=true"},
+			wantForPkg:    true,
+			wantRemaining: []string{},
+		},
+		{
+			name:          "explicit =false",
+			args:          []string{"--for-pkg=false"},
+			wantForPkg:    false,
+			wantRemaining: []string{},
+		},
+		{
+			name:          "empty args",
+			args:          []string{},
+			wantForPkg:    false,
+			wantRemaining: []string{},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotForPkg, gotRemaining := extractForPkgFlag(c.args)
+			if gotForPkg != c.wantForPkg {
+				t.Errorf("extractForPkgFlag(%v) forPkg = %v, want %v", c.args, gotForPkg, c.wantForPkg)
+			}
+			if len(gotRemaining) != len(c.wantRemaining) {
+				t.Fatalf("extractForPkgFlag(%v) remaining = %v, want %v", c.args, gotRemaining, c.wantRemaining)
+			}
+			for i := range gotRemaining {
+				if gotRemaining[i] != c.wantRemaining[i] {
+					t.Errorf("extractForPkgFlag(%v) remaining[%d] = %q, want %q", c.args, i, gotRemaining[i], c.wantRemaining[i])
+				}
+			}
+		})
 	}
 }
 
