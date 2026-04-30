@@ -85,6 +85,14 @@ jobs:
         run: |
           mkdir -p dist
           printf '%s\n' "$CERT_PEM" > dist/signing-cert.pem
+      - name: Trust self-signed cert as installer signing root
+        # productsign evaluates the cert chain against the installer policy.
+        # Self-signed certs are not trusted by default, so the chain check
+        # fails even with the right OIDs. Adding the cert as a trusted root
+        # in the system keychain makes the chain evaluation pass for this runner.
+        run: |
+          sudo security add-trusted-cert -d -r trustRoot \
+            -k /Library/Keychains/System.keychain dist/signing-cert.pem
       - name: Build signed .pkg
         env:
           APPLE_INTERNAL_SIGNING_IDENTITY: ${{ secrets.APPLE_INTERNAL_SIGNING_IDENTITY }}
