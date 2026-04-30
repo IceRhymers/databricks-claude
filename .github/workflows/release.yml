@@ -93,13 +93,15 @@ jobs:
           EXPECTED="/usr/local/bin/databricks-claude-credential-helper"
           pkgutil --payload-files dist/databricks-claude.pkg | grep -F "$EXPECTED"
       - name: Assert pkg signature
+        env:
+          APPLE_INTERNAL_SIGNING_IDENTITY: ${{ secrets.APPLE_INTERNAL_SIGNING_IDENTITY }}
         run: |
           # Self-signed certs report 'signed by untrusted identifier' on
           # runners without the trust profile installed; that's expected.
           OUT=$(pkgutil --check-signature dist/databricks-claude.pkg)
           echo "$OUT"
           echo "$OUT" | grep -E "Status: (signed|signed by untrusted identifier)"
-          echo "$OUT" | grep -F "Databricks Claude Internal Code Signing"
+          echo "$OUT" | grep -F "$APPLE_INTERNAL_SIGNING_IDENTITY"
       - name: Upload pkg + trust profile to release
         env:
           GH_TOKEN: ${{ github.token }}
