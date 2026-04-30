@@ -116,7 +116,7 @@ generate-signing-cert:
 		-subj "/CN=$(CERT_CN)/O=$(CERT_ORG)/C=$(CERT_COUNTRY)" \
 		-addext "extendedKeyUsage=codeSigning" \
 		-keyout dist/signing-cert.key -out dist/signing-cert.pem
-	openssl pkcs12 -export -out dist/signing-cert.p12 \
+	openssl pkcs12 -export -legacy -out dist/signing-cert.p12 \
 		-inkey dist/signing-cert.key -in dist/signing-cert.pem \
 		-passout pass:"$$P12_PASSWORD"
 	base64 -i dist/signing-cert.p12 -o dist/signing-cert.p12.b64
