@@ -85,15 +85,7 @@ jobs:
         run: |
           mkdir -p dist
           printf '%s\n' "$CERT_PEM" > dist/signing-cert.pem
-      - name: Trust self-signed cert as installer signing root
-        # productsign evaluates the cert chain against the installer policy.
-        # Self-signed certs are not trusted by default, so the chain check
-        # fails even with the right OIDs. Adding the cert as a trusted root
-        # in the system keychain makes the chain evaluation pass for this runner.
-        run: |
-          sudo security add-trusted-cert -d -r trustRoot \
-            -k /Library/Keychains/System.keychain dist/signing-cert.pem
-      - name: Build signed .pkg
+      - name: Build pkg
         env:
           APPLE_INTERNAL_SIGNING_IDENTITY: ${{ secrets.APPLE_INTERNAL_SIGNING_IDENTITY }}
         run: make pkg
@@ -109,16 +101,13 @@ jobs:
           # (locked by TestMacOSCanonicalHelperPathLiteral).
           EXPECTED="/usr/local/bin/databricks-claude-credential-helper"
           pkgutil --payload-files dist/databricks-claude.pkg | grep -F "$EXPECTED"
-      - name: Assert pkg signature
-        env:
-          APPLE_INTERNAL_SIGNING_IDENTITY: ${{ secrets.APPLE_INTERNAL_SIGNING_IDENTITY }}
+      - name: Assert pkg is unsigned
         run: |
-          # Self-signed certs report 'signed by untrusted identifier' on
-          # runners without the trust profile installed; that's expected.
+          # productsign requires an Apple-issued installer cert; self-signed certs
+          # can't satisfy that requirement. The binary inside is codesigned.
           OUT=$(pkgutil --check-signature dist/databricks-claude.pkg)
           echo "$OUT"
-          echo "$OUT" | grep -E "Status: (signed|signed by untrusted identifier)"
-          echo "$OUT" | grep -F "$APPLE_INTERNAL_SIGNING_IDENTITY"
+          echo "$OUT" | grep -E "Status: no signature"
       - name: Upload pkg + trust profile to release
         env:
           GH_TOKEN: ${{ github.token }}
