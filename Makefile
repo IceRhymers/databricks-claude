@@ -71,7 +71,7 @@ pkg:
 		dist/databricks-claude-unsigned.pkg
 	@if [ -n "$$APPLE_INTERNAL_SIGNING_IDENTITY" ]; then \
 		echo "Signing .pkg with identity: $$APPLE_INTERNAL_SIGNING_IDENTITY"; \
-		productsign --sign "$$APPLE_INTERNAL_SIGNING_IDENTITY" dist/databricks-claude-unsigned.pkg dist/databricks-claude.pkg; \
+		productsign --sign "$$APPLE_INTERNAL_SIGNING_IDENTITY" dist/databricks-claude-unsigned.pkg dist/databricks-claude.pkg || exit 1; \
 		rm -f dist/databricks-claude-unsigned.pkg; \
 	else \
 		mv dist/databricks-claude-unsigned.pkg dist/databricks-claude.pkg; \
@@ -115,7 +115,7 @@ generate-signing-cert:
 	openssl req -x509 -newkey rsa:2048 -days 1825 -nodes \
 		-subj "/CN=$(CERT_CN)/O=$(CERT_ORG)/C=$(CERT_COUNTRY)" \
 		-addext "keyUsage=critical,digitalSignature" \
-		-addext "extendedKeyUsage=codeSigning" \
+		-addext "extendedKeyUsage=codeSigning,1.2.840.113635.100.4.13" \
 		-keyout dist/signing-cert.key -out dist/signing-cert.pem
 	openssl pkcs12 -export -legacy -out dist/signing-cert.p12 \
 		-inkey dist/signing-cert.key -in dist/signing-cert.pem \
