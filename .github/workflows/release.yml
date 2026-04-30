@@ -75,7 +75,9 @@ jobs:
         run: |
           echo "Keychain search list:"
           security list-keychains -d user
-          echo "Available codesigning identities:"
+          echo "All identities (including invalid):"
+          security find-identity -p codesigning
+          echo "Valid codesigning identities:"
           security find-identity -v -p codesigning
       - name: Write signing-cert PEM for trust profile
         env:

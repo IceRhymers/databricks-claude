@@ -114,6 +114,7 @@ generate-signing-cert:
 	esac
 	openssl req -x509 -newkey rsa:2048 -days 1825 -nodes \
 		-subj "/CN=$(CERT_CN)/O=$(CERT_ORG)/C=$(CERT_COUNTRY)" \
+		-addext "keyUsage=critical,digitalSignature" \
 		-addext "extendedKeyUsage=codeSigning" \
 		-keyout dist/signing-cert.key -out dist/signing-cert.pem
 	openssl pkcs12 -export -legacy -out dist/signing-cert.p12 \
