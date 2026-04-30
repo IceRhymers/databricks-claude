@@ -59,6 +59,13 @@ const desktopDeveloperModeArticleURL = "https://support.claude.com/en/articles/1
 // can target it directly.
 const credentialHelperBinaryName = "databricks-claude-credential-helper"
 
+// MacOSCanonicalBinaryDir is the canonical install dir for the .pkg-shipped binary on macOS.
+// It is the source of truth for the path baked into the postinstall script and the
+// mobileconfig generated with --for-pkg. Changing this requires updating
+// .github/workflows/release.yml and the locking test in desktop_path_test.go.
+const MacOSCanonicalBinaryDir = "/usr/local/bin"
+const MacOSCanonicalHelperPath = MacOSCanonicalBinaryDir + "/" + credentialHelperBinaryName
+
 // isCredentialHelperBinaryName returns true if the program was invoked under
 // the credential-helper alias. Pass os.Args[0] (or any argv[0]-like value).
 func isCredentialHelperBinaryName(arg0 string) bool {
@@ -80,14 +87,21 @@ func runDesktopCommand(args []string) {
 		printDesktopHelp()
 		os.Exit(0)
 	case "generate-config":
+		forPkg, _ := extractForPkgFlag(args[1:])
 		runGenerateDesktopConfig(
 			extractProfileFlag(args[1:]),
 			extractOutputFlag(args[1:]),
 			extractBinaryPathFlag(args[1:]),
 			extractDatabricksCLIPathFlag(args[1:]),
+			forPkg,
 		)
 	case "credential-helper":
 		runCredentialHelper(extractProfileFlag(args[1:]))
+	case "generate-trust-profile":
+		if err := runGenerateTrustProfile(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "databricks-claude: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "databricks-claude: unknown desktop action %q\n\n", args[0])
 		printDesktopHelp()
@@ -117,12 +131,20 @@ Actions:
                       path Claude Desktop's inferenceCredentialHelper invokes
                       via the databricks-claude-credential-helper symlink.
                       Useful for scripting and debug.
+  generate-trust-profile
+                      Emit a Configuration Profile (.mobileconfig) that
+                      establishes the .pkg signing certificate as a trusted
+                      root for code-signing on managed Macs. Pair with the
+                      signed .pkg in your MDM rollout so Gatekeeper accepts
+                      the installer without per-device prompts.
 
 Flags:
   --profile string              Databricks CLI profile (default: state file > DEFAULT)
   --output string               Single output path for generate-config; format
                                 inferred from .mobileconfig/.reg/.json extension
-                                or host OS.
+                                or host OS. Also the output path for
+                                generate-trust-profile (default:
+                                dist/databricks-claude-trust.mobileconfig).
   --binary-path string          generate-config: credential-helper path embedded in
                                 the generated config (default: derived from the
                                 running binary). Use this for MDM rollouts so one
@@ -130,6 +152,9 @@ Flags:
   --databricks-cli-path string  generate-config: pin the absolute path of the
                                 'databricks' CLI used by the credential helper.
                                 Persisted to ~/.claude/.databricks-claude.json.
+  --cert string                 generate-trust-profile: path to a PEM-encoded
+                                x509 certificate (the .pkg signing cert) to
+                                wrap as a trusted root.
 
 Examples:
   # First-time setup on your Mac.
@@ -142,6 +167,11 @@ Examples:
 
   # Print a token directly (debug; equivalent to invoking the helper symlink).
   databricks-claude desktop credential-helper --profile myws
+
+  # Emit a code-signing trust profile for MDM (pairs with a signed .pkg).
+  databricks-claude desktop generate-trust-profile \
+    --cert ./codesign-cert.pem \
+    --output dist/databricks-claude-trust.mobileconfig
 `)
 }
 
@@ -217,7 +247,7 @@ func runCredentialHelper(profile string) {
 // When outputPath is empty, both .mobileconfig and .reg are always written so
 // one invocation produces artifacts for every supported Claude Desktop
 // platform. Use --output to write a single specific file.
-func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databricksCLIPath string) {
+func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databricksCLIPath string, forPkg bool) {
 	log.SetOutput(io.Discard)
 
 	resolved := profile
@@ -265,7 +295,7 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databrick
 	}
 	gatewayURL := ConstructGatewayURL(host, tok)
 
-	helperPath, err := resolveHelperPath(binaryPathOverride)
+	helperPath, err := resolveHelperPath(binaryPathOverride, forPkg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "databricks-claude: %v\n", err)
 		os.Exit(1)
@@ -332,12 +362,19 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databrick
 // resolveHelperPath returns the absolute path embedded into the generated
 // Claude Desktop config. Order:
 //  1. explicit override (e.g. /usr/local/bin/databricks-claude-credential-helper)
-//  2. derived from the running binary: replace its basename with the
+//  2. when forPkg && darwin: the canonical .pkg install path
+//     (MacOSCanonicalHelperPath). Used for MDM rollouts so the same artifact
+//     works on every endpoint regardless of where the generating user ran the
+//     binary from.
+//  3. derived from the running binary: replace its basename with the
 //     credential-helper alias name, preserving the install dir and any .exe
 //     suffix on Windows.
-func resolveHelperPath(override string) (string, error) {
+func resolveHelperPath(override string, forPkg bool) (string, error) {
 	if override != "" {
 		return override, nil
+	}
+	if forPkg && runtime.GOOS == "darwin" {
+		return MacOSCanonicalHelperPath, nil
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -769,6 +806,28 @@ func extractDatabricksCLIPathFlag(args []string) string {
 		}
 	}
 	return ""
+}
+
+// extractForPkgFlag scans args for the boolean --for-pkg flag. Mirrors the
+// other extract* helpers in shape but is presence-only: --for-pkg toggles
+// forPkg=true, --for-pkg=true / --for-pkg=false honour the explicit value.
+// Returns the parsed value plus a copy of args with the flag removed.
+func extractForPkgFlag(args []string) (forPkg bool, remaining []string) {
+	remaining = make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--for-pkg" {
+			forPkg = true
+			continue
+		}
+		if strings.HasPrefix(a, "--for-pkg=") {
+			v := strings.TrimPrefix(a, "--for-pkg=")
+			forPkg = v == "true" || v == "1" || v == ""
+			continue
+		}
+		remaining = append(remaining, a)
+	}
+	return forPkg, remaining
 }
 
 // hasFlag returns true if any element of args equals name (or starts with

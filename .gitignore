@@ -6,3 +6,7 @@ dist/
 *.mobileconfig
 *.reg
 databricks-claude-desktop.json
+build/
+root/
+scripts/postinstall
+.DS_Store
