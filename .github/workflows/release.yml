@@ -100,7 +100,11 @@ jobs:
           # MUST match desktop_config.MacOSCanonicalHelperPath
           # (locked by TestMacOSCanonicalHelperPathLiteral).
           EXPECTED="/usr/local/bin/databricks-claude-credential-helper"
-          pkgutil --payload-files dist/databricks-claude.pkg | grep -F "$EXPECTED"
+          # productbuild wraps component pkgs; --payload-files doesn't recurse.
+          # Expand the archive and read the BOM from the inner component package.
+          pkgutil --expand dist/databricks-claude.pkg /tmp/pkg-check
+          find /tmp/pkg-check -name 'Bom' | xargs lsbom | grep -F "$EXPECTED"
+          rm -rf /tmp/pkg-check
       - name: Assert pkg is unsigned
         run: |
           # productsign requires an Apple-issued installer cert; self-signed certs
