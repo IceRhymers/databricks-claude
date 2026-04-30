@@ -14,6 +14,7 @@ type ProxyConfig struct {
 	OTELUpstream      string
 	UCMetricsTable    string
 	UCLogsTable       string
+	UCTracesTable     string
 	TokenProvider     *tokencache.TokenProvider
 	Verbose           bool
 	APIKey            string
@@ -36,6 +37,7 @@ func NewProxyServer(config *ProxyConfig) http.Handler {
 		OTELUpstream:      config.OTELUpstream,
 		UCMetricsTable:    config.UCMetricsTable,
 		UCLogsTable:       config.UCLogsTable,
+		UCTracesTable:     config.UCTracesTable,
 		TokenSource:       config.TokenProvider,
 		Verbose:           config.Verbose,
 		APIKey:            config.APIKey,

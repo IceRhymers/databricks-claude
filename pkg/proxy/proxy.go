@@ -39,7 +39,11 @@ type Config struct {
 	// X-Databricks-UC-Table-Name header is omitted for metrics requests.
 	UCMetricsTable string
 	UCLogsTable    string
-	TokenSource    TokenSource
+	// UCTracesTable is the Unity Catalog table for OTEL traces (Claude Code's
+	// enhanced telemetry beta). When empty the X-Databricks-UC-Table-Name
+	// header is omitted for /v1/traces requests.
+	UCTracesTable string
+	TokenSource   TokenSource
 	Verbose        bool
 	// ToolName identifies this proxy in /health responses (e.g. "databricks-claude").
 	ToolName string
@@ -267,8 +271,9 @@ func requireAPIKey(next http.Handler, key string) http.Handler {
 //     HTTP + SSE) are handled by httputil.ReverseProxy.
 //
 // OTEL route (/otel/):
-//   - /v1/logs paths → UCLogsTable header
-//   - all other paths → UCMetricsTable header (omitted if UCMetricsTable is empty)
+//   - /v1/logs paths   → UCLogsTable header
+//   - /v1/traces paths → UCTracesTable header
+//   - all other paths  → UCMetricsTable header (omitted if the chosen table is empty)
 func NewServer(config *Config) http.Handler {
 	mux := http.NewServeMux()
 
@@ -347,11 +352,19 @@ func NewServer(config *Config) http.Handler {
 			req.Header.Set("Authorization", "Bearer "+token)
 			req.Header.Set("x-api-key", token)
 
-			// Pick the correct UC table based on whether this is a logs or metrics
-			// request. UCMetricsTable may be empty (e.g. databricks-codex has no
-			// native metrics); in that case the header is omitted for metrics paths.
-			ucTable := config.UCLogsTable
-			if !strings.Contains(req.URL.Path, "/v1/logs") {
+			// Pick the correct UC table based on the OTel signal in the path.
+			// Any of UCLogsTable, UCTracesTable, or UCMetricsTable may be empty
+			// (signal-not-configured); in that case the header is omitted and
+			// the upstream rejects the request — by design, signal env vars are
+			// only emitted when the table is configured, so this branch should
+			// not fire in normal operation.
+			var ucTable string
+			switch {
+			case strings.Contains(req.URL.Path, "/v1/logs"):
+				ucTable = config.UCLogsTable
+			case strings.Contains(req.URL.Path, "/v1/traces"):
+				ucTable = config.UCTracesTable
+			default:
 				ucTable = config.UCMetricsTable
 			}
 			if ucTable != "" {

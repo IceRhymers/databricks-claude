@@ -27,7 +27,7 @@ type shutdownResp struct {
 // --- parseArgs tests ---
 
 func TestParseArgs_HelpLong(t *testing.T) {
-	profile, verbose, version, showHelp, printEnv, otel, _, _, _, _, upstream, logFile, noOtel, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--help"})
+	profile, verbose, version, showHelp, printEnv, otel, _, _, _, _, _, _, _, upstream, logFile, noOtel, _, _, _, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--help"})
 	if !showHelp {
 		t.Error("expected showHelp=true for --help")
 	}
@@ -37,77 +37,77 @@ func TestParseArgs_HelpLong(t *testing.T) {
 }
 
 func TestParseArgs_HelpShort(t *testing.T) {
-	_, _, _, showHelp, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"-h"})
+	_, _, _, showHelp, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"-h"})
 	if !showHelp {
 		t.Error("expected showHelp=true for -h")
 	}
 }
 
 func TestParseArgs_PrintEnv(t *testing.T) {
-	_, _, _, _, printEnv, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--print-env"})
+	_, _, _, _, printEnv, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--print-env"})
 	if !printEnv {
 		t.Error("expected printEnv=true for --print-env")
 	}
 }
 
 func TestParseArgs_Version(t *testing.T) {
-	_, _, version, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--version"})
+	_, _, version, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--version"})
 	if !version {
 		t.Error("expected version=true for --version")
 	}
 }
 
 func TestParseArgs_Verbose(t *testing.T) {
-	_, verbose, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--verbose"})
+	_, verbose, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--verbose"})
 	if !verbose {
 		t.Error("expected verbose=true for --verbose")
 	}
 }
 
 func TestParseArgs_VerboseShort(t *testing.T) {
-	_, verbose, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"-v"})
+	_, verbose, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"-v"})
 	if !verbose {
 		t.Error("expected verbose=true for -v")
 	}
 }
 
 func TestParseArgs_LogFile(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, logFile, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--log-file", "/tmp/test.log"})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, logFile, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--log-file", "/tmp/test.log"})
 	if logFile != "/tmp/test.log" {
 		t.Errorf("expected logFile=%q, got %q", "/tmp/test.log", logFile)
 	}
 }
 
 func TestParseArgs_LogFileEquals(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, logFile, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--log-file=/tmp/test.log"})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, logFile, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--log-file=/tmp/test.log"})
 	if logFile != "/tmp/test.log" {
 		t.Errorf("expected logFile=%q, got %q", "/tmp/test.log", logFile)
 	}
 }
 
 func TestParseArgs_Profile(t *testing.T) {
-	profile, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--profile", "foo"})
+	profile, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--profile", "foo"})
 	if profile != "foo" {
 		t.Errorf("expected profile=%q, got %q", "foo", profile)
 	}
 }
 
 func TestParseArgs_Upstream(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, upstream, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--upstream", "/path/to/claude"})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, upstream, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--upstream", "/path/to/claude"})
 	if upstream != "/path/to/claude" {
 		t.Errorf("expected upstream=%q, got %q", "/path/to/claude", upstream)
 	}
 }
 
 func TestParseArgs_Otel(t *testing.T) {
-	_, _, _, _, _, otel, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
+	_, _, _, _, _, otel, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
 	if !otel {
 		t.Error("expected otel=true for --otel")
 	}
 }
 
 func TestParseArgs_OtelMetricsTableOverride(t *testing.T) {
-	_, _, _, _, _, _, metricsTable, metricsTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-metrics-table", "main.default.otel"})
+	_, _, _, _, _, _, metricsTable, metricsTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-metrics-table", "main.default.otel"})
 	if !metricsTableSet {
 		t.Error("expected metricsTableSet=true when --otel-metrics-table is passed")
 	}
@@ -117,7 +117,7 @@ func TestParseArgs_OtelMetricsTableOverride(t *testing.T) {
 }
 
 func TestParseArgs_OtelMetricsTableDefault(t *testing.T) {
-	_, _, _, _, _, _, metricsTable, metricsTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
+	_, _, _, _, _, _, metricsTable, metricsTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
 	if metricsTableSet {
 		t.Error("expected metricsTableSet=false when --otel-metrics-table is not passed")
 	}
@@ -127,7 +127,7 @@ func TestParseArgs_OtelMetricsTableDefault(t *testing.T) {
 }
 
 func TestParseArgs_OtelMetricsTableEquals(t *testing.T) {
-	_, _, _, _, _, _, metricsTable, metricsTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-metrics-table=my.catalog.table"})
+	_, _, _, _, _, _, metricsTable, metricsTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-metrics-table=my.catalog.table"})
 	if !metricsTableSet {
 		t.Error("expected metricsTableSet=true for --otel-metrics-table=value")
 	}
@@ -137,7 +137,7 @@ func TestParseArgs_OtelMetricsTableEquals(t *testing.T) {
 }
 
 func TestParseArgs_OtelLogsTableOverride(t *testing.T) {
-	_, _, _, _, _, _, _, _, logsTable, logsTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-logs-table", "main.default.my_logs"})
+	_, _, _, _, _, _, _, _, logsTable, logsTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-logs-table", "main.default.my_logs"})
 	if !logsTableSet {
 		t.Error("expected logsTableSet=true when --otel-logs-table is passed")
 	}
@@ -147,7 +147,7 @@ func TestParseArgs_OtelLogsTableOverride(t *testing.T) {
 }
 
 func TestParseArgs_OtelLogsTableDefault(t *testing.T) {
-	_, _, _, _, _, _, _, _, logsTable, logsTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
+	_, _, _, _, _, _, _, _, logsTable, logsTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
 	if logsTableSet {
 		t.Error("expected logsTableSet=false when --otel-logs-table is not passed")
 	}
@@ -157,7 +157,7 @@ func TestParseArgs_OtelLogsTableDefault(t *testing.T) {
 }
 
 func TestParseArgs_OtelLogsTableEquals(t *testing.T) {
-	_, _, _, _, _, _, _, _, logsTable, logsTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-logs-table=my.catalog.logs"})
+	_, _, _, _, _, _, _, _, logsTable, logsTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-logs-table=my.catalog.logs"})
 	if !logsTableSet {
 		t.Error("expected logsTableSet=true for --otel-logs-table=value")
 	}
@@ -167,7 +167,7 @@ func TestParseArgs_OtelLogsTableEquals(t *testing.T) {
 }
 
 func TestParseArgs_BothOtelTables(t *testing.T) {
-	_, _, _, _, _, _, metricsTable, metricsSet, logsTable, logsSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{
+	_, _, _, _, _, _, metricsTable, metricsSet, logsTable, logsSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{
 		"--otel-metrics-table", "cat.schema.metrics",
 		"--otel-logs-table", "cat.schema.logs",
 	})
@@ -183,14 +183,14 @@ func TestParseArgs_BothOtelTables(t *testing.T) {
 }
 
 func TestParseArgs_UnknownFlagPassthrough(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--unknown"})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--unknown"})
 	if len(claudeArgs) != 1 || claudeArgs[0] != "--unknown" {
 		t.Errorf("expected claudeArgs=[\"--unknown\"], got %v", claudeArgs)
 	}
 }
 
 func TestParseArgs_EmptyArgs(t *testing.T) {
-	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, _, _, _, upstream, logFile, noOtel, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{})
+	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, _, _, _, _, _, _, upstream, logFile, noOtel, _, _, _, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{})
 	if profile != "" {
 		t.Errorf("expected empty profile, got %q", profile)
 	}
@@ -213,7 +213,7 @@ func TestParseArgs_EmptyArgs(t *testing.T) {
 }
 
 func TestParseArgs_Mixed(t *testing.T) {
-	profile, verbose, _, showHelp, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--profile", "prod", "--verbose", "--help"})
+	profile, verbose, _, showHelp, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--profile", "prod", "--verbose", "--help"})
 	if !showHelp {
 		t.Error("expected showHelp=true")
 	}
@@ -226,21 +226,21 @@ func TestParseArgs_Mixed(t *testing.T) {
 }
 
 func TestParseArgs_Headless(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, headless, _, _, _, _, _, _, _ := parseArgs([]string{"--headless"})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, headless, _, _, _, _, _, _, _ := parseArgs([]string{"--headless"})
 	if !headless {
 		t.Error("expected headless=true for --headless")
 	}
 }
 
 func TestParseArgs_NoUpdateCheck(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, noUpdateCheck, _ := parseArgs([]string{"--no-update-check"})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, noUpdateCheck, _ := parseArgs([]string{"--no-update-check"})
 	if !noUpdateCheck {
 		t.Error("expected noUpdateCheck=true for --no-update-check")
 	}
 }
 
 func TestParseArgs_HeadlessWithOtherFlags(t *testing.T) {
-	_, verbose, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, headless, _, _, _, _, _, _, _ := parseArgs([]string{"--headless", "--verbose"})
+	_, verbose, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, headless, _, _, _, _, _, _, _ := parseArgs([]string{"--headless", "--verbose"})
 	if !headless {
 		t.Error("expected headless=true")
 	}
@@ -250,7 +250,7 @@ func TestParseArgs_HeadlessWithOtherFlags(t *testing.T) {
 }
 
 func TestParseArgs_NoOtel(t *testing.T) {
-	_, _, _, _, _, otel, _, _, _, _, _, _, noOtel, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--no-otel"})
+	_, _, _, _, _, otel, _, _, _, _, _, _, _, _, _, noOtel, _, _, _, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--no-otel"})
 	if !noOtel {
 		t.Error("expected noOtel=true for --no-otel")
 	}
@@ -263,7 +263,7 @@ func TestParseArgs_NoOtel(t *testing.T) {
 }
 
 func TestParseArgs_NoOtelAndOtel(t *testing.T) {
-	_, _, _, _, _, otel, _, _, _, _, _, _, noOtel, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--no-otel", "--otel"})
+	_, _, _, _, _, otel, _, _, _, _, _, _, _, _, _, noOtel, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--no-otel", "--otel"})
 	if !noOtel {
 		t.Error("expected noOtel=true")
 	}
@@ -273,7 +273,7 @@ func TestParseArgs_NoOtelAndOtel(t *testing.T) {
 }
 
 func TestParseArgs_NoOtelWithPassthrough(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, _, noOtel, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--no-otel", "somearg"})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, noOtel, _, _, _, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs([]string{"--no-otel", "somearg"})
 	if !noOtel {
 		t.Error("expected noOtel=true")
 	}
@@ -283,12 +283,100 @@ func TestParseArgs_NoOtelWithPassthrough(t *testing.T) {
 }
 
 func TestParseArgs_OtelUnaffectedByNoOtel(t *testing.T) {
-	_, _, _, _, _, otel, _, _, _, _, _, _, noOtel, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
+	_, _, _, _, _, otel, _, _, _, _, _, _, _, _, _, noOtel, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel"})
 	if !otel {
 		t.Error("expected otel=true for --otel")
 	}
 	if noOtel {
 		t.Error("expected noOtel=false when only --otel given")
+	}
+}
+
+// --- per-signal no-otel-* flag tests ---
+
+func TestParseArgs_NoOtelMetrics(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, noOtelMetrics, noOtelLogs, noOtelTraces, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--no-otel-metrics"})
+	if !noOtelMetrics {
+		t.Error("expected noOtelMetrics=true for --no-otel-metrics")
+	}
+	if noOtelLogs || noOtelTraces {
+		t.Error("expected noOtelLogs/noOtelTraces=false when only --no-otel-metrics given")
+	}
+}
+
+func TestParseArgs_NoOtelLogs(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, noOtelMetrics, noOtelLogs, noOtelTraces, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--no-otel-logs"})
+	if !noOtelLogs {
+		t.Error("expected noOtelLogs=true for --no-otel-logs")
+	}
+	if noOtelMetrics || noOtelTraces {
+		t.Error("expected noOtelMetrics/noOtelTraces=false when only --no-otel-logs given")
+	}
+}
+
+func TestParseArgs_NoOtelTraces(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, noOtelMetrics, noOtelLogs, noOtelTraces, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--no-otel-traces"})
+	if !noOtelTraces {
+		t.Error("expected noOtelTraces=true for --no-otel-traces")
+	}
+	if noOtelMetrics || noOtelLogs {
+		t.Error("expected noOtelMetrics/noOtelLogs=false when only --no-otel-traces given")
+	}
+}
+
+// --- --otel-traces flag tests ---
+
+func TestParseArgs_OtelTraces(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, _, otelTraces, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-traces"})
+	if !otelTraces {
+		t.Error("expected otelTraces=true for --otel-traces")
+	}
+}
+
+func TestParseArgs_OtelTracesTableOverride(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, _, _, tracesTable, tracesTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-traces-table", "main.default.traces"})
+	if !tracesTableSet {
+		t.Error("expected tracesTableSet=true when --otel-traces-table is passed")
+	}
+	if tracesTable != "main.default.traces" {
+		t.Errorf("expected tracesTable=%q, got %q", "main.default.traces", tracesTable)
+	}
+}
+
+func TestParseArgs_OtelTracesTableEquals(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, _, _, tracesTable, tracesTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-traces-table=my.catalog.traces"})
+	if !tracesTableSet {
+		t.Error("expected tracesTableSet=true for --otel-traces-table=value")
+	}
+	if tracesTable != "my.catalog.traces" {
+		t.Errorf("expected tracesTable=%q, got %q", "my.catalog.traces", tracesTable)
+	}
+}
+
+func TestParseArgs_OtelTracesTableDefault(t *testing.T) {
+	// --otel-traces alone (no table) should not auto-populate a default table —
+	// traces only activate when an explicit --otel-traces-table is provided.
+	_, _, _, _, _, _, _, _, _, _, otelTraces, tracesTable, tracesTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-traces"})
+	if !otelTraces {
+		t.Error("expected otelTraces=true")
+	}
+	if tracesTableSet {
+		t.Error("expected tracesTableSet=false without --otel-traces-table")
+	}
+	if tracesTable != "" {
+		t.Errorf("expected empty tracesTable default, got %q", tracesTable)
+	}
+}
+
+// TestParseArgs_TracesStandalone verifies that --otel-traces-table works
+// without --otel — traces is a standalone signal.
+func TestParseArgs_TracesStandalone(t *testing.T) {
+	_, _, _, _, _, otel, _, _, _, _, _, tracesTable, tracesTableSet, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _ := parseArgs([]string{"--otel-traces-table", "cat.schema.traces"})
+	if otel {
+		t.Error("expected otel=false when only --otel-traces-table given")
+	}
+	if !tracesTableSet || tracesTable != "cat.schema.traces" {
+		t.Errorf("expected tracesTable=cat.schema.traces (set), got %q (set=%v)", tracesTable, tracesTableSet)
 	}
 }
 
@@ -390,7 +478,7 @@ func TestParseArgs_Table(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			profile, verbose, version, showHelp, printEnv, otel, _, _, _, _, upstream, logFile, _, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs(tc.args)
+			profile, verbose, version, showHelp, printEnv, otel, _, _, _, _, _, _, _, upstream, logFile, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, claudeArgs := parseArgs(tc.args)
 
 			if profile != tc.want.profile {
 				t.Errorf("profile: got %q, want %q", profile, tc.want.profile)
@@ -465,7 +553,7 @@ func captureStdout(fn func()) string {
 
 func TestHandlePrintEnv_DapiTokenRedacted(t *testing.T) {
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "dapi-abc123secret", "", false, "", "")
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "dapi-abc123secret", "", false, "", "", "")
 	})
 	if !strings.Contains(out, "dapi-***") {
 		t.Errorf("expected dapi token to appear as 'dapi-***', got:\n%s", out)
@@ -477,7 +565,7 @@ func TestHandlePrintEnv_DapiTokenRedacted(t *testing.T) {
 
 func TestHandlePrintEnv_NonDapiTokenRedacted(t *testing.T) {
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "eyJhbGciOiJSUzI1NiJ9", "", false, "", "")
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "eyJhbGciOiJSUzI1NiJ9", "", false, "", "", "")
 	})
 	if !strings.Contains(out, "**** (redacted)") {
 		t.Errorf("expected non-dapi token to appear as '**** (redacted)', got:\n%s", out)
@@ -490,7 +578,7 @@ func TestHandlePrintEnv_NonDapiTokenRedacted(t *testing.T) {
 func TestHandlePrintEnv_ContainsDatabricksHost(t *testing.T) {
 	host := "https://dbc-abc123.cloud.databricks.com"
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", host, "https://gw.example.com", "tok", "", false, "", "")
+		handlePrintEnv("DEFAULT", host, "https://gw.example.com", "tok", "", false, "", "", "")
 	})
 	if !strings.Contains(out, host) {
 		t.Errorf("expected output to contain DATABRICKS_HOST %q, got:\n%s", host, out)
@@ -500,7 +588,7 @@ func TestHandlePrintEnv_ContainsDatabricksHost(t *testing.T) {
 func TestHandlePrintEnv_ContainsAnthropicBaseURL(t *testing.T) {
 	baseURL := "https://gateway.example.com/anthropic"
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", baseURL, "tok", "", false, "", "")
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", baseURL, "tok", "", false, "", "", "")
 	})
 	if !strings.Contains(out, baseURL) {
 		t.Errorf("expected output to contain ANTHROPIC_BASE_URL %q, got:\n%s", baseURL, out)
@@ -509,7 +597,7 @@ func TestHandlePrintEnv_ContainsAnthropicBaseURL(t *testing.T) {
 
 func TestHandlePrintEnv_EmptyTokenRedacted(t *testing.T) {
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "", "", false, "", "")
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "", "", false, "", "", "")
 	})
 	// Empty string does not start with "dapi-" so it should show as **** (redacted)
 	if !strings.Contains(out, "**** (redacted)") {
@@ -624,7 +712,7 @@ func TestOTELTableDerivation(t *testing.T) {
 
 func TestHandlePrintEnv_OTELFields(t *testing.T) {
 	out := captureStdout(func() {
-		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "tok", "", true, "main.telemetry.claude_otel_metrics", "main.telemetry.claude_otel_logs")
+		handlePrintEnv("DEFAULT", "https://dbc.example.com", "https://gw.example.com", "tok", "", true, "main.telemetry.claude_otel_metrics", "main.telemetry.claude_otel_logs", "")
 	})
 	checks := []string{
 		"OTEL enabled:         true",
@@ -820,35 +908,35 @@ func TestProfileResolution_StateFileWins(t *testing.T) {
 // --- idle-timeout flag tests ---
 
 func TestParseArgs_IdleTimeoutDefault(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _, _, _, _, _, _ := parseArgs([]string{})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _, _, _, _, _, _ := parseArgs([]string{})
 	if idleTimeout != 30*time.Minute {
 		t.Errorf("expected default idleTimeout=30m, got %v", idleTimeout)
 	}
 }
 
 func TestParseArgs_IdleTimeoutCustom(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _, _, _, _, _, _ := parseArgs([]string{"--idle-timeout", "10m"})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _, _, _, _, _, _ := parseArgs([]string{"--idle-timeout", "10m"})
 	if idleTimeout != 10*time.Minute {
 		t.Errorf("expected idleTimeout=10m, got %v", idleTimeout)
 	}
 }
 
 func TestParseArgs_IdleTimeoutZero(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _, _, _, _, _, _ := parseArgs([]string{"--idle-timeout", "0"})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _, _, _, _, _, _ := parseArgs([]string{"--idle-timeout", "0"})
 	if idleTimeout != 0 {
 		t.Errorf("expected idleTimeout=0, got %v", idleTimeout)
 	}
 }
 
 func TestParseArgs_IdleTimeoutEquals(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _, _, _, _, _, _ := parseArgs([]string{"--idle-timeout=5m"})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _, _, _, _, _, _ := parseArgs([]string{"--idle-timeout=5m"})
 	if idleTimeout != 5*time.Minute {
 		t.Errorf("expected idleTimeout=5m, got %v", idleTimeout)
 	}
 }
 
 func TestParseArgs_IdleTimeoutBareNumber(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _, _, _, _, _, _ := parseArgs([]string{"--idle-timeout", "1"})
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, idleTimeout, _, _, _, _, _, _ := parseArgs([]string{"--idle-timeout", "1"})
 	if idleTimeout != 1*time.Minute {
 		t.Errorf("expected idleTimeout=1m for bare number '1', got %v", idleTimeout)
 	}

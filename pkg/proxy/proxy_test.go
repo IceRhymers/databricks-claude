@@ -391,6 +391,65 @@ func TestProxy_OTELTableName_MetricsEmpty(t *testing.T) {
 	}
 }
 
+// TestProxy_OTELTableName_Traces verifies that /otel/v1/traces gets the traces table header.
+func TestProxy_OTELTableName_Traces(t *testing.T) {
+	var gotTable string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTable = r.Header.Get("X-Databricks-UC-Table-Name")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &Config{
+		InferenceUpstream: upstream.URL,
+		OTELUpstream:      upstream.URL,
+		UCMetricsTable:    "main.telemetry.claude_otel_metrics",
+		UCLogsTable:       "main.telemetry.claude_otel_logs",
+		UCTracesTable:     "main.telemetry.claude_otel_traces",
+		TokenSource:       warmToken("tok"),
+	}
+	handler := NewServer(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/otel/v1/traces", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if gotTable != "main.telemetry.claude_otel_traces" {
+		t.Errorf("got table %q, want %q", gotTable, "main.telemetry.claude_otel_traces")
+	}
+}
+
+// TestProxy_OTELTableName_TracesEmpty verifies that when UCTracesTable is
+// empty, the X-Databricks-UC-Table-Name header is omitted for /v1/traces requests.
+func TestProxy_OTELTableName_TracesEmpty(t *testing.T) {
+	var gotTable string
+	var tableHeaderPresent bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, tableHeaderPresent = r.Header["X-Databricks-Uc-Table-Name"]
+		gotTable = r.Header.Get("X-Databricks-UC-Table-Name")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := &Config{
+		InferenceUpstream: upstream.URL,
+		OTELUpstream:      upstream.URL,
+		UCMetricsTable:    "main.telemetry.claude_otel_metrics",
+		UCLogsTable:       "main.telemetry.claude_otel_logs",
+		UCTracesTable:     "", // empty — caller does not emit traces
+		TokenSource:       warmToken("tok"),
+	}
+	handler := NewServer(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/otel/v1/traces", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if tableHeaderPresent || gotTable != "" {
+		t.Errorf("expected X-Databricks-UC-Table-Name to be absent when UCTracesTable is empty, got %q", gotTable)
+	}
+}
+
 // TestProxy_WebSocket_IsUpgradeDetected verifies that isWebSocketUpgrade
 // correctly identifies WebSocket upgrade requests.
 func TestProxy_WebSocket_IsUpgradeDetected(t *testing.T) {

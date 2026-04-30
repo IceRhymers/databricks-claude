@@ -87,7 +87,7 @@ func main() {
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
 	// Tip: use "databricks-claude -- completion" to pass "completion" to claude.
-	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, upstream, logFile, noOtel, proxyAPIKey, tlsCert, tlsKey, portFlag, headless, idleTimeout, installHooksFlag, uninstallHooksFlag, headlessEnsureFlag, headlessReleaseFlag, noUpdateCheck, claudeArgs := parseArgs(os.Args[1:])
+	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, otelTraces, otelTracesTable, otelTracesTableSet, upstream, logFile, noOtel, noOtelMetrics, noOtelLogs, noOtelTraces, proxyAPIKey, tlsCert, tlsKey, portFlag, headless, idleTimeout, installHooksFlag, uninstallHooksFlag, headlessEnsureFlag, headlessReleaseFlag, noUpdateCheck, claudeArgs := parseArgs(os.Args[1:])
 
 	if showHelp {
 		handleHelp(upstream)
@@ -146,18 +146,42 @@ func main() {
 		os.Exit(0)
 	}
 
-	// --no-otel: clear persisted OTEL keys and proceed without OTEL this session.
-	if noOtel {
+	// --no-otel and --no-otel-{metrics,logs,traces}: clear persisted OTEL keys
+	// from settings.json. Per-signal flags clear only that signal; --no-otel
+	// is the nuclear option that clears every signal plus the telemetry toggle.
+	if noOtel || noOtelMetrics || noOtelLogs || noOtelTraces {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			log.Fatalf("databricks-claude: cannot determine home dir: %v", err)
 		}
 		settingsPathForClear := filepath.Join(homeDir, ".claude", "settings.json")
-		if err := clearOTELKeys(settingsPathForClear); err != nil {
-			log.Fatalf("databricks-claude: failed to clear OTEL keys: %v", err)
+		if noOtel {
+			if err := clearOTELKeys(settingsPathForClear); err != nil {
+				log.Fatalf("databricks-claude: failed to clear OTEL keys: %v", err)
+			}
+			fmt.Fprintln(os.Stderr, "databricks-claude: OTEL keys cleared — OTEL disabled for future sessions")
+		} else {
+			if noOtelMetrics {
+				if err := clearOTELKeysSubset(settingsPathForClear, otelMetricsKeys); err != nil {
+					log.Fatalf("databricks-claude: failed to clear OTEL metrics keys: %v", err)
+				}
+				fmt.Fprintln(os.Stderr, "databricks-claude: OTEL metrics keys cleared")
+			}
+			if noOtelLogs {
+				if err := clearOTELKeysSubset(settingsPathForClear, otelLogsKeys); err != nil {
+					log.Fatalf("databricks-claude: failed to clear OTEL logs keys: %v", err)
+				}
+				fmt.Fprintln(os.Stderr, "databricks-claude: OTEL logs keys cleared")
+			}
+			if noOtelTraces {
+				if err := clearOTELKeysSubset(settingsPathForClear, otelTracesKeys); err != nil {
+					log.Fatalf("databricks-claude: failed to clear OTEL traces keys: %v", err)
+				}
+				fmt.Fprintln(os.Stderr, "databricks-claude: OTEL traces keys cleared")
+			}
 		}
-		fmt.Fprintln(os.Stderr, "databricks-claude: OTEL keys cleared — OTEL disabled for future sessions")
-		// Continue without OTEL — otel remains false for the rest of this run.
+		// Continue — flags only clear persisted state; other flags on the same
+		// invocation can still re-enable specific signals.
 	}
 
 	// --- Resolve config from settings.json ---
@@ -256,6 +280,23 @@ func main() {
 	if v, ok := env["CLAUDE_OTEL_UC_LOGS_TABLE"].(string); ok {
 		ucLogsTable = v
 	}
+	ucTracesTable := ""
+	if v, ok := env["CLAUDE_OTEL_UC_TRACES_TABLE"].(string); ok {
+		ucTracesTable = v
+	}
+
+	// --no-otel-{signal} just cleared persisted keys above; the in-memory env
+	// map is stale, so honour the flag explicitly here so the cleared signal
+	// does not get re-emitted from a stale read.
+	if noOtel || noOtelMetrics {
+		ucMetricsTable = ""
+	}
+	if noOtel || noOtelLogs {
+		ucLogsTable = ""
+	}
+	if noOtel || noOtelTraces {
+		ucTracesTable = ""
+	}
 
 	// --- Seed token cache ---
 	tp := NewTokenProvider(resolvedProfile, "")
@@ -305,20 +346,34 @@ func main() {
 		otelUpstream = inferenceUpstream
 	}
 
-	// OTEL metrics table: --otel-metrics-table flag overrides settings.json value.
+	// OTEL table resolution follows table-presence semantics: a signal's env
+	// vars are only emitted when its UC table is configured (flag, persisted
+	// settings.json, or — for metrics/logs — the legacy --otel default).
+	//
+	// Metrics table: --otel-metrics-table > persisted > --otel default. Without
+	// any of those, ucMetricsTable stays empty and metrics env vars are skipped.
 	if otelMetricsTableSet {
 		ucMetricsTable = otelMetricsTable
-	} else if ucMetricsTable == "" {
+	} else if ucMetricsTable == "" && otel {
 		ucMetricsTable = otelMetricsTable
 	}
 
-	// OTEL logs table: --otel-logs-table flag overrides settings.json value.
-	// Falls back to deriveLogsTable() when neither flag nor persisted value exists.
+	// Logs table: --otel-logs-table > persisted > derive-from-metrics (only
+	// when metrics is itself configured). Without any of those it stays empty.
 	if otelLogsTableSet {
 		ucLogsTable = otelLogsTable
-	} else if ucLogsTable == "" {
+	} else if ucLogsTable == "" && ucMetricsTable != "" {
 		ucLogsTable = deriveLogsTable(ucMetricsTable)
 	}
+
+	// Traces table: --otel-traces-table > persisted. No default — traces are
+	// opt-in via --otel-traces / --otel-traces-table.
+	if otelTracesTableSet {
+		ucTracesTable = otelTracesTable
+	}
+	// If --otel-traces is passed but no table is configured (neither flag nor
+	// persisted), traces is silently skipped — see the env-injection block.
+	_ = otelTraces
 
 	// --- Resolve port for downstream binding ---
 	// State persistence (port + profile) and settings.json env-block writes
@@ -329,7 +384,8 @@ func main() {
 
 	// --- Print env and exit if requested ---
 	if printEnv {
-		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, upstream, otel || otelConfigured, ucMetricsTable, ucLogsTable)
+		otelActive := ucMetricsTable != "" || ucLogsTable != "" || ucTracesTable != ""
+		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, upstream, otelActive, ucMetricsTable, ucLogsTable, ucTracesTable)
 		os.Exit(0)
 	}
 
@@ -357,6 +413,7 @@ func main() {
 		OTELUpstream:      otelUpstream,
 		UCMetricsTable:    ucMetricsTable,
 		UCLogsTable:       ucLogsTable,
+		UCTracesTable:     ucTracesTable,
 		TokenProvider:     tp,
 		Verbose:           verbose,
 		APIKey:            proxyAPIKey,
@@ -417,23 +474,46 @@ func main() {
 	}
 
 	// --- Write config once (idempotent) ---
-	otelEnabled := otel || otelConfigured
+	// Each signal's env vars are emitted only when its UC table is configured
+	// (table-presence semantics). CLAUDE_CODE_ENABLE_TELEMETRY=1 is set when
+	// any signal is active. Traces stay opt-in via --otel-traces / a persisted
+	// CLAUDE_OTEL_UC_TRACES_TABLE — they are not auto-enabled by --otel.
 	otelEnv := map[string]string{}
-	if otelEnabled {
+	if ucMetricsTable != "" {
 		otelEnv["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] = proxyURL + "/otel/v1/metrics"
 		otelEnv["OTEL_EXPORTER_OTLP_METRICS_HEADERS"] = "content-type=application/x-protobuf"
-		otelEnv["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
 		otelEnv["OTEL_METRICS_EXPORTER"] = "otlp"
 		otelEnv["OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"] = "http/protobuf"
 		otelEnv["OTEL_METRIC_EXPORT_INTERVAL"] = "10000"
+		otelEnv["CLAUDE_OTEL_UC_METRICS_TABLE"] = ucMetricsTable
+	}
+	if ucLogsTable != "" {
 		otelEnv["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = proxyURL + "/otel/v1/logs"
 		otelEnv["OTEL_EXPORTER_OTLP_LOGS_HEADERS"] = "content-type=application/x-protobuf"
 		otelEnv["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] = "http/protobuf"
 		otelEnv["OTEL_LOGS_EXPORTER"] = "otlp"
 		otelEnv["OTEL_LOGS_EXPORT_INTERVAL"] = "5000"
-		otelEnv["CLAUDE_OTEL_UC_METRICS_TABLE"] = ucMetricsTable
 		otelEnv["CLAUDE_OTEL_UC_LOGS_TABLE"] = ucLogsTable
 	}
+	if ucTracesTable != "" {
+		// Traces is currently beta-gated upstream — set the beta flag so the
+		// Claude Code CLI emits OTLP spans. Span-content flags
+		// (OTEL_LOG_TOOL_DETAILS / _USER_PROMPTS / _TOOL_CONTENT) are
+		// intentionally NOT auto-set; leave those to admin/user discretion.
+		otelEnv["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"] = "1"
+		otelEnv["OTEL_TRACES_EXPORTER"] = "otlp"
+		otelEnv["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = proxyURL + "/otel/v1/traces"
+		otelEnv["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"] = "http/protobuf"
+		otelEnv["OTEL_TRACES_EXPORT_INTERVAL"] = "5000"
+		otelEnv["CLAUDE_OTEL_UC_TRACES_TABLE"] = ucTracesTable
+	}
+	if ucMetricsTable != "" || ucLogsTable != "" || ucTracesTable != "" {
+		otelEnv["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
+	}
+	// Reference otelConfigured to silence the unused-variable warning while
+	// keeping the detection block above for future use (e.g. surfacing a
+	// "stale OTEL config detected" log).
+	_ = otelConfigured
 	if needsFullSetup {
 		// Also write Databricks-specific keys for full setup.
 		otelEnv["ANTHROPIC_MODEL"] = "databricks-claude-opus-4-7"
@@ -524,10 +604,13 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 }
 
 // parseArgs separates databricks-claude flags from claude flags.
-// databricks-claude owns: --profile, --verbose/-v, --log-file, --version, --otel, --otel-metrics-table, --otel-logs-table, --no-otel, --proxy-api-key, --tls-cert, --tls-key.
+// databricks-claude owns: --profile, --verbose/-v, --log-file, --version,
+// --otel, --otel-metrics-table, --otel-logs-table, --otel-traces,
+// --otel-traces-table, --no-otel, --no-otel-metrics, --no-otel-logs,
+// --no-otel-traces, --proxy-api-key, --tls-cert, --tls-key.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, upstream string, logFile string, noOtel bool, proxyAPIKey string, tlsCert string, tlsKey string, portFlag int, headless bool, idleTimeout time.Duration, installHooksFlag bool, uninstallHooksFlag bool, headlessEnsureFlag bool, headlessReleaseFlag bool, noUpdateCheck bool, claudeArgs []string) {
+func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, otelTraces bool, otelTracesTable string, otelTracesTableSet bool, upstream string, logFile string, noOtel bool, noOtelMetrics bool, noOtelLogs bool, noOtelTraces bool, proxyAPIKey string, tlsCert string, tlsKey string, portFlag int, headless bool, idleTimeout time.Duration, installHooksFlag bool, uninstallHooksFlag bool, headlessEnsureFlag bool, headlessReleaseFlag bool, noUpdateCheck bool, claudeArgs []string) {
 	otelMetricsTable = "main.claude_telemetry.claude_otel_metrics" // default
 	idleTimeout = 30 * time.Minute                                 // default
 
@@ -617,8 +700,25 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 					printEnv = true
 				case "--otel":
 					otel = true
+				case "--otel-traces":
+					otelTraces = true
+				case "--otel-traces-table":
+					if value != "" {
+						otelTracesTable = value
+						otelTracesTableSet = true
+					} else if i+1 < len(args) {
+						i++
+						otelTracesTable = args[i]
+						otelTracesTableSet = true
+					}
 				case "--no-otel":
 					noOtel = true
+				case "--no-otel-metrics":
+					noOtelMetrics = true
+				case "--no-otel-logs":
+					noOtelLogs = true
+				case "--no-otel-traces":
+					noOtelTraces = true
 				case "--proxy-api-key":
 					if value != "" {
 						proxyAPIKey = value
@@ -702,10 +802,16 @@ Databricks-Claude Flags:
   --print-env           Print resolved configuration and exit (token redacted)
   --verbose, -v         Enable debug logging to stderr
   --log-file string     Write debug logs to a file (combinable with --verbose)
-  --otel                       Enable OpenTelemetry tracing
-  --no-otel                    Clear persisted OTEL keys and disable OTEL for future sessions
+  --otel                       Enable OpenTelemetry metrics + logs export
   --otel-metrics-table string  Unity Catalog table for OTEL metrics
   --otel-logs-table string     Unity Catalog table for OTEL logs (derived from metrics table if omitted)
+  --otel-traces                Enable OpenTelemetry traces export (Claude Code beta;
+                               requires --otel-traces-table; can be used standalone)
+  --otel-traces-table string   Unity Catalog table for OTEL traces (cat.schema.table)
+  --no-otel                    Clear persisted OTEL keys and disable OTEL for future sessions
+  --no-otel-metrics            Clear persisted OTEL metrics keys (other signals untouched)
+  --no-otel-logs               Clear persisted OTEL logs keys (other signals untouched)
+  --no-otel-traces             Clear persisted OTEL traces keys (other signals untouched)
   --proxy-api-key string       Require Bearer token auth on all proxy requests
   --tls-cert string            Path to TLS certificate file (requires --tls-key)
   --tls-key string             Path to TLS private key file (requires --tls-cert)
@@ -777,7 +883,7 @@ func buildUpdaterConfig() updater.Config {
 
 
 // handlePrintEnv prints resolved configuration with the token redacted.
-func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, upstreamBinary string, otelEnabled bool, otelMetricsTable, otelLogsTable string) {
+func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, upstreamBinary string, otelEnabled bool, otelMetricsTable, otelLogsTable, otelTracesTable string) {
 	// Redact token.
 	redacted := "**** (redacted)"
 	if strings.HasPrefix(token, "dapi-") {
@@ -804,11 +910,21 @@ func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, upstreamBi
 `, profile, databricksHost, anthropicBaseURL, redacted, binaryPath, otelEnabled)
 
 	if otelEnabled {
-		fmt.Printf(`  OTEL metrics table:   %s
-  OTEL logs table:      %s
+		if otelMetricsTable != "" {
+			fmt.Printf(`  OTEL metrics table:   %s
   OTEL metric interval: 10000ms
+`, otelMetricsTable)
+		}
+		if otelLogsTable != "" {
+			fmt.Printf(`  OTEL logs table:      %s
   OTEL logs interval:   5000ms
-`, otelMetricsTable, otelLogsTable)
+`, otelLogsTable)
+		}
+		if otelTracesTable != "" {
+			fmt.Printf(`  OTEL traces table:    %s
+  OTEL traces interval: 5000ms
+`, otelTracesTable)
+		}
 	}
 }
 

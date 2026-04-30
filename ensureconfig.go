@@ -143,6 +143,12 @@ func getOrCreateEnvBlock(doc map[string]interface{}) map[string]interface{} {
 // clearOTELKeys removes all OTEL-related env keys from ~/.claude/settings.json.
 // Used by --no-otel to ensure telemetry config is fully absent from settings.
 func clearOTELKeys(settingsPath string) error {
+	return clearOTELKeysSubset(settingsPath, otelEnvKeys)
+}
+
+// clearOTELKeysSubset removes the supplied keys from ~/.claude/settings.json's
+// env block. Used by --no-otel-{metrics,logs,traces} to clear a single signal.
+func clearOTELKeysSubset(settingsPath string, keys []string) error {
 	doc, err := readSettingsJSON(settingsPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -154,25 +160,48 @@ func clearOTELKeys(settingsPath string) error {
 	if !ok {
 		return nil
 	}
-	for _, k := range otelEnvKeys {
+	for _, k := range keys {
 		delete(env, k)
 	}
 	return writeSettingsJSON(settingsPath, doc)
 }
 
-// otelEnvKeys is the complete list of OTEL env keys managed by databricks-claude.
-var otelEnvKeys = []string{
+// otelMetricsKeys is the set of env keys cleared by --no-otel-metrics.
+var otelMetricsKeys = []string{
+	"OTEL_METRICS_EXPORTER",
 	"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
 	"OTEL_EXPORTER_OTLP_METRICS_HEADERS",
 	"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
-	"CLAUDE_CODE_ENABLE_TELEMETRY",
-	"OTEL_METRICS_EXPORTER",
 	"OTEL_METRIC_EXPORT_INTERVAL",
+	"CLAUDE_OTEL_UC_METRICS_TABLE",
+}
+
+// otelLogsKeys is the set of env keys cleared by --no-otel-logs.
+var otelLogsKeys = []string{
+	"OTEL_LOGS_EXPORTER",
 	"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
 	"OTEL_EXPORTER_OTLP_LOGS_HEADERS",
 	"OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
-	"OTEL_LOGS_EXPORTER",
 	"OTEL_LOGS_EXPORT_INTERVAL",
-	"CLAUDE_OTEL_UC_METRICS_TABLE",
 	"CLAUDE_OTEL_UC_LOGS_TABLE",
 }
+
+// otelTracesKeys is the set of env keys cleared by --no-otel-traces.
+var otelTracesKeys = []string{
+	"CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+	"OTEL_TRACES_EXPORTER",
+	"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+	"OTEL_TRACES_EXPORT_INTERVAL",
+	"CLAUDE_OTEL_UC_TRACES_TABLE",
+}
+
+// otelEnvKeys is the complete list of OTEL env keys managed by databricks-claude.
+// --no-otel clears every key in this slice plus CLAUDE_CODE_ENABLE_TELEMETRY.
+var otelEnvKeys = func() []string {
+	keys := []string{"CLAUDE_CODE_ENABLE_TELEMETRY"}
+	keys = append(keys, otelMetricsKeys...)
+	keys = append(keys, otelLogsKeys...)
+	keys = append(keys, otelTracesKeys...)
+	return keys
+}()
