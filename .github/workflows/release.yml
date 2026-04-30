@@ -109,7 +109,7 @@ jobs:
         run: |
           # productsign requires an Apple-issued installer cert; self-signed certs
           # can't satisfy that requirement. The binary inside is codesigned.
-          OUT=$(pkgutil --check-signature dist/databricks-claude.pkg)
+          OUT=$(pkgutil --check-signature dist/databricks-claude.pkg || true)
           echo "$OUT"
           echo "$OUT" | grep -E "Status: no signature"
       - name: Upload pkg + trust profile to release
