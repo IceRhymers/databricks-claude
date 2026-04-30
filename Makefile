@@ -41,9 +41,9 @@ dist:
 	GOOS=windows GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o dist/databricks-claude-windows-arm64.exe .
 
 ## Build a universal2 macOS .pkg installer. Set APPLE_INTERNAL_SIGNING_IDENTITY
-## (and run inside `apple-actions/import-codesign-certs` keychain) to produce a
-## signed .pkg; otherwise the binary is ad-hoc signed and the .pkg is unsigned
-## (good enough for local dev).
+## to codesign the binary inside the pkg with hardened-runtime flags; otherwise
+## the binary is ad-hoc signed. The .pkg itself is always unsigned — productsign
+## requires an Apple-issued installer cert, which a self-signed cert can't satisfy.
 pkg:
 	rm -rf build root scripts/postinstall dist/databricks-claude*.pkg
 	mkdir -p build dist scripts root/usr/local/bin
@@ -68,14 +68,7 @@ pkg:
 	productbuild --package dist/databricks-claude-component.pkg \
 		--identifier com.databricks.databricks-claude.dist \
 		--version "$(VERSION)" \
-		dist/databricks-claude-unsigned.pkg
-	@if [ -n "$$APPLE_INTERNAL_SIGNING_IDENTITY" ]; then \
-		echo "Signing .pkg with identity: $$APPLE_INTERNAL_SIGNING_IDENTITY"; \
-		productsign --sign "$$APPLE_INTERNAL_SIGNING_IDENTITY" dist/databricks-claude-unsigned.pkg dist/databricks-claude.pkg || exit 1; \
-		rm -f dist/databricks-claude-unsigned.pkg; \
-	else \
-		mv dist/databricks-claude-unsigned.pkg dist/databricks-claude.pkg; \
-	fi
+		dist/databricks-claude.pkg
 	rm -f dist/databricks-claude-component.pkg
 	@echo "Built dist/databricks-claude.pkg"
 
