@@ -56,22 +56,20 @@ jobs:
       - name: Import code-signing cert
         # SHA verified via: gh api repos/Apple-Actions/import-codesign-certs/git/refs/tags/v3
         # Both v3 and v3.0.0 resolve to 63fff01cd422d4b7b855d40ca1e9d34d2de9427d (verified 2026-04-28)
+        id: import-cert
         uses: apple-actions/import-codesign-certs@63fff01cd422d4b7b855d40ca1e9d34d2de9427d # v3
         with:
           p12-file-base64: ${{ secrets.APPLE_INTERNAL_SIGNING_P12_BASE64 }}
           p12-password: ${{ secrets.APPLE_INTERNAL_SIGNING_P12_PASSWORD }}
-      - name: Configure keychain trust for self-signed cert
-        env:
-          P12_PASSWORD: ${{ secrets.APPLE_INTERNAL_SIGNING_P12_PASSWORD }}
+      - name: Configure keychain for productsign
+        # The action runs set-key-partition-list with apple-tool:,apple: internally,
+        # but productsign also needs codesign: on headless runners. We run a second
+        # pass using the keychain password from the action output.
         run: |
-          # apple-actions/import-codesign-certs creates a temp keychain but
-          # doesn't authorize productsign to use the key. set-key-partition-list
-          # adds the codesign:/apple-tool: ACL so productsign won't fail with
-          # errSecInternalComponent on headless runners.
-          KC="${KEYCHAIN_PATH:-${KEYCHAIN_NAME:-$(security default-keychain -d user | tr -d ' "')}}"
-          echo "Using keychain: $KC"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$P12_PASSWORD" "$KC"
-          security list-keychains -d user -s "$KC" login.keychain-db
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "${{ steps.import-cert.outputs.keychain-password }}" \
+            "$HOME/Library/Keychains/signing_temp.keychain"
       - name: Write signing-cert PEM for trust profile
         env:
           CERT_PEM: ${{ secrets.APPLE_INTERNAL_SIGNING_CERT_PEM }}
