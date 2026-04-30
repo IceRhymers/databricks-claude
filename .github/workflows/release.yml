@@ -66,10 +66,17 @@ jobs:
         # but productsign also needs codesign: on headless runners. We run a second
         # pass using the keychain password from the action output.
         run: |
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s -k "${{ steps.import-cert.outputs.keychain-password }}" \
-            "$HOME/Library/Keychains/signing_temp.keychain"
+          KC="$HOME/Library/Keychains/signing_temp.keychain"
+          KC_PASS="${{ steps.import-cert.outputs.keychain-password }}"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KC"
+          security list-keychains -d user -s "$KC" login.keychain-db
+      - name: Verify signing identity is available
+        run: |
+          echo "Keychain search list:"
+          security list-keychains -d user
+          echo "Available codesigning identities:"
+          security find-identity -v -p codesigning
       - name: Write signing-cert PEM for trust profile
         env:
           CERT_PEM: ${{ secrets.APPLE_INTERNAL_SIGNING_CERT_PEM }}
