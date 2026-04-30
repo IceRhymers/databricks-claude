@@ -58,6 +58,7 @@ pkg:
 		codesign --force --options runtime --sign - build/databricks-claude; \
 	fi
 	cp build/databricks-claude root/usr/local/bin/databricks-claude
+	ln -sf databricks-claude root/usr/local/bin/databricks-claude-credential-helper
 	printf '#!/bin/sh\nset -e\ncd /usr/local/bin\nln -sf databricks-claude databricks-claude-credential-helper\n' > scripts/postinstall
 	chmod +x scripts/postinstall
 	pkgbuild --root root --scripts scripts \
