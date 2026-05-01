@@ -272,17 +272,46 @@ func main() {
 		otelEndpoint = ""
 	}
 
+	stateForOtel := loadState()
+	stateOtelMutated := false
+
 	ucMetricsTable := ""
-	if v, ok := env["CLAUDE_OTEL_UC_METRICS_TABLE"].(string); ok {
+	if v, ok := env["CLAUDE_OTEL_UC_METRICS_TABLE"].(string); ok && v != "" {
 		ucMetricsTable = v
+		if stateForOtel.OtelMetricsTable == "" {
+			stateForOtel.OtelMetricsTable = v
+			stateOtelMutated = true
+		}
+	} else if stateForOtel.OtelMetricsTable != "" {
+		ucMetricsTable = stateForOtel.OtelMetricsTable
 	}
+
 	ucLogsTable := ""
-	if v, ok := env["CLAUDE_OTEL_UC_LOGS_TABLE"].(string); ok {
+	if v, ok := env["CLAUDE_OTEL_UC_LOGS_TABLE"].(string); ok && v != "" {
 		ucLogsTable = v
+		if stateForOtel.OtelLogsTable == "" {
+			stateForOtel.OtelLogsTable = v
+			stateOtelMutated = true
+		}
+	} else if stateForOtel.OtelLogsTable != "" {
+		ucLogsTable = stateForOtel.OtelLogsTable
 	}
+
 	ucTracesTable := ""
-	if v, ok := env["CLAUDE_OTEL_UC_TRACES_TABLE"].(string); ok {
+	if v, ok := env["CLAUDE_OTEL_UC_TRACES_TABLE"].(string); ok && v != "" {
 		ucTracesTable = v
+		if stateForOtel.OtelTracesTable == "" {
+			stateForOtel.OtelTracesTable = v
+			stateOtelMutated = true
+		}
+	} else if stateForOtel.OtelTracesTable != "" {
+		ucTracesTable = stateForOtel.OtelTracesTable
+	}
+
+	if stateOtelMutated {
+		if err := saveState(stateForOtel); err != nil {
+			log.Printf("databricks-claude: warning: could not persist OTel tables to state: %v", err)
+		}
 	}
 
 	// --no-otel-{signal} just cleared persisted keys above; the in-memory env
@@ -349,31 +378,35 @@ func main() {
 	// OTEL table resolution follows table-presence semantics: a signal's env
 	// vars are only emitted when its UC table is configured (flag, persisted
 	// settings.json, or — for metrics/logs — the legacy --otel default).
-	//
-	// Metrics table: --otel-metrics-table > persisted > --otel default. Without
-	// any of those, ucMetricsTable stays empty and metrics env vars are skipped.
+	stateOtelTableMutated := false
 	if otelMetricsTableSet {
 		ucMetricsTable = otelMetricsTable
+		stateForOtel.OtelMetricsTable = otelMetricsTable
+		stateOtelTableMutated = true
 	} else if ucMetricsTable == "" && otel {
 		ucMetricsTable = otelMetricsTable
 	}
 
-	// Logs table: --otel-logs-table > persisted > derive-from-metrics (only
-	// when metrics is itself configured). Without any of those it stays empty.
 	if otelLogsTableSet {
 		ucLogsTable = otelLogsTable
+		stateForOtel.OtelLogsTable = otelLogsTable
+		stateOtelTableMutated = true
 	} else if ucLogsTable == "" && ucMetricsTable != "" {
 		ucLogsTable = deriveLogsTable(ucMetricsTable)
 	}
 
-	// Traces table: --otel-traces-table > persisted. No default — traces are
-	// opt-in via --otel-traces / --otel-traces-table.
 	if otelTracesTableSet {
 		ucTracesTable = otelTracesTable
+		stateForOtel.OtelTracesTable = otelTracesTable
+		stateOtelTableMutated = true
 	}
-	// If --otel-traces is passed but no table is configured (neither flag nor
-	// persisted), traces is silently skipped — see the env-injection block.
 	_ = otelTraces
+
+	if stateOtelTableMutated {
+		if err := saveState(stateForOtel); err != nil {
+			log.Printf("databricks-claude: warning: could not persist OTel tables to state: %v", err)
+		}
+	}
 
 	// --- Resolve port for downstream binding ---
 	// State persistence (port + profile) and settings.json env-block writes

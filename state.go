@@ -20,6 +20,9 @@ type persistentState struct {
 	// empty. Set via `--generate-desktop-config --databricks-cli-path …` for
 	// per-user pinning, or by an MDM admin dropping the state file directly.
 	DatabricksCLIPath string `json:"databricks_cli_path,omitempty"`
+	OtelMetricsTable  string `json:"otel_metrics_table,omitempty"`
+	OtelLogsTable     string `json:"otel_logs_table,omitempty"`
+	OtelTracesTable   string `json:"otel_traces_table,omitempty"`
 }
 
 const defaultPort = 49153
