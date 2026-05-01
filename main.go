@@ -271,10 +271,6 @@ func main() {
 	if otelEndpoint != "" && strings.HasPrefix(otelEndpoint, "http://127.0.0.1") {
 		otelEndpoint = ""
 	}
-	tracesConfigured := false
-	if v, ok := env["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"].(string); ok && v != "" {
-		tracesConfigured = true
-	}
 
 	// Read table names from settings.json env block. Track the raw values
 	// separately so we can migrate them to the state file on first read.
@@ -301,13 +297,13 @@ func main() {
 	// This lets --no-otel / --no-otel-* clear settings.json while the table
 	// names survive in .databricks-claude.json for the next --otel invocation.
 	tableState := loadState()
-	if ucMetricsTable == "" && (otel || otelConfigured) {
+	if ucMetricsTable == "" {
 		ucMetricsTable = tableState.OtelMetricsTable
 	}
-	if ucLogsTable == "" && (otel || otelConfigured) {
+	if ucLogsTable == "" {
 		ucLogsTable = tableState.OtelLogsTable
 	}
-	if ucTracesTable == "" && (otelTraces || tracesConfigured) {
+	if ucTracesTable == "" {
 		ucTracesTable = tableState.OtelTracesTable
 	}
 
@@ -388,7 +384,7 @@ func main() {
 	// when metrics is itself configured). Without any of those it stays empty.
 	if otelLogsTableSet {
 		ucLogsTable = otelLogsTable
-	} else if ucLogsTable == "" && ucMetricsTable != "" && !noOtel && !noOtelLogs {
+	} else if ucLogsTable == "" && ucMetricsTable != "" {
 		ucLogsTable = deriveLogsTable(ucMetricsTable)
 	}
 
@@ -396,13 +392,28 @@ func main() {
 	// opt-in via --otel-traces / --otel-traces-table.
 	if otelTracesTableSet {
 		ucTracesTable = otelTracesTable
-	} else if otelTraces && ucTracesTable == "" {
-		log.Printf("databricks-claude: --otel-traces passed but no traces table configured; use --otel-traces-table <table>")
+	}
+	// If --otel-traces is passed but no table is configured (neither flag nor
+	// persisted), traces is silently skipped — see the env-injection block.
+	_ = otelTraces
+
+	// --- Resolve port for downstream binding ---
+	port := resolvePort(portFlag, loadState())
+
+	// --- Print env and exit if requested ---
+	// This exit is intentionally before any state or settings.json writes so
+	// --print-env remains a read-only diagnostic (no side effects).
+	if printEnv {
+		otelActive := ucMetricsTable != "" || ucLogsTable != "" || ucTracesTable != ""
+		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, upstream, otelActive, ucMetricsTable, ucLogsTable, ucTracesTable)
+		os.Exit(0)
 	}
 
 	// Persist OTel table names to the state file so they survive --no-otel.
 	// We write when an explicit --otel-*-table flag was given, or when a table
 	// was found in settings.json but hasn't been migrated to state yet.
+	// Uses tableState (loaded above for fallback) directly to avoid a second
+	// loadState call; bootstrapSettings below will do its own fresh load.
 	{
 		metricsToSave := ""
 		logsToSave := ""
@@ -422,41 +433,24 @@ func main() {
 		} else if tracesFromSettings != "" && tableState.OtelTracesTable == "" {
 			tracesToSave = tracesFromSettings
 		}
-		if metricsToSave != "" || logsToSave != "" || tracesToSave != "" {
-			s := loadState()
-			mutated := false
-			if metricsToSave != "" && s.OtelMetricsTable != metricsToSave {
-				s.OtelMetricsTable = metricsToSave
-				mutated = true
-			}
-			if logsToSave != "" && s.OtelLogsTable != logsToSave {
-				s.OtelLogsTable = logsToSave
-				mutated = true
-			}
-			if tracesToSave != "" && s.OtelTracesTable != tracesToSave {
-				s.OtelTracesTable = tracesToSave
-				mutated = true
-			}
-			if mutated {
-				if err := saveState(s); err != nil {
-					log.Printf("databricks-claude: warning: could not persist OTel tables to state: %v", err)
-				}
+		mutated := false
+		if metricsToSave != "" && tableState.OtelMetricsTable != metricsToSave {
+			tableState.OtelMetricsTable = metricsToSave
+			mutated = true
+		}
+		if logsToSave != "" && tableState.OtelLogsTable != logsToSave {
+			tableState.OtelLogsTable = logsToSave
+			mutated = true
+		}
+		if tracesToSave != "" && tableState.OtelTracesTable != tracesToSave {
+			tableState.OtelTracesTable = tracesToSave
+			mutated = true
+		}
+		if mutated {
+			if err := saveState(tableState); err != nil {
+				log.Printf("databricks-claude: warning: could not persist OTel tables to state: %v", err)
 			}
 		}
-	}
-
-	// --- Resolve port for downstream binding ---
-	// State persistence (port + profile) and settings.json env-block writes
-	// happen together via bootstrapSettings near line 447. Note: --print-env
-	// (line 331) now exits before bootstrapSettings — diagnostic invocations
-	// no longer have write side effects.
-	port := resolvePort(portFlag, loadState())
-
-	// --- Print env and exit if requested ---
-	if printEnv {
-		otelActive := ucMetricsTable != "" || ucLogsTable != "" || ucTracesTable != ""
-		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, upstream, otelActive, ucMetricsTable, ucLogsTable, ucTracesTable)
-		os.Exit(0)
 	}
 
 	// --- Validate TLS config ---
@@ -580,6 +574,10 @@ func main() {
 	if ucMetricsTable != "" || ucLogsTable != "" || ucTracesTable != "" {
 		otelEnv["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
 	}
+	// Reference otelConfigured to silence the unused-variable warning while
+	// keeping the detection block above for future use (e.g. surfacing a
+	// "stale OTEL config detected" log).
+	_ = otelConfigured
 	if needsFullSetup {
 		// Also write Databricks-specific keys for full setup.
 		otelEnv["ANTHROPIC_MODEL"] = "databricks-claude-opus-4-7"
@@ -993,6 +991,49 @@ func handlePrintEnv(profile, databricksHost, anthropicBaseURL, token, upstreamBi
 		}
 	}
 }
+
+// persistentConfigPath returns the path to the persistent config file.
+func persistentConfigPath(homeDir string) string {
+	return filepath.Join(homeDir, ".claude", ".databricks-claude.json")
+}
+
+// readPersistentConfig reads the persistent config file. Returns an empty map
+// if the file does not exist.
+func readPersistentConfig(path string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]interface{}{}, nil
+		}
+		return nil, err
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// writePersistentConfig atomically writes the persistent config file.
+func writePersistentConfig(path string, cfg map[string]interface{}) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 
 // deriveLogsTable derives the OTEL logs table name from the metrics table name.
 // If the metrics table ends with "_otel_metrics", replace that suffix with "_otel_logs".
