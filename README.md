@@ -339,6 +339,8 @@ databricks-claude --headless
 
 All other flags and args are forwarded to `claude`.
 
+Unity Catalog table schemas (Delta Lake DDL) for all three OTel signals are in [`docs/otel-uc-schemas.sql`](docs/otel-uc-schemas.sql).
+
 ### Auto-Discovery
 
 On first run (when `ANTHROPIC_BASE_URL` is not set), `databricks-claude` auto-discovers:
