@@ -307,9 +307,10 @@ func main() {
 		ucTracesTable = tableState.OtelTracesTable
 	}
 
-	// --no-otel-{signal} just cleared persisted keys above; the in-memory env
-	// map is stale, so honour the flag explicitly here so the cleared signal
-	// does not get re-emitted from a stale read.
+	// --no-otel-{signal} disables the signal for this session. Zero out any
+	// table value that the state-file fallback above may have populated —
+	// the flag wins over persisted state (but the state file is left intact
+	// so the next --otel invocation can pick the tables back up).
 	if noOtel || noOtelMetrics {
 		ucMetricsTable = ""
 	}
