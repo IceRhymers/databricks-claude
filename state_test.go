@@ -102,6 +102,58 @@ func TestResolvePort(t *testing.T) {
 	}
 }
 
+func TestSaveAndLoadState_OtelTables(t *testing.T) {
+	dir := t.TempDir()
+	orig := statePath
+	statePath = func() string { return filepath.Join(dir, "state.json") }
+	defer func() { statePath = orig }()
+
+	want := persistentState{
+		OtelMetricsTable: "cat.schema.claude_otel_metrics",
+		OtelLogsTable:    "cat.schema.claude_otel_logs",
+		OtelTracesTable:  "cat.schema.claude_otel_traces",
+	}
+	if err := saveState(want); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+	got := loadState()
+	if got.OtelMetricsTable != want.OtelMetricsTable {
+		t.Errorf("OtelMetricsTable: got %q, want %q", got.OtelMetricsTable, want.OtelMetricsTable)
+	}
+	if got.OtelLogsTable != want.OtelLogsTable {
+		t.Errorf("OtelLogsTable: got %q, want %q", got.OtelLogsTable, want.OtelLogsTable)
+	}
+	if got.OtelTracesTable != want.OtelTracesTable {
+		t.Errorf("OtelTracesTable: got %q, want %q", got.OtelTracesTable, want.OtelTracesTable)
+	}
+}
+
+func TestSaveAndLoadState_OtelTablesRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	orig := statePath
+	statePath = func() string { return filepath.Join(dir, "state.json") }
+	defer func() { statePath = orig }()
+
+	// Other fields coexist with OTel table fields.
+	if err := saveState(persistentState{
+		Profile:          "aidev",
+		Port:             49154,
+		OtelMetricsTable: "a.b.metrics",
+	}); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+	s := loadState()
+	if s.Profile != "aidev" {
+		t.Errorf("Profile: got %q, want %q", s.Profile, "aidev")
+	}
+	if s.OtelMetricsTable != "a.b.metrics" {
+		t.Errorf("OtelMetricsTable: got %q, want %q", s.OtelMetricsTable, "a.b.metrics")
+	}
+	if s.OtelLogsTable != "" {
+		t.Errorf("OtelLogsTable: got %q, want empty", s.OtelLogsTable)
+	}
+}
+
 func TestStatePath_Override(t *testing.T) {
 	orig := statePath
 	defer func() { statePath = orig }()

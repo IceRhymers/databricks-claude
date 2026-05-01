@@ -272,46 +272,39 @@ func main() {
 		otelEndpoint = ""
 	}
 
-	stateForOtel := loadState()
-	stateOtelMutated := false
-
+	// Read table names from settings.json env block. Track the raw values
+	// separately so we can migrate them to the state file on first read.
 	ucMetricsTable := ""
+	metricsFromSettings := ""
 	if v, ok := env["CLAUDE_OTEL_UC_METRICS_TABLE"].(string); ok && v != "" {
 		ucMetricsTable = v
-		if stateForOtel.OtelMetricsTable == "" {
-			stateForOtel.OtelMetricsTable = v
-			stateOtelMutated = true
-		}
-	} else if stateForOtel.OtelMetricsTable != "" {
-		ucMetricsTable = stateForOtel.OtelMetricsTable
+		metricsFromSettings = v
 	}
-
 	ucLogsTable := ""
+	logsFromSettings := ""
 	if v, ok := env["CLAUDE_OTEL_UC_LOGS_TABLE"].(string); ok && v != "" {
 		ucLogsTable = v
-		if stateForOtel.OtelLogsTable == "" {
-			stateForOtel.OtelLogsTable = v
-			stateOtelMutated = true
-		}
-	} else if stateForOtel.OtelLogsTable != "" {
-		ucLogsTable = stateForOtel.OtelLogsTable
+		logsFromSettings = v
 	}
-
 	ucTracesTable := ""
+	tracesFromSettings := ""
 	if v, ok := env["CLAUDE_OTEL_UC_TRACES_TABLE"].(string); ok && v != "" {
 		ucTracesTable = v
-		if stateForOtel.OtelTracesTable == "" {
-			stateForOtel.OtelTracesTable = v
-			stateOtelMutated = true
-		}
-	} else if stateForOtel.OtelTracesTable != "" {
-		ucTracesTable = stateForOtel.OtelTracesTable
+		tracesFromSettings = v
 	}
 
-	if stateOtelMutated {
-		if err := saveState(stateForOtel); err != nil {
-			log.Printf("databricks-claude: warning: could not persist OTel tables to state: %v", err)
-		}
+	// Fall back to state file for tables absent from settings.json.
+	// This lets --no-otel / --no-otel-* clear settings.json while the table
+	// names survive in .databricks-claude.json for the next --otel invocation.
+	tableState := loadState()
+	if ucMetricsTable == "" {
+		ucMetricsTable = tableState.OtelMetricsTable
+	}
+	if ucLogsTable == "" {
+		ucLogsTable = tableState.OtelLogsTable
+	}
+	if ucTracesTable == "" {
+		ucTracesTable = tableState.OtelTracesTable
 	}
 
 	// --no-otel-{signal} just cleared persisted keys above; the in-memory env
@@ -378,33 +371,74 @@ func main() {
 	// OTEL table resolution follows table-presence semantics: a signal's env
 	// vars are only emitted when its UC table is configured (flag, persisted
 	// settings.json, or — for metrics/logs — the legacy --otel default).
-	stateOtelTableMutated := false
+	//
+	// Metrics table: --otel-metrics-table > persisted > --otel default. Without
+	// any of those, ucMetricsTable stays empty and metrics env vars are skipped.
 	if otelMetricsTableSet {
 		ucMetricsTable = otelMetricsTable
-		stateForOtel.OtelMetricsTable = otelMetricsTable
-		stateOtelTableMutated = true
 	} else if ucMetricsTable == "" && otel {
 		ucMetricsTable = otelMetricsTable
 	}
 
+	// Logs table: --otel-logs-table > persisted > derive-from-metrics (only
+	// when metrics is itself configured). Without any of those it stays empty.
 	if otelLogsTableSet {
 		ucLogsTable = otelLogsTable
-		stateForOtel.OtelLogsTable = otelLogsTable
-		stateOtelTableMutated = true
 	} else if ucLogsTable == "" && ucMetricsTable != "" {
 		ucLogsTable = deriveLogsTable(ucMetricsTable)
 	}
 
+	// Traces table: --otel-traces-table > persisted. No default — traces are
+	// opt-in via --otel-traces / --otel-traces-table.
 	if otelTracesTableSet {
 		ucTracesTable = otelTracesTable
-		stateForOtel.OtelTracesTable = otelTracesTable
-		stateOtelTableMutated = true
 	}
+	// If --otel-traces is passed but no table is configured (neither flag nor
+	// persisted), traces is silently skipped — see the env-injection block.
 	_ = otelTraces
 
-	if stateOtelTableMutated {
-		if err := saveState(stateForOtel); err != nil {
-			log.Printf("databricks-claude: warning: could not persist OTel tables to state: %v", err)
+	// Persist OTel table names to the state file so they survive --no-otel.
+	// We write when an explicit --otel-*-table flag was given, or when a table
+	// was found in settings.json but hasn't been migrated to state yet.
+	{
+		metricsToSave := ""
+		logsToSave := ""
+		tracesToSave := ""
+		if otelMetricsTableSet {
+			metricsToSave = ucMetricsTable
+		} else if metricsFromSettings != "" && tableState.OtelMetricsTable == "" {
+			metricsToSave = metricsFromSettings
+		}
+		if otelLogsTableSet {
+			logsToSave = ucLogsTable
+		} else if logsFromSettings != "" && tableState.OtelLogsTable == "" {
+			logsToSave = logsFromSettings
+		}
+		if otelTracesTableSet {
+			tracesToSave = ucTracesTable
+		} else if tracesFromSettings != "" && tableState.OtelTracesTable == "" {
+			tracesToSave = tracesFromSettings
+		}
+		if metricsToSave != "" || logsToSave != "" || tracesToSave != "" {
+			s := loadState()
+			mutated := false
+			if metricsToSave != "" && s.OtelMetricsTable != metricsToSave {
+				s.OtelMetricsTable = metricsToSave
+				mutated = true
+			}
+			if logsToSave != "" && s.OtelLogsTable != logsToSave {
+				s.OtelLogsTable = logsToSave
+				mutated = true
+			}
+			if tracesToSave != "" && s.OtelTracesTable != tracesToSave {
+				s.OtelTracesTable = tracesToSave
+				mutated = true
+			}
+			if mutated {
+				if err := saveState(s); err != nil {
+					log.Printf("databricks-claude: warning: could not persist OTel tables to state: %v", err)
+				}
+			}
 		}
 	}
 

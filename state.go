@@ -20,9 +20,12 @@ type persistentState struct {
 	// empty. Set via `--generate-desktop-config --databricks-cli-path …` for
 	// per-user pinning, or by an MDM admin dropping the state file directly.
 	DatabricksCLIPath string `json:"databricks_cli_path,omitempty"`
-	OtelMetricsTable  string `json:"otel_metrics_table,omitempty"`
-	OtelLogsTable     string `json:"otel_logs_table,omitempty"`
-	OtelTracesTable   string `json:"otel_traces_table,omitempty"`
+	// OTel table names survive --no-otel / --no-otel-* so the user can toggle
+	// telemetry off and back on without having to re-specify the table flags.
+	// Populated by explicit --otel-*-table flags and by migration from settings.json.
+	OtelMetricsTable string `json:"otel_metrics_table,omitempty"`
+	OtelLogsTable    string `json:"otel_logs_table,omitempty"`
+	OtelTracesTable  string `json:"otel_traces_table,omitempty"`
 }
 
 const defaultPort = 49153
