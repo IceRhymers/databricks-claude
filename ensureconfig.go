@@ -72,8 +72,16 @@ func ensureConfig(proxyURL string, otelEnv map[string]string) error {
 	// Get or create the env block.
 	env := getOrCreateEnvBlock(doc)
 
-	// Check if already configured — no-op if ANTHROPIC_BASE_URL matches.
-	if v, ok := env["ANTHROPIC_BASE_URL"].(string); ok && v == proxyURL {
+	// Check if already configured — no-op if ANTHROPIC_BASE_URL matches and
+	// there are no pending OTEL keys to write.
+	hasOtelToWrite := false
+	for _, v := range otelEnv {
+		if v != "" {
+			hasOtelToWrite = true
+			break
+		}
+	}
+	if v, ok := env["ANTHROPIC_BASE_URL"].(string); ok && v == proxyURL && !hasOtelToWrite {
 		return nil
 	}
 
