@@ -251,13 +251,21 @@ databricks-claude --log-file /tmp/dc.log "fix the bug in main.go"
 # Both stderr and file:
 databricks-claude -v --log-file /tmp/dc.log "fix the bug in main.go"
 
-# With OTEL telemetry:
+# With OTEL telemetry (metrics + logs by default):
 databricks-claude --otel "summarize this PR"
 
-# With custom OTEL tables:
+# With custom OTEL tables (each signal is independent — only emit what you point at a table):
 databricks-claude --otel --otel-metrics-table main.catalog.metrics --otel-logs-table main.catalog.logs "summarize this PR"
 
-# Disable OTEL (clears persisted keys):
+# Enable Claude Code traces beta (CLAUDE_CODE_ENHANCED_TELEMETRY_BETA):
+databricks-claude --otel-traces --otel-traces-table main.catalog.traces "summarize this PR"
+
+# Per-signal disable — clears just that signal's keys, leaves others intact:
+databricks-claude --no-otel-metrics
+databricks-claude --no-otel-logs
+databricks-claude --no-otel-traces
+
+# Disable all OTEL (clears every persisted signal key):
 databricks-claude --no-otel
 
 # With proxy API key authentication:
@@ -309,10 +317,15 @@ databricks-claude --headless
 | `--profile` | `DEFAULT` | Databricks CLI profile |
 | `--verbose`, `-v` | `false` | Enable debug logging to stderr |
 | `--log-file` | | Write debug logs to a file (combinable with `--verbose`) |
-| `--otel` | `false` | Enable OTEL telemetry proxying |
-| `--no-otel` | | Clear persisted OTEL keys and disable OTEL for future sessions |
-| `--otel-metrics-table` | `main.claude_telemetry.claude_otel_metrics` | Unity Catalog table for OTEL metrics |
-| `--otel-logs-table` | derived from metrics table | Unity Catalog table for OTEL logs |
+| `--otel` | `false` | Enable OTEL telemetry proxying (metrics + logs). A signal is emitted only when its table is set. |
+| `--otel-metrics-table` | `main.claude_telemetry.claude_otel_metrics` (only when `--otel` is set) | Unity Catalog table for OTEL metrics |
+| `--otel-logs-table` | derived from metrics table when `--otel` is set | Unity Catalog table for OTEL logs |
+| `--otel-traces` | `false` | Enable Claude Code's `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` traces export. Standalone — does not require `--otel`. |
+| `--otel-traces-table` | (none) | Unity Catalog table for OTEL traces — required for traces to actually be emitted |
+| `--no-otel` | | Clear every persisted OTEL key (metrics + logs + traces + telemetry toggle) |
+| `--no-otel-metrics` | | Clear only the metrics keys from `~/.claude/settings.json` |
+| `--no-otel-logs` | | Clear only the logs keys from `~/.claude/settings.json` |
+| `--no-otel-traces` | | Clear only the traces keys (incl. `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA`) from `~/.claude/settings.json` |
 | `--upstream` | auto-discovered | Override the AI Gateway URL |
 | `--proxy-api-key` | | Require Bearer token auth on all proxy requests |
 | `--port` | `49153` | Proxy listen port (saved for future sessions) |
@@ -325,6 +338,8 @@ databricks-claude --headless
 | `--help`, `-h` | | Print wrapper flags and the full `claude --help` output, then exit |
 
 All other flags and args are forwarded to `claude`.
+
+Unity Catalog table schemas (Delta Lake DDL) for all three OTel signals are in [`docs/otel-uc-schemas.sql`](docs/otel-uc-schemas.sql).
 
 ### Auto-Discovery
 
