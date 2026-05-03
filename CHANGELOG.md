@@ -5,34 +5,15 @@
 
 ### Features
 
-* **desktop:** add generate-trust-profile subcommand and --for-pkg flag ([fce4dee](https://github.com/IceRhymers/databricks-claude/commit/fce4deeca59d628cee2c45d9e6c9f9be3ec2cc36))
-* per-signal OTel control and --otel-traces for Claude Code trace export ([#102](https://github.com/IceRhymers/databricks-claude/issues/102)) ([f0f1455](https://github.com/IceRhymers/databricks-claude/commit/f0f145525b5a2332db8cf5f79a1bd7066f9d56f3))
+* **otel:** per-signal export control; `--otel-traces` exports Claude Code traces independently of metrics/logs ([#102](https://github.com/IceRhymers/databricks-claude/issues/102)) ([f0f1455](https://github.com/IceRhymers/databricks-claude/commit/f0f145525b5a2332db8cf5f79a1bd7066f9d56f3))
+* **desktop:** `generate-trust-profile` subcommand with `--for-pkg` flag for pkg-scoped trust profiles ([fce4dee](https://github.com/IceRhymers/databricks-claude/commit/fce4deeca59d628cee2c45d9e6c9f9be3ec2cc36))
 
 
 ### Bug Fixes
 
-* add -legacy flag to openssl pkcs12 export for macOS compat ([6250891](https://github.com/IceRhymers/databricks-claude/commit/62508911a7d4a9b6dae8cd348e9f36c00dd2b1e2))
-* add -legacy flag to openssl pkcs12 export for macOS compatibility ([0c8ee40](https://github.com/IceRhymers/databricks-claude/commit/0c8ee4024fc696ac70bceed851665a73763f3442))
-* add Apple installer OID to cert so productsign accepts it ([8893d84](https://github.com/IceRhymers/databricks-claude/commit/8893d848ca5d80dc736cba746dc8184d70f244f8))
-* add installer OID to cert and guard productsign failure ([691c576](https://github.com/IceRhymers/databricks-claude/commit/691c57687272d6de49b61cd6eacb422a0c03734a))
-* add keyUsage=critical,digitalSignature to generate-signing-cert ([dc60c9d](https://github.com/IceRhymers/databricks-claude/commit/dc60c9d1b9dcc881d87b6b6b79431eda0939bdd8))
-* add keyUsage=digitalSignature to cert — required for macOS codesign ([8ce2130](https://github.com/IceRhymers/databricks-claude/commit/8ce2130936d343dd2653c22478aeb06615f25609))
-* allow pkgutil --check-signature to exit non-zero for unsigned pkg ([dd4b7e2](https://github.com/IceRhymers/databricks-claude/commit/dd4b7e2ad387d2d8f5aad936dd68c429c5b6ffd4))
-* allow pkgutil --check-signature to exit non-zero for unsigned pkg ([c3e80d3](https://github.com/IceRhymers/databricks-claude/commit/c3e80d3ef22307c12fb4603de3685976c8c29b1f))
-* expand pkg archive before checking payload for helper path ([7fd592c](https://github.com/IceRhymers/databricks-claude/commit/7fd592cb23f26dd8125ff29e761d9c2f2089c527))
-* explicitly unlock + list keychain before codesign; add identity diagnostic ([9af5fea](https://github.com/IceRhymers/databricks-claude/commit/9af5fea5452daf2da1b3166e8a88a787c16d1a9c))
-* explicitly unlock + list keychain before codesign; add identity diagnostic ([ff6e57f](https://github.com/IceRhymers/databricks-claude/commit/ff6e57fa7b9d507d495c4331681e6f6926dfead2))
-* include credential-helper symlink in pkg payload ([a5e6eb5](https://github.com/IceRhymers/databricks-claude/commit/a5e6eb5c5d991c6dba8f26554d9577a299b59b8d))
-* include helper symlink in pkg payload; fix assertion to expand archive ([eb3dc78](https://github.com/IceRhymers/databricks-claude/commit/eb3dc788e42d0eaa0f3805fb0fefd09ec2acc60b))
-* remove productsign — self-signed certs can't satisfy installer policy ([00e623c](https://github.com/IceRhymers/databricks-claude/commit/00e623c4a6064d2cfa09ca6ca946a1b076cb142d))
-* remove trust step, assert pkg is unsigned ([227143f](https://github.com/IceRhymers/databricks-claude/commit/227143f13902da8ea9067ba30346e0c4337e7261))
-* ship unsigned .pkg — productsign requires Apple-issued installer cert ([5e94ea2](https://github.com/IceRhymers/databricks-claude/commit/5e94ea20ff45dd5dff89d87332bc7822a41cf261))
-* trust self-signed cert as system root so productsign accepts it ([3ae0f9c](https://github.com/IceRhymers/databricks-claude/commit/3ae0f9cb98b7238807c2cbe299e47e15d6ba7011))
-* trust self-signed cert as system root so productsign accepts it ([72ecb6c](https://github.com/IceRhymers/databricks-claude/commit/72ecb6cabdef7dc646ca92dc1357f118338125f7))
-* use action step output for keychain password in set-key-partition-list ([5b514bd](https://github.com/IceRhymers/databricks-claude/commit/5b514bd708c7dc0202f7e060a81051ef8085b9c1))
-* use action step output for keychain password in set-key-partition-list ([f81d961](https://github.com/IceRhymers/databricks-claude/commit/f81d9611fcb799de397a2bfaeb2157dfeef38903))
-* use APPLE_INTERNAL_SIGNING_IDENTITY secret in pkg signature assert ([f14f42b](https://github.com/IceRhymers/databricks-claude/commit/f14f42bfe16f02bb06de6d8d2e7ee2af8e0077e1))
-* use APPLE_INTERNAL_SIGNING_IDENTITY secret in pkg signature assert ([ac0a3f5](https://github.com/IceRhymers/databricks-claude/commit/ac0a3f59df80b2ff891030615dc1adbe8eb68f6b))
+* macOS `.pkg` ships unsigned — `productsign` requires an Apple-issued installer cert; build pipeline now asserts unsigned rather than attempting signing ([5e94ea2](https://github.com/IceRhymers/databricks-claude/commit/5e94ea20ff45dd5dff89d87332bc7822a41cf261))
+* credential-helper symlink included in pkg payload; archive expanded before payload assertion ([eb3dc78](https://github.com/IceRhymers/databricks-claude/commit/eb3dc788e42d0eaa0f3805fb0fefd09ec2acc60b))
+* explicitly unlock keychain and list identities before `codesign` ([9af5fea](https://github.com/IceRhymers/databricks-claude/commit/9af5fea5452daf2da1b3166e8a88a787c16d1a9c))
 
 ## [0.14.0](https://github.com/IceRhymers/databricks-claude/compare/v0.13.0...v0.14.0) (2026-04-28)
 
