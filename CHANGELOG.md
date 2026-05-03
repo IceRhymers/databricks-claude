@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.15.0](https://github.com/IceRhymers/databricks-claude/compare/v0.14.0...v0.15.0) (2026-05-01)
+
+
+### Features
+
+* **otel:** per-signal export control; `--otel-traces` exports Claude Code traces independently of metrics/logs ([#102](https://github.com/IceRhymers/databricks-claude/issues/102)) ([f0f1455](https://github.com/IceRhymers/databricks-claude/commit/f0f145525b5a2332db8cf5f79a1bd7066f9d56f3))
+* **desktop:** `generate-trust-profile` subcommand with `--for-pkg` flag for pkg-scoped trust profiles ([fce4dee](https://github.com/IceRhymers/databricks-claude/commit/fce4deeca59d628cee2c45d9e6c9f9be3ec2cc36))
+
+
+### Bug Fixes
+
+* macOS `.pkg` ships unsigned — `productsign` requires an Apple-issued installer cert; build pipeline now asserts unsigned rather than attempting signing ([5e94ea2](https://github.com/IceRhymers/databricks-claude/commit/5e94ea20ff45dd5dff89d87332bc7822a41cf261))
+* credential-helper symlink included in pkg payload; archive expanded before payload assertion ([eb3dc78](https://github.com/IceRhymers/databricks-claude/commit/eb3dc788e42d0eaa0f3805fb0fefd09ec2acc60b))
+* explicitly unlock keychain and list identities before `codesign` ([9af5fea](https://github.com/IceRhymers/databricks-claude/commit/9af5fea5452daf2da1b3166e8a88a787c16d1a9c))
+
 ## [0.14.0](https://github.com/IceRhymers/databricks-claude/compare/v0.13.0...v0.14.0) (2026-04-28)
 
 
