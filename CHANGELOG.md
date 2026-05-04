@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.16.0](https://github.com/IceRhymers/databricks-claude/compare/v0.15.0...v0.16.0) (2026-05-04)
+
+
+### Features
+
+* simplify `ConstructGatewayURL`: use host-relative AI Gateway path (`{host}/ai-gateway/anthropic`), removing SCIM workspace-ID lookup, token parameter, and fallback ([#116](https://github.com/IceRhymers/databricks-claude/issues/116)) ([8fa432a](https://github.com/IceRhymers/databricks-claude/commit/8fa432aca093239fbcc0c31c772d5b36819e42ba))
+* require conventional commit prefix in agent instructions ([a6db721](https://github.com/IceRhymers/databricks-claude/commit/a6db72118d8979bf5122004ba7287318059cff69))
+
 ## [0.15.0](https://github.com/IceRhymers/databricks-claude/compare/v0.14.0...v0.15.0) (2026-05-01)
 
 
