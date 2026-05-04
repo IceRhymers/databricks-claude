@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.16.0](https://github.com/IceRhymers/databricks-claude/compare/v0.15.0...v0.16.0) (2026-05-04)
+
+
+### Features
+
+* require conventional commit prefix in agent instructions ([77fc20e](https://github.com/IceRhymers/databricks-claude/commit/77fc20ea91af17e57686e9d3d4125fea3f85c10f))
+* require conventional commit prefix in agent instructions ([a6db721](https://github.com/IceRhymers/databricks-claude/commit/a6db72118d8979bf5122004ba7287318059cff69))
+
 ## [0.15.0](https://github.com/IceRhymers/databricks-claude/compare/v0.14.0...v0.15.0) (2026-05-01)
 
 
