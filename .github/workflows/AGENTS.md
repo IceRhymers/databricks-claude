@@ -43,3 +43,8 @@ Releases are automated via [release-please](https://github.com/googleapis/releas
 - Squash-merge is fine — the squash commit message is what release-please reads.
 - `chore:` is safe for housekeeping (formatting, test updates, doc-only changes) but will not produce a release.
 - If a release PR is unexpectedly missing after a merge, check the release workflow logs: the most common cause is a non-conventional commit message.
+
+### Commit message requirements (release-please)
+
+- **All implementation commits MUST start with `feat:` or `fix:`.** release-please reads commit messages on master — the branch name prefix (`feat/`) does NOT trigger a version bump. Without a conventional prefix the release PR is never opened.
+- `chore:`, `docs:`, `refactor:`, `test:` prefixes will NOT trigger a release PR.
