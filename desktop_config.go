@@ -287,13 +287,7 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databrick
 		os.Exit(1)
 	}
 
-	tp := NewTokenProvider(resolved, "")
-	tok, err := tp.Token(context.Background())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "databricks-claude: failed to fetch token for profile %q: %v\n", resolved, err)
-		os.Exit(1)
-	}
-	gatewayURL := ConstructGatewayURL(host, tok)
+	gatewayURL := ConstructGatewayURL(host)
 
 	helperPath, err := resolveHelperPath(binaryPathOverride, forPkg)
 	if err != nil {

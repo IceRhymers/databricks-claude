@@ -36,7 +36,7 @@ func TestNewUUID_FormatAndUniqueness(t *testing.T) {
 }
 
 func TestBuildMobileconfig_ContainsRequiredKeys(t *testing.T) {
-	gateway := "https://abc-123.ai-gateway.cloud.databricks.com/anthropic"
+	gateway := "https://adb-abc-123.azuredatabricks.net/ai-gateway/anthropic"
 	helper := "/usr/local/bin/databricks-claude"
 	out, err := buildMobileconfig(gateway, helper)
 	if err != nil {
@@ -104,7 +104,7 @@ func TestBuildMobileconfig_UniqueUUIDs(t *testing.T) {
 }
 
 func TestBuildRegFile_ContainsRequiredKeys(t *testing.T) {
-	gateway := "https://abc-123.ai-gateway.cloud.databricks.com/anthropic"
+	gateway := "https://adb-abc-123.azuredatabricks.net/ai-gateway/anthropic"
 	helper := `C:\Program Files\databricks-claude\databricks-claude.exe`
 	out := buildRegFile(gateway, helper)
 
@@ -417,7 +417,7 @@ func TestExtractForPkgFlag(t *testing.T) {
 // ---- buildDevModeJSON ------------------------------------------------------
 
 const (
-	devTestGateway = "https://abc-123.ai-gateway.cloud.databricks.com/anthropic"
+	devTestGateway = "https://adb-abc-123.azuredatabricks.net/ai-gateway/anthropic"
 	devTestHelper  = "/usr/local/bin/databricks-claude-credential-helper"
 )
 

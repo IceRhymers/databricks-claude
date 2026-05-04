@@ -353,7 +353,7 @@ func main() {
 		log.Printf("databricks-claude: discovered host: %s", host)
 		databricksHost = host
 
-		inferenceUpstream = ConstructGatewayURL(host, initialToken)
+		inferenceUpstream = ConstructGatewayURL(host)
 		log.Printf("databricks-claude: upstream: %s", inferenceUpstream)
 
 		needsFullSetup = true

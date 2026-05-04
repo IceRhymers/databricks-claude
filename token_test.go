@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -322,75 +320,19 @@ func TestDiscoverHost_CommandFails(t *testing.T) {
 	}
 }
 
-// TestResolveWorkspaceID_Success: mock server returns org-id header → extracted.
-func TestResolveWorkspaceID_Success(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("x-databricks-org-id", "1234567890")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	orgID, err := ResolveWorkspaceID(srv.URL, "test-token")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestConstructGatewayURL(t *testing.T) {
+	tests := []struct {
+		host string
+		want string
+	}{
+		{"https://adb-123.azuredatabricks.net", "https://adb-123.azuredatabricks.net/ai-gateway/anthropic"},
+		{"https://adb-123.azuredatabricks.net/", "https://adb-123.azuredatabricks.net/ai-gateway/anthropic"},
 	}
-	if orgID != "1234567890" {
-		t.Errorf("got %q, want %q", orgID, "1234567890")
-	}
-}
-
-// TestResolveWorkspaceID_MissingHeader: server returns 200 but no org-id header → error.
-func TestResolveWorkspaceID_MissingHeader(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	_, err := ResolveWorkspaceID(srv.URL, "test-token")
-	if err == nil {
-		t.Fatal("expected error when org-id header missing, got nil")
-	}
-}
-
-// TestResolveWorkspaceID_Non200: server returns 401 → error.
-func TestResolveWorkspaceID_Non200(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer srv.Close()
-
-	_, err := ResolveWorkspaceID(srv.URL, "bad-token")
-	if err == nil {
-		t.Fatal("expected error on non-200 status, got nil")
-	}
-}
-
-// TestConstructGatewayURL_WithWorkspaceID: resolves workspace ID → AI Gateway URL.
-func TestConstructGatewayURL_WithWorkspaceID(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("x-databricks-org-id", "9876543210")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	got := ConstructGatewayURL(srv.URL, "test-token")
-	want := "https://9876543210.ai-gateway.cloud.databricks.com/anthropic"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-// TestConstructGatewayURL_Fallback: resolution fails → falls back to serving-endpoints URL.
-func TestConstructGatewayURL_Fallback(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer srv.Close()
-
-	got := ConstructGatewayURL(srv.URL, "bad-token")
-	want := srv.URL + "/serving-endpoints/anthropic"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+	for _, tc := range tests {
+		got := ConstructGatewayURL(tc.host)
+		if got != tc.want {
+			t.Errorf("ConstructGatewayURL(%q) = %q, want %q", tc.host, got, tc.want)
+		}
 	}
 }
 
