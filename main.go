@@ -31,6 +31,41 @@ import (
 // Version is set at build time via -ldflags.
 var Version = "dev"
 
+// Args holds all parsed command-line arguments for databricks-claude.
+type Args struct {
+	Profile             string
+	Verbose             bool
+	Version             bool
+	ShowHelp            bool
+	PrintEnv            bool
+	OTEL                bool
+	OTELMetricsTable    string
+	OTELMetricsTableSet bool
+	OTELLogsTable       string
+	OTELLogsTableSet    bool
+	OTELTraces          bool
+	OTELTracesTable     string
+	OTELTracesTableSet  bool
+	Upstream            string
+	LogFile             string
+	NoOTEL              bool
+	NoOTELMetrics       bool
+	NoOTELLogs          bool
+	NoOTELTraces        bool
+	ProxyAPIKey         string
+	TLSCert             string
+	TLSKey              string
+	Port                int
+	Headless            bool
+	IdleTimeout         time.Duration
+	InstallHooks        bool
+	UninstallHooks      bool
+	HeadlessEnsure      bool
+	HeadlessRelease     bool
+	NoUpdateCheck       bool
+	ClaudeArgs          []string
+}
+
 func main() {
 	// completion <shell> — must be the very first check, before any flag parsing,
 	// auth, or state loading. Safe to call in the Homebrew install sandbox.
@@ -87,38 +122,38 @@ func main() {
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
 	// Tip: use "databricks-claude -- completion" to pass "completion" to claude.
-	profile, verbose, version, showHelp, printEnv, otel, otelMetricsTable, otelMetricsTableSet, otelLogsTable, otelLogsTableSet, otelTraces, otelTracesTable, otelTracesTableSet, upstream, logFile, noOtel, noOtelMetrics, noOtelLogs, noOtelTraces, proxyAPIKey, tlsCert, tlsKey, portFlag, headless, idleTimeout, installHooksFlag, uninstallHooksFlag, headlessEnsureFlag, headlessReleaseFlag, noUpdateCheck, claudeArgs := parseArgs(os.Args[1:])
+	a := parseArgs(os.Args[1:])
 
-	if showHelp {
-		handleHelp(upstream)
+	if a.ShowHelp {
+		handleHelp(a.Upstream)
 		os.Exit(0)
 	}
 
-	if version {
+	if a.Version {
 		fmt.Printf("databricks-claude %s\n", Version)
 		os.Exit(0)
 	}
 
 	// --- Hook lifecycle commands (handled before auth/config setup) ---
-	if installHooksFlag || uninstallHooksFlag {
+	if a.InstallHooks || a.UninstallHooks {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			log.Fatalf("databricks-claude: cannot determine home dir: %v", err)
 		}
 		sp := filepath.Join(homeDir, ".claude", "settings.json")
-		if installHooksFlag {
+		if a.InstallHooks {
 			// First-run env setup: persist profile/port and write
 			// ANTHROPIC_BASE_URL placeholder so users no longer need to run
 			// `databricks-claude` once before installing hooks. The placeholder
 			// URL is overwritten by --headless-ensure at session start with
 			// the discovered gateway URL.
-			resolvedProfile := profile
+			resolvedProfile := a.Profile
 			if resolvedProfile == "" {
 				resolvedProfile = "DEFAULT"
 			}
-			port := resolvePort(portFlag, loadState())
+			port := resolvePort(a.Port, loadState())
 			placeholder := fmt.Sprintf("http://127.0.0.1:%d", port)
-			if err := bootstrapSettings(portFlag, resolvedProfile, placeholder, nil); err != nil {
+			if err := bootstrapSettings(a.Port, resolvedProfile, placeholder, nil); err != nil {
 				log.Fatalf("databricks-claude: --install-hooks bootstrap: %v", err)
 			}
 			if err := installHooks(sp); err != nil {
@@ -135,10 +170,10 @@ func main() {
 	}
 
 	// --- Headless hook commands (called by installed hooks, not by end users) ---
-	if headlessEnsureFlag || headlessReleaseFlag {
+	if a.HeadlessEnsure || a.HeadlessRelease {
 		state := loadState()
-		port := resolvePort(portFlag, state)
-		if headlessEnsureFlag {
+		port := resolvePort(a.Port, state)
+		if a.HeadlessEnsure {
 			headlessEnsure(port)
 		} else {
 			headlessRelease(port)
@@ -149,31 +184,31 @@ func main() {
 	// --no-otel and --no-otel-{metrics,logs,traces}: clear persisted OTEL keys
 	// from settings.json. Per-signal flags clear only that signal; --no-otel
 	// is the nuclear option that clears every signal plus the telemetry toggle.
-	if noOtel || noOtelMetrics || noOtelLogs || noOtelTraces {
+	if a.NoOTEL || a.NoOTELMetrics || a.NoOTELLogs || a.NoOTELTraces {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			log.Fatalf("databricks-claude: cannot determine home dir: %v", err)
 		}
 		settingsPathForClear := filepath.Join(homeDir, ".claude", "settings.json")
-		if noOtel {
+		if a.NoOTEL {
 			if err := clearOTELKeys(settingsPathForClear); err != nil {
 				log.Fatalf("databricks-claude: failed to clear OTEL keys: %v", err)
 			}
 			fmt.Fprintln(os.Stderr, "databricks-claude: OTEL keys cleared — OTEL disabled for future sessions")
 		} else {
-			if noOtelMetrics {
+			if a.NoOTELMetrics {
 				if err := clearOTELKeysSubset(settingsPathForClear, otelMetricsKeys); err != nil {
 					log.Fatalf("databricks-claude: failed to clear OTEL metrics keys: %v", err)
 				}
 				fmt.Fprintln(os.Stderr, "databricks-claude: OTEL metrics keys cleared")
 			}
-			if noOtelLogs {
+			if a.NoOTELLogs {
 				if err := clearOTELKeysSubset(settingsPathForClear, otelLogsKeys); err != nil {
 					log.Fatalf("databricks-claude: failed to clear OTEL logs keys: %v", err)
 				}
 				fmt.Fprintln(os.Stderr, "databricks-claude: OTEL logs keys cleared")
 			}
-			if noOtelTraces {
+			if a.NoOTELTraces {
 				if err := clearOTELKeysSubset(settingsPathForClear, otelTracesKeys); err != nil {
 					log.Fatalf("databricks-claude: failed to clear OTEL traces keys: %v", err)
 				}
@@ -193,17 +228,17 @@ func main() {
 	// Default: discard all logs (silent wrapper — identical to vanilla claude).
 	log.SetOutput(io.Discard)
 
-	if verbose {
+	if a.Verbose {
 		log.SetOutput(os.Stderr)
 	}
-	if logFile != "" {
-		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if a.LogFile != "" {
+		f, err := os.OpenFile(a.LogFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			log.SetOutput(os.Stderr) // ensure this fatal is visible
-			log.Fatalf("databricks-claude: cannot open log file %q: %v", logFile, err)
+			log.Fatalf("databricks-claude: cannot open log file %q: %v", a.LogFile, err)
 		}
 		defer f.Close()
-		if verbose {
+		if a.Verbose {
 			// Both stderr and file.
 			log.SetOutput(io.MultiWriter(os.Stderr, f))
 		} else {
@@ -224,7 +259,7 @@ func main() {
 	// Claude's settings.json injects env vars into child processes, which
 	// would override the user's explicit --profile choice persisted in the
 	// state file.
-	resolvedProfile := profile
+	resolvedProfile := a.Profile
 	if resolvedProfile == "" {
 		if saved := loadState(); saved.Profile != "" {
 			resolvedProfile = saved.Profile
@@ -311,13 +346,13 @@ func main() {
 	// table value that the state-file fallback above may have populated —
 	// the flag wins over persisted state (but the state file is left intact
 	// so the next --otel invocation can pick the tables back up).
-	if noOtel || noOtelMetrics {
+	if a.NoOTEL || a.NoOTELMetrics {
 		ucMetricsTable = ""
 	}
-	if noOtel || noOtelLogs {
+	if a.NoOTEL || a.NoOTELLogs {
 		ucLogsTable = ""
 	}
-	if noOtel || noOtelTraces {
+	if a.NoOTEL || a.NoOTELTraces {
 		ucTracesTable = ""
 	}
 
@@ -332,8 +367,8 @@ func main() {
 	needsFullSetup := false
 
 	// --upstream flag takes highest priority for the inference endpoint.
-	if upstream != "" {
-		inferenceUpstream = upstream
+	if a.Upstream != "" {
+		inferenceUpstream = a.Upstream
 		log.Printf("databricks-claude: using explicit upstream: %s", inferenceUpstream)
 		if databricksHost == "" {
 			// Try to discover host for OTEL even when upstream is explicit.
@@ -375,38 +410,38 @@ func main() {
 	//
 	// Metrics table: --otel-metrics-table > persisted > --otel default. Without
 	// any of those, ucMetricsTable stays empty and metrics env vars are skipped.
-	if otelMetricsTableSet {
-		ucMetricsTable = otelMetricsTable
-	} else if ucMetricsTable == "" && otel {
-		ucMetricsTable = otelMetricsTable
+	if a.OTELMetricsTableSet {
+		ucMetricsTable = a.OTELMetricsTable
+	} else if ucMetricsTable == "" && a.OTEL {
+		ucMetricsTable = a.OTELMetricsTable
 	}
 
 	// Logs table: --otel-logs-table > persisted > derive-from-metrics (only
 	// when metrics is itself configured). Without any of those it stays empty.
-	if otelLogsTableSet {
-		ucLogsTable = otelLogsTable
+	if a.OTELLogsTableSet {
+		ucLogsTable = a.OTELLogsTable
 	} else if ucLogsTable == "" && ucMetricsTable != "" {
 		ucLogsTable = deriveLogsTable(ucMetricsTable)
 	}
 
 	// Traces table: --otel-traces-table > persisted. No default — traces are
 	// opt-in via --otel-traces / --otel-traces-table.
-	if otelTracesTableSet {
-		ucTracesTable = otelTracesTable
+	if a.OTELTracesTableSet {
+		ucTracesTable = a.OTELTracesTable
 	}
 	// If --otel-traces is passed but no table is configured (neither flag nor
 	// persisted), traces is silently skipped — see the env-injection block.
-	_ = otelTraces
+	_ = a.OTELTraces
 
 	// --- Resolve port for downstream binding ---
-	port := resolvePort(portFlag, loadState())
+	port := resolvePort(a.Port, loadState())
 
 	// --- Print env and exit if requested ---
 	// This exit is intentionally before any state or settings.json writes so
 	// --print-env remains a read-only diagnostic (no side effects).
-	if printEnv {
+	if a.PrintEnv {
 		otelActive := ucMetricsTable != "" || ucLogsTable != "" || ucTracesTable != ""
-		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, upstream, otelActive, ucMetricsTable, ucLogsTable, ucTracesTable)
+		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, a.Upstream, otelActive, ucMetricsTable, ucLogsTable, ucTracesTable)
 		os.Exit(0)
 	}
 
@@ -419,17 +454,17 @@ func main() {
 		metricsToSave := ""
 		logsToSave := ""
 		tracesToSave := ""
-		if otelMetricsTableSet {
+		if a.OTELMetricsTableSet {
 			metricsToSave = ucMetricsTable
 		} else if metricsFromSettings != "" && tableState.OtelMetricsTable == "" {
 			metricsToSave = metricsFromSettings
 		}
-		if otelLogsTableSet {
+		if a.OTELLogsTableSet {
 			logsToSave = ucLogsTable
 		} else if logsFromSettings != "" && tableState.OtelLogsTable == "" {
 			logsToSave = logsFromSettings
 		}
-		if otelTracesTableSet {
+		if a.OTELTracesTableSet {
 			tracesToSave = ucTracesTable
 		} else if tracesFromSettings != "" && tableState.OtelTracesTable == "" {
 			tracesToSave = tracesFromSettings
@@ -455,7 +490,7 @@ func main() {
 	}
 
 	// --- Validate TLS config ---
-	if err := proxy.ValidateTLSConfig(tlsCert, tlsKey); err != nil {
+	if err := proxy.ValidateTLSConfig(a.TLSCert, a.TLSKey); err != nil {
 		log.Fatalf("databricks-claude: %v", err)
 	}
 
@@ -466,7 +501,7 @@ func main() {
 	}
 
 	scheme := "http"
-	if tlsCert != "" && tlsKey != "" {
+	if a.TLSCert != "" && a.TLSKey != "" {
 		scheme = "https"
 		fmt.Fprintln(os.Stderr, "databricks-claude: TLS enabled")
 	}
@@ -480,14 +515,14 @@ func main() {
 		UCLogsTable:       ucLogsTable,
 		UCTracesTable:     ucTracesTable,
 		TokenProvider:     tp,
-		Verbose:           verbose,
-		APIKey:            proxyAPIKey,
-		TLSCertFile:       tlsCert,
-		TLSKeyFile:        tlsKey,
+		Verbose:           a.Verbose,
+		APIKey:            a.ProxyAPIKey,
+		TLSCertFile:       a.TLSCert,
+		TLSKeyFile:        a.TLSKey,
 		ToolName:          "databricks-claude",
 		Version:           Version,
 	}
-	if proxyAPIKey != "" {
+	if a.ProxyAPIKey != "" {
 		fmt.Fprintln(os.Stderr, "databricks-claude: proxy API key authentication enabled")
 	}
 	handler := NewProxyServer(proxyConfig)
@@ -498,7 +533,7 @@ func main() {
 	// so the last session's release brings the count to 0 and triggers shutdown.
 	// In wrapper mode, the parent process acquires here and releases on exit.
 	refcountPath := refcount.PathForPort(".databricks-claude-sessions", port)
-	if !headless {
+	if !a.Headless {
 		if err := refcount.Acquire(refcountPath); err != nil {
 			log.Printf("databricks-claude: refcount acquire warning: %v", err)
 		}
@@ -510,7 +545,7 @@ func main() {
 	// promote IsOwner so /shutdown correctly triggers shutdown after takeover.
 	var doneCh chan struct{}
 	var promoteCh chan struct{}
-	if headless {
+	if a.Headless {
 		doneCh = make(chan struct{})
 		if !isOwner {
 			promoteCh = make(chan struct{})
@@ -520,8 +555,8 @@ func main() {
 			RefcountPath: refcountPath,
 			IsOwner:      isOwner,
 			PromoteCh:    promoteCh,
-			IdleTimeout:  idleTimeout,
-			APIKey:       proxyAPIKey,
+			IdleTimeout:  a.IdleTimeout,
+			APIKey:       a.ProxyAPIKey,
 			DoneCh:       doneCh,
 			LogPrefix:    "databricks-claude",
 		})
@@ -531,8 +566,8 @@ func main() {
 	if isOwner {
 		go func() {
 			srv := &http.Server{Handler: handler}
-			if tlsCert != "" && tlsKey != "" {
-				if err := srv.ServeTLS(ln, tlsCert, tlsKey); err != nil && err != http.ErrServerClosed {
+			if a.TLSCert != "" && a.TLSKey != "" {
+				if err := srv.ServeTLS(ln, a.TLSCert, a.TLSKey); err != nil && err != http.ErrServerClosed {
 					log.Printf("databricks-claude: proxy serve error: %v", err)
 				}
 			} else {
@@ -550,7 +585,7 @@ func main() {
 				close(promoteCh)
 			}
 		}
-		go health.WatchProxy(port, handler, tlsCert, tlsKey, "databricks-claude", onTakeover)
+		go health.WatchProxy(port, handler, a.TLSCert, a.TLSKey, "databricks-claude", onTakeover)
 	}
 
 	// --- Write config once (idempotent) ---
@@ -604,8 +639,8 @@ func main() {
 		otelEnv["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
 	}
 
-	if err := bootstrapSettings(portFlag, resolvedProfile, proxyURL, otelEnv); err != nil {
-		if headless {
+	if err := bootstrapSettings(a.Port, resolvedProfile, proxyURL, otelEnv); err != nil {
+		if a.Headless {
 			fmt.Fprintf(os.Stderr, "databricks-claude: warning: config write failed: %v\n", err)
 		} else {
 			log.Fatalf("databricks-claude: %v", err)
@@ -616,18 +651,18 @@ func main() {
 	log.Printf("databricks-claude: proxy on %s (owner=%v), profile=%s, upstream=%s",
 		proxyURL, isOwner, resolvedProfile, inferenceUpstream)
 
-	if headless {
+	if a.Headless {
 		runHeadless(proxyURL, ln, isOwner, refcountPath, doneCh)
 		return
 	}
 
 	// --- Synchronous update check (before child to avoid stderr interleaving) ---
-	if !noUpdateCheck && os.Getenv("DATABRICKS_NO_UPDATE_CHECK") != "1" {
+	if !a.NoUpdateCheck && os.Getenv("DATABRICKS_NO_UPDATE_CHECK") != "1" {
 		updater.PrintUpdateNotice(buildUpdaterConfig())
 	}
 
 	// --- Run child ---
-	exitCode, err := RunChild(context.Background(), claudeArgs)
+	exitCode, err := RunChild(context.Background(), a.ClaudeArgs)
 	if err != nil {
 		log.Printf("databricks-claude: child error: %v", err)
 	}
@@ -690,9 +725,11 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 // --no-otel-traces, --proxy-api-key, --tls-cert, --tls-key.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) (profile string, verbose bool, version bool, showHelp bool, printEnv bool, otel bool, otelMetricsTable string, otelMetricsTableSet bool, otelLogsTable string, otelLogsTableSet bool, otelTraces bool, otelTracesTable string, otelTracesTableSet bool, upstream string, logFile string, noOtel bool, noOtelMetrics bool, noOtelLogs bool, noOtelTraces bool, proxyAPIKey string, tlsCert string, tlsKey string, portFlag int, headless bool, idleTimeout time.Duration, installHooksFlag bool, uninstallHooksFlag bool, headlessEnsureFlag bool, headlessReleaseFlag bool, noUpdateCheck bool, claudeArgs []string) {
-	otelMetricsTable = "main.claude_telemetry.claude_otel_metrics" // default
-	idleTimeout = 30 * time.Minute                                 // default
+func parseArgs(args []string) *Args {
+	a := &Args{
+		OTELMetricsTable: "main.claude_telemetry.claude_otel_metrics", // default
+		IdleTimeout:      30 * time.Minute,                            // default
+	}
 
 	// knownFlags is defined at package level in completion_flags.go,
 	// derived from flagDefs so completions and parsing stay in sync.
@@ -703,18 +740,18 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 
 		// Explicit separator: everything after "--" goes to claude.
 		if arg == "--" {
-			claudeArgs = append(claudeArgs, args[i+1:]...)
-			return
+			a.ClaudeArgs = append(a.ClaudeArgs, args[i+1:]...)
+			return a
 		}
 
 		// Special case: -h is a short flag for --help, -v for --verbose.
 		if arg == "-h" {
-			showHelp = true
+			a.ShowHelp = true
 			i++
 			continue
 		}
 		if arg == "-v" {
-			verbose = true
+			a.Verbose = true
 			i++
 			continue
 		}
@@ -733,112 +770,112 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 				switch name {
 				case "--profile":
 					if value != "" {
-						profile = value
+						a.Profile = value
 					} else if i+1 < len(args) {
 						i++
-						profile = args[i]
+						a.Profile = args[i]
 					}
 				case "--otel-metrics-table":
 					if value != "" {
-						otelMetricsTable = value
-						otelMetricsTableSet = true
+						a.OTELMetricsTable = value
+						a.OTELMetricsTableSet = true
 					} else if i+1 < len(args) {
 						i++
-						otelMetricsTable = args[i]
-						otelMetricsTableSet = true
+						a.OTELMetricsTable = args[i]
+						a.OTELMetricsTableSet = true
 					}
 				case "--otel-logs-table":
 					if value != "" {
-						otelLogsTable = value
-						otelLogsTableSet = true
+						a.OTELLogsTable = value
+						a.OTELLogsTableSet = true
 					} else if i+1 < len(args) {
 						i++
-						otelLogsTable = args[i]
-						otelLogsTableSet = true
+						a.OTELLogsTable = args[i]
+						a.OTELLogsTableSet = true
 					}
 				case "--upstream":
 					if value != "" {
-						upstream = value
+						a.Upstream = value
 					} else if i+1 < len(args) {
 						i++
-						upstream = args[i]
+						a.Upstream = args[i]
 					}
 				case "--log-file":
 					if value != "" {
-						logFile = value
+						a.LogFile = value
 					} else if i+1 < len(args) {
 						i++
-						logFile = args[i]
+						a.LogFile = args[i]
 					}
 				case "--verbose":
-					verbose = true
+					a.Verbose = true
 				case "--version":
-					version = true
+					a.Version = true
 				case "--help":
-					showHelp = true
+					a.ShowHelp = true
 				case "--print-env":
-					printEnv = true
+					a.PrintEnv = true
 				case "--otel":
-					otel = true
+					a.OTEL = true
 				case "--otel-traces":
-					otelTraces = true
+					a.OTELTraces = true
 				case "--otel-traces-table":
 					if value != "" {
-						otelTracesTable = value
-						otelTracesTableSet = true
+						a.OTELTracesTable = value
+						a.OTELTracesTableSet = true
 					} else if i+1 < len(args) {
 						i++
-						otelTracesTable = args[i]
-						otelTracesTableSet = true
+						a.OTELTracesTable = args[i]
+						a.OTELTracesTableSet = true
 					}
 				case "--no-otel":
-					noOtel = true
+					a.NoOTEL = true
 				case "--no-otel-metrics":
-					noOtelMetrics = true
+					a.NoOTELMetrics = true
 				case "--no-otel-logs":
-					noOtelLogs = true
+					a.NoOTELLogs = true
 				case "--no-otel-traces":
-					noOtelTraces = true
+					a.NoOTELTraces = true
 				case "--proxy-api-key":
 					if value != "" {
-						proxyAPIKey = value
+						a.ProxyAPIKey = value
 					} else if i+1 < len(args) {
 						i++
-						proxyAPIKey = args[i]
+						a.ProxyAPIKey = args[i]
 					}
 				case "--tls-cert":
 					if value != "" {
-						tlsCert = value
+						a.TLSCert = value
 					} else if i+1 < len(args) {
 						i++
-						tlsCert = args[i]
+						a.TLSCert = args[i]
 					}
 				case "--tls-key":
 					if value != "" {
-						tlsKey = value
+						a.TLSKey = value
 					} else if i+1 < len(args) {
 						i++
-						tlsKey = args[i]
+						a.TLSKey = args[i]
 					}
 				case "--port":
 					if value != "" {
-						portFlag, _ = strconv.Atoi(value)
+						a.Port, _ = strconv.Atoi(value)
 					} else if i+1 < len(args) {
 						i++
-						portFlag, _ = strconv.Atoi(args[i])
+						a.Port, _ = strconv.Atoi(args[i])
 					}
 				case "--headless":
-					headless = true
+					a.Headless = true
 				case "--install-hooks":
-					installHooksFlag = true
+					a.InstallHooks = true
 				case "--uninstall-hooks":
-					uninstallHooksFlag = true
+					a.UninstallHooks = true
 				case "--headless-ensure":
-					headlessEnsureFlag = true
+					a.HeadlessEnsure = true
 				case "--headless-release":
-					headlessReleaseFlag = true
+					a.HeadlessRelease = true
 				case "--no-update-check":
-					noUpdateCheck = true
+					a.NoUpdateCheck = true
 				case "--idle-timeout":
 					raw := value
 					if raw == "" && i+1 < len(args) {
@@ -847,10 +884,10 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 					}
 					if raw != "" {
 						if d, err := time.ParseDuration(raw); err == nil {
-							idleTimeout = d
+							a.IdleTimeout = d
 						} else if mins, err := strconv.Atoi(raw); err == nil {
 							// Bare number: treat as minutes for convenience.
-							idleTimeout = time.Duration(mins) * time.Minute
+							a.IdleTimeout = time.Duration(mins) * time.Minute
 						}
 					}
 				}
@@ -860,10 +897,10 @@ func parseArgs(args []string) (profile string, verbose bool, version bool, showH
 		}
 
 		// Not a known databricks-claude flag — pass through to claude.
-		claudeArgs = append(claudeArgs, arg)
+		a.ClaudeArgs = append(a.ClaudeArgs, arg)
 		i++
 	}
-	return
+	return a
 }
 
 // handleHelp prints the databricks-claude help message and appends claude's own --help output.
