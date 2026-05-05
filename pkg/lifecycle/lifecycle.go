@@ -27,6 +27,11 @@ type Config struct {
 	// IsOwner indicates whether this process owns the listener.
 	IsOwner bool
 
+	// PromoteCh, when non-nil, is closed by the caller to signal that this
+	// process has taken over as the primary proxy owner (health-watcher
+	// takeover). After promotion, /shutdown behaves as if IsOwner were true.
+	PromoteCh <-chan struct{}
+
 	// IdleTimeout is the duration after which the proxy shuts down if no
 	// requests are received. Zero disables the idle timer.
 	IdleTimeout time.Duration
@@ -58,6 +63,23 @@ func WrapWithLifecycle(cfg Config) http.Handler {
 	var shutdownOnce sync.Once
 	triggerShutdown := func() {
 		shutdownOnce.Do(func() { close(cfg.DoneCh) })
+	}
+
+	// isOwner returns true if this process was the original owner or has been
+	// promoted to owner via PromoteCh (health-watcher takeover).
+	isOwner := func() bool {
+		if cfg.IsOwner {
+			return true
+		}
+		if cfg.PromoteCh == nil {
+			return false
+		}
+		select {
+		case <-cfg.PromoteCh:
+			return true
+		default:
+			return false
+		}
 	}
 
 	// Idle timer: fires once after IdleTimeout of inactivity.
@@ -100,7 +122,7 @@ func WrapWithLifecycle(cfg Config) http.Handler {
 		if err != nil {
 			log.Printf("%s: shutdown refcount release error: %v", cfg.LogPrefix, err)
 		}
-		exiting := remaining == 0 && cfg.IsOwner
+		exiting := remaining == 0 && isOwner()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(shutdownResponse{Remaining: remaining, Exiting: exiting})
 		if exiting {
