@@ -13,7 +13,9 @@ import (
 // WatchProxy polls the proxy health endpoint and takes over the port if the
 // owner process dies. Runs as a goroutine for non-owner sessions.
 // logPrefix is used for log messages (e.g. "databricks-claude").
-func WatchProxy(port int, handler http.Handler, tlsCert, tlsKey, logPrefix string) {
+// onTakeover, when non-nil, is called once immediately after this process
+// successfully binds the port and becomes the new primary proxy owner.
+func WatchProxy(port int, handler http.Handler, tlsCert, tlsKey, logPrefix string, onTakeover func()) {
 	scheme := "http"
 	if tlsCert != "" && tlsKey != "" {
 		scheme = "https"
@@ -37,6 +39,9 @@ func WatchProxy(port int, handler http.Handler, tlsCert, tlsKey, logPrefix strin
 			continue
 		}
 		log.Printf("%s: proxy owner died, took over on :%d", logPrefix, port)
+		if onTakeover != nil {
+			onTakeover()
+		}
 		return
 	}
 }

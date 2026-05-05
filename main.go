@@ -505,13 +505,21 @@ func main() {
 	}
 
 	// In headless mode, wrap handler with /shutdown endpoint and idle timeout.
+	// promoteCh is closed when this process wins the health-watcher election
+	// and takes over as the primary proxy owner; WrapWithLifecycle uses it to
+	// promote IsOwner so /shutdown correctly triggers shutdown after takeover.
 	var doneCh chan struct{}
+	var promoteCh chan struct{}
 	if headless {
 		doneCh = make(chan struct{})
+		if !isOwner {
+			promoteCh = make(chan struct{})
+		}
 		handler = lifecycle.WrapWithLifecycle(lifecycle.Config{
 			Inner:        handler,
 			RefcountPath: refcountPath,
 			IsOwner:      isOwner,
+			PromoteCh:    promoteCh,
 			IdleTimeout:  idleTimeout,
 			APIKey:       proxyAPIKey,
 			DoneCh:       doneCh,
@@ -535,7 +543,14 @@ func main() {
 		}()
 	} else {
 		// Watch for owner death and take over the proxy if needed.
-		go health.WatchProxy(port, handler, tlsCert, tlsKey, "databricks-claude")
+		// onTakeover closes promoteCh so the lifecycle wrapper promotes this
+		// process to owner, enabling /shutdown to trigger a clean shutdown.
+		onTakeover := func() {
+			if promoteCh != nil {
+				close(promoteCh)
+			}
+		}
+		go health.WatchProxy(port, handler, tlsCert, tlsKey, "databricks-claude", onTakeover)
 	}
 
 	// --- Write config once (idempotent) ---
