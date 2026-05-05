@@ -235,8 +235,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upstream *url.URL, 
 		io.Copy(clientConn, upstreamConn) //nolint:errcheck
 	}()
 
-	// Wait for one direction to finish, then close both.
+	// Wait for first direction to finish, then close both to unblock the other goroutine.
 	<-done
+	clientConn.Close()
+	upstreamConn.Close()
+	<-done // wait for second goroutine to finish
 
 	if config.Verbose {
 		log.Printf("databricks-claude: ws connection closed")
@@ -296,8 +299,10 @@ func NewServer(config *Config) http.Handler {
 				// than crashing; the empty bearer will be rejected by the upstream.
 				log.Printf("databricks-claude: token fetch error: %v", err)
 			}
-			req.Header.Set("Authorization", "Bearer "+token)
-			req.Header.Set("x-api-key", token) // Anthropic SDK sends x-api-key; overwrite the "proxy-managed" placeholder
+			if token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+				req.Header.Set("x-api-key", token) // Anthropic SDK sends x-api-key; overwrite the "proxy-managed" placeholder
+			}
 			req.Header.Set("x-databricks-use-coding-agent-mode", "true")
 
 			req.URL.Scheme = inferenceUpstream.Scheme
@@ -349,8 +354,10 @@ func NewServer(config *Config) http.Handler {
 			if err != nil {
 				log.Printf("databricks-claude: token fetch error (otel): %v", err)
 			}
-			req.Header.Set("Authorization", "Bearer "+token)
-			req.Header.Set("x-api-key", token)
+			if token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+				req.Header.Set("x-api-key", token)
+			}
 
 			// Pick the correct UC table based on the OTel signal in the path.
 			// Any of UCLogsTable, UCTracesTable, or UCMetricsTable may be empty
