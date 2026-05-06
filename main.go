@@ -122,7 +122,11 @@ func main() {
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
 	// Tip: use "databricks-claude -- completion" to pass "completion" to claude.
-	a := parseArgs(os.Args[1:])
+	a, err := parseArgs(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "databricks-claude:", err)
+		os.Exit(1)
+	}
 
 	if a.ShowHelp {
 		handleHelp(a.Upstream)
@@ -725,7 +729,7 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 // --no-otel-traces, --proxy-api-key, --tls-cert, --tls-key.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
-func parseArgs(args []string) *Args {
+func parseArgs(args []string) (*Args, error) {
 	a := &Args{
 		OTELMetricsTable: "main.claude_telemetry.claude_otel_metrics", // default
 		IdleTimeout:      30 * time.Minute,                            // default
@@ -741,7 +745,7 @@ func parseArgs(args []string) *Args {
 		// Explicit separator: everything after "--" goes to claude.
 		if arg == "--" {
 			a.ClaudeArgs = append(a.ClaudeArgs, args[i+1:]...)
-			return a
+			return a, nil
 		}
 
 		// Special case: -h is a short flag for --help, -v for --verbose.
@@ -885,9 +889,8 @@ func parseArgs(args []string) *Args {
 					if raw != "" {
 						if d, err := time.ParseDuration(raw); err == nil {
 							a.IdleTimeout = d
-						} else if mins, err := strconv.Atoi(raw); err == nil {
-							// Bare number: treat as minutes for convenience.
-							a.IdleTimeout = time.Duration(mins) * time.Minute
+						} else {
+							return nil, fmt.Errorf("--idle-timeout: %q is not a valid duration (use e.g. 30s, 5m, 1h)", raw)
 						}
 					}
 				}
@@ -900,7 +903,7 @@ func parseArgs(args []string) *Args {
 		a.ClaudeArgs = append(a.ClaudeArgs, arg)
 		i++
 	}
-	return a
+	return a, nil
 }
 
 // handleHelp prints the databricks-claude help message and appends claude's own --help output.
@@ -936,7 +939,7 @@ Databricks-Claude Flags:
   --headless                   Start proxy without launching claude (for IDE extensions)
   --headless-ensure            Start proxy if not running (called by SessionStart hook)
   --headless-release           Decrement proxy refcount (called by Stop hook)
-  --idle-timeout duration      Idle timeout for headless mode (default 30m, 0 disables, bare number = minutes)
+  --idle-timeout duration      Idle timeout for headless mode (default 30m, 0 disables; use e.g. 30s, 5m, 1h)
   --install-hooks              Install SessionStart/SessionEnd hooks AND perform first-run
                                env setup (idempotent). Accepts --profile and --port to
                                persist them; no prior databricks-claude invocation needed.

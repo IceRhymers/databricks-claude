@@ -63,6 +63,31 @@ func TestSanitizeLogOutput(t *testing.T) {
 			input: `x-databricks-authorization: some-pat-token`,
 			want:  `[REDACTED]`,
 		},
+		{
+			name:  "bearer token lowercase",
+			input: `bearer abc123`,
+			want:  `[REDACTED]`,
+		},
+		{
+			name:  "bearer token uppercase",
+			input: `BEARER abc123`,
+			want:  `[REDACTED]`,
+		},
+		{
+			name:  "basic auth header",
+			input: `Authorization: Basic dXNlcjpwYXNz`,
+			want:  `[REDACTED]`,
+		},
+		{
+			name:  "access_token JSON field",
+			input: `{"access_token": "eyJhbGci..."}`,
+			want:  `{[REDACTED]}`,
+		},
+		{
+			name:  "DATABRICKS_TOKEN env var",
+			input: `DATABRICKS_TOKEN=dapi1234abcd`,
+			want:  `[REDACTED]`,
+		},
 	}
 
 	for _, tt := range tests {
