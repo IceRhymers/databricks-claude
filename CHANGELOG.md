@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.17.0](https://github.com/IceRhymers/databricks-claude/compare/v0.16.0...v0.17.0) (2026-05-06)
+
+
+### Refactors
+
+* replace `parseArgs` 31-value tuple with `Args` struct — all flag values now accessed as `a.FieldName`; callers updated throughout ([6843844](https://github.com/IceRhymers/databricks-claude/commit/6843844f1c9d8c28e69e2b70b3ee78c15f49e5b))
+
+
+### Bug Fixes
+
+* remove stale proxy entries from settings.json on startup — probes existing `127.0.0.1:<port>` entries with a 200ms TCP dial and removes dead ones before writing the new URL ([8a1856b](https://github.com/IceRhymers/databricks-claude/commit/8a1856bdf2be3def5b2b4b40bc144f4f82ae49c5))
+* `pkg/proxy.NewServer` and `pkg/headless.Ensure` now return errors instead of calling `log.Fatalf`; `authcheck` resolves CLI binary via fallback dirs (fixes silent false-negative on GUI-launched sessions) ([eeaa65e](https://github.com/IceRhymers/databricks-claude/commit/eeaa65ec3ce55b032ca9fd6e5643c13b9cf4cd6b))
+* add missing sanitize patterns: case-insensitive Bearer, Basic auth, `access_token` JSON field, `DATABRICKS_TOKEN` env-var; `--idle-timeout` now rejects bare integers with a clear error ([ec2e95b](https://github.com/IceRhymers/databricks-claude/commit/ec2e95be100985df4d1a01bfa7bde1752bf2e183))
+* use `os.CreateTemp` for unique tmp filenames in settings writers — eliminates concurrent-write corruption when two processes start simultaneously ([a2d97a0](https://github.com/IceRhymers/databricks-claude/commit/a2d97a0b993f21b841346416acf7f2518b320c00))
+* broaden sanitize patterns to cover `dapi` tokens without hyphen and `X-Databricks-Authorization` header ([7cccfd8](https://github.com/IceRhymers/databricks-claude/commit/7cccfd8f9d4a9d738d3b9e9bd7e3662c9ccecae1))
+* skip `Authorization` header injection when token is empty; fix WebSocket goroutine leak (single `<-done` replaced with explicit conn close + second receive) ([b3bf297](https://github.com/IceRhymers/databricks-claude/commit/b3bf2971d403f565194c1ae33c798362a5892657))
+* properly wrap lifecycle handler on health-watcher takeover so `/shutdown` triggers clean shutdown after promotion ([17fb740](https://github.com/IceRhymers/databricks-claude/commit/17fb740b2141aef664d04ca04838ec92e2d605fa))
+
+
+### Improvements
+
+* replace hand-rolled slice-bounds prefix checks with `strings.HasPrefix`; add `https://` variant for localhost suppression; fix orphan comment in `pkg/refcount` ([219a29b](https://github.com/IceRhymers/databricks-claude/commit/219a29b))
+* align README with current CLI flags and `--print-env` output ([46a4d9b](https://github.com/IceRhymers/databricks-claude/commit/46a4d9b))
+
 ## [0.16.0](https://github.com/IceRhymers/databricks-claude/compare/v0.15.0...v0.16.0) (2026-05-04)
 
 
