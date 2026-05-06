@@ -275,7 +275,7 @@ func main() {
 	}
 
 	// --- Ensure the user is authenticated before proceeding ---
-	if err := authcheck.EnsureAuthenticated(resolvedProfile); err != nil {
+	if err := authcheck.EnsureAuthenticated(resolvedProfile, ""); err != nil {
 		log.Fatalf("databricks-claude: auth failed: %v", err)
 	}
 

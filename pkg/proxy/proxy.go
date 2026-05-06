@@ -277,17 +277,17 @@ func requireAPIKey(next http.Handler, key string) http.Handler {
 //   - /v1/logs paths   → UCLogsTable header
 //   - /v1/traces paths → UCTracesTable header
 //   - all other paths  → UCMetricsTable header (omitted if the chosen table is empty)
-func NewServer(config *Config) http.Handler {
+func NewServer(config *Config) (http.Handler, error) {
 	mux := http.NewServeMux()
 
 	inferenceUpstream, err := url.Parse(config.InferenceUpstream)
 	if err != nil {
-		log.Fatalf("databricks-claude: invalid InferenceUpstream %q: %v", config.InferenceUpstream, err)
+		return nil, fmt.Errorf("databricks-claude: invalid InferenceUpstream %q: %v", config.InferenceUpstream, err)
 	}
 
 	otelUpstream, err := url.Parse(config.OTELUpstream)
 	if err != nil {
-		log.Fatalf("databricks-claude: invalid OTELUpstream %q: %v", config.OTELUpstream, err)
+		return nil, fmt.Errorf("databricks-claude: invalid OTELUpstream %q: %v", config.OTELUpstream, err)
 	}
 
 	// Inference proxy — default route
@@ -426,7 +426,7 @@ func NewServer(config *Config) http.Handler {
 	mux.Handle("/", RecoveryHandler(inferenceHandler))
 
 	// APIKey check applies to all connections including WebSocket upgrades (used by databricks-codex)
-	return requireAPIKey(mux, config.APIKey)
+	return requireAPIKey(mux, config.APIKey), nil
 }
 
 // ValidateTLSConfig returns an error if the TLS configuration is incomplete

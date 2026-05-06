@@ -16,12 +16,14 @@ import (
 // If not, it starts a detached headless proxy and polls until ready (max 10s).
 // Called by the SessionStart hook via: databricks-claude --headless-ensure
 func headlessEnsure(port int) {
-	headless.Ensure(headless.Config{
+	if err := headless.Ensure(headless.Config{
 		Port:          port,
 		ManagedEnvVar: "DATABRICKS_CLAUDE_MANAGED",
 		LogPrefix:     "databricks-claude",
 		RefcountPath:  refcount.PathForPort(".databricks-claude-sessions", port),
-	})
+	}); err != nil {
+		log.Fatalf("databricks-claude: %v", err)
+	}
 }
 
 // headlessRelease calls POST /shutdown on the proxy to decrement the refcount.

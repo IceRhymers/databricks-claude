@@ -11,11 +11,13 @@ import (
 func TestEnsure_ManagedSessionSkips(t *testing.T) {
 	t.Setenv("DATABRICKS_CLAUDE_MANAGED", "1")
 	// Port 99999 has nothing listening. Without the guard this would fatalf.
-	Ensure(Config{
+	if err := Ensure(Config{
 		Port:          99999,
 		ManagedEnvVar: "DATABRICKS_CLAUDE_MANAGED",
 		LogPrefix:     "test",
-	})
+	}); err != nil {
+		t.Fatalf("expected no error for managed session skip, got: %v", err)
+	}
 }
 
 func TestEnsure_AlreadyHealthy(t *testing.T) {
@@ -31,11 +33,29 @@ func TestEnsure_AlreadyHealthy(t *testing.T) {
 	port := srv.Listener.Addr().(*net.TCPAddr).Port
 
 	// Should return immediately without trying to start a new proxy.
-	Ensure(Config{
+	if err := Ensure(Config{
 		Port:      port,
 		Scheme:    "http",
 		LogPrefix: "test",
+	}); err != nil {
+		t.Fatalf("expected no error when proxy is already healthy, got: %v", err)
+	}
+}
+
+// TestEnsure_BadBinaryReturnsError verifies that when the configured binary
+// does not exist, Ensure returns an error instead of calling log.Fatalf.
+func TestEnsure_BadBinaryReturnsError(t *testing.T) {
+	// Use a port with nothing listening so health check fails and Ensure tries
+	// to launch the binary.
+	err := Ensure(Config{
+		Port:       0, // port 0 will not have a healthy proxy
+		Scheme:     "http",
+		BinaryPath: "/nonexistent/path/to/binary-that-does-not-exist",
+		LogPrefix:  "test",
 	})
+	if err == nil {
+		t.Fatal("expected non-nil error when binary does not exist, got nil")
+	}
 }
 
 func TestBuildArgs_NoTLS(t *testing.T) {
