@@ -4,75 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/IceRhymers/databricks-claude/pkg/cli"
 	"github.com/IceRhymers/databricks-claude/pkg/tokencache"
 )
 
-// fallbackCLIDirs lists install locations to probe when "databricks" is not on
-// PATH. Order matters: most-likely first. GUI-launched subprocesses (e.g.
-// Claude Desktop invoking the credential helper) inherit launchd's minimal
-// PATH (/usr/bin:/bin:/usr/sbin:/sbin), which omits all of these.
-var fallbackCLIDirs = []string{
-	"/usr/local/bin",
-	"/opt/homebrew/bin",
-	"/opt/homebrew/sbin",
-	".local/bin", // resolved against $HOME
-	"go/bin",     // resolved against $HOME
-	"bin",        // resolved against $HOME
-}
-
-// resolveDatabricksCLI returns an executable path for the Databricks CLI.
-// Lookup order:
-//  1. Absolute or path-qualified cmdName → returned unchanged (back-compat for tests).
-//  2. $DATABRICKS_CLI env override, if set and executable.
-//  3. exec.LookPath(cmdName), which honors the inherited PATH.
-//  4. A scan of common install dirs (/usr/local/bin, /opt/homebrew/bin, ~/.local/bin, ~/go/bin, ~/bin).
-//
-// If none match, cmdName is returned unchanged so the eventual exec error
-// surfaces with its original message.
+// resolveDatabricksCLI delegates to pkg/cli for CLI binary resolution.
+// See pkg/cli.ResolveDatabricksCLI for the full lookup order.
 func resolveDatabricksCLI(cmdName string) string {
-	if cmdName == "" {
-		cmdName = "databricks"
-	}
-	if filepath.IsAbs(cmdName) || filepath.Base(cmdName) != cmdName {
-		return cmdName
-	}
-	if override := os.Getenv("DATABRICKS_CLI"); override != "" {
-		if isExecutableFile(override) {
-			return override
-		}
-	}
-	if p, err := exec.LookPath(cmdName); err == nil {
-		return p
-	}
-	home, _ := os.UserHomeDir()
-	for _, dir := range fallbackCLIDirs {
-		if !filepath.IsAbs(dir) {
-			if home == "" {
-				continue
-			}
-			dir = filepath.Join(home, dir)
-		}
-		candidate := filepath.Join(dir, cmdName)
-		if isExecutableFile(candidate) {
-			return candidate
-		}
-	}
-	return cmdName
-}
-
-func isExecutableFile(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	return info.Mode()&0o111 != 0
+	return cli.ResolveDatabricksCLI(cmdName)
 }
 
 // TokenProvider is an alias to the pkg type for backward compatibility.

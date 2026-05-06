@@ -40,7 +40,10 @@ func TestProxy_InjectsAuthHeader(t *testing.T) {
 		UCLogsTable:       "main.t.l",
 		TokenSource:       warmToken("test-token-123"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/messages", nil)
 	rec := httptest.NewRecorder()
@@ -67,7 +70,10 @@ func TestProxy_InjectsCustomHeaders(t *testing.T) {
 		UCLogsTable:       "main.t.l",
 		TokenSource:       warmToken("tok"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	rec := httptest.NewRecorder()
@@ -101,7 +107,10 @@ func TestProxy_RoutesDefaultToInference(t *testing.T) {
 		UCLogsTable:       "main.t.l",
 		TokenSource:       warmToken("tok"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	rec := httptest.NewRecorder()
@@ -134,7 +143,10 @@ func TestProxy_RoutesOTELPath(t *testing.T) {
 		UCLogsTable:       "main.t.l",
 		TokenSource:       warmToken("tok"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/otel/v1/metrics", nil)
 	rec := httptest.NewRecorder()
@@ -161,7 +173,10 @@ func TestProxy_PathAlgebra_Inference(t *testing.T) {
 		UCLogsTable:       "main.t.l",
 		TokenSource:       warmToken("tok"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	rec := httptest.NewRecorder()
@@ -190,7 +205,10 @@ func TestProxy_PathAlgebra_OTEL(t *testing.T) {
 		UCLogsTable:       "main.t.l",
 		TokenSource:       warmToken("tok"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/otel/v1/metrics", nil)
 	rec := httptest.NewRecorder()
@@ -220,7 +238,10 @@ func TestProxy_PreservesRequestBody(t *testing.T) {
 		UCLogsTable:       "main.t.l",
 		TokenSource:       warmToken("tok"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -281,7 +302,10 @@ func TestProxy_SSEStreaming(t *testing.T) {
 		UCLogsTable:       "main.t.l",
 		TokenSource:       warmToken("tok"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	l, err := Start(handler, "", "")
 	if err != nil {
@@ -322,7 +346,10 @@ func TestProxy_OTELTableName_Metrics(t *testing.T) {
 		UCLogsTable:       "main.telemetry.claude_otel_logs",
 		TokenSource:       warmToken("tok"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/otel/v1/metrics", nil)
 	rec := httptest.NewRecorder()
@@ -349,7 +376,10 @@ func TestProxy_OTELTableName_Logs(t *testing.T) {
 		UCLogsTable:       "main.telemetry.claude_otel_logs",
 		TokenSource:       warmToken("tok"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/otel/v1/logs", nil)
 	rec := httptest.NewRecorder()
@@ -380,7 +410,10 @@ func TestProxy_OTELTableName_MetricsEmpty(t *testing.T) {
 		UCLogsTable:       "main.telemetry.codex_otel_logs",
 		TokenSource:       warmToken("tok"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/otel/v1/metrics", nil)
 	rec := httptest.NewRecorder()
@@ -408,7 +441,10 @@ func TestProxy_OTELTableName_Traces(t *testing.T) {
 		UCTracesTable:     "main.telemetry.claude_otel_traces",
 		TokenSource:       warmToken("tok"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/otel/v1/traces", nil)
 	rec := httptest.NewRecorder()
@@ -439,7 +475,10 @@ func TestProxy_OTELTableName_TracesEmpty(t *testing.T) {
 		UCTracesTable:     "", // empty — caller does not emit traces
 		TokenSource:       warmToken("tok"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/otel/v1/traces", nil)
 	rec := httptest.NewRecorder()
@@ -494,7 +533,11 @@ func TestProxy_WebSocket_UpgradeRejectedByUpstream(t *testing.T) {
 		TokenSource:       warmToken("tok"),
 	}
 
-	l, err := Start(NewServer(cfg), "", "")
+	wsHandler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	l, err := Start(wsHandler, "", "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -536,7 +579,10 @@ func TestProxy_WebSocket_PlainHTTPNotAffected(t *testing.T) {
 		UCLogsTable:       "main.t.l",
 		TokenSource:       warmToken("plain-http-token"),
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	// No Upgrade header — this is a plain HTTP request (Claude Code path).
@@ -590,7 +636,10 @@ func TestProxy_APIKey_CorrectKey(t *testing.T) {
 		TokenSource:       warmToken("tok"),
 		APIKey:            "my-secret-key",
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	req.Header.Set("Authorization", "Bearer my-secret-key")
@@ -618,7 +667,10 @@ func TestProxy_APIKey_WrongKey(t *testing.T) {
 		TokenSource:       warmToken("tok"),
 		APIKey:            "my-secret-key",
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	req.Header.Set("Authorization", "Bearer wrong-key")
@@ -645,7 +697,10 @@ func TestProxy_APIKey_NoKeyConfigured(t *testing.T) {
 		TokenSource:       warmToken("tok"),
 		APIKey:            "", // no key — auth disabled
 	}
-	handler := NewServer(cfg)
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	// No Authorization header at all.
@@ -688,5 +743,33 @@ func TestValidateTLSConfig_NeitherSet(t *testing.T) {
 	err := ValidateTLSConfig("", "")
 	if err != nil {
 		t.Errorf("unexpected error when neither cert nor key is set: %v", err)
+	}
+}
+
+// TestNewServer_InvalidInferenceUpstream verifies that NewServer returns a
+// non-nil error for an invalid InferenceUpstream URL (no process exit).
+func TestNewServer_InvalidInferenceUpstream(t *testing.T) {
+	cfg := &Config{
+		InferenceUpstream: "://bad-url",
+		OTELUpstream:      "http://localhost",
+		TokenSource:       warmToken("tok"),
+	}
+	_, err := NewServer(cfg)
+	if err == nil {
+		t.Fatal("expected non-nil error for invalid InferenceUpstream, got nil")
+	}
+}
+
+// TestNewServer_InvalidOTELUpstream verifies that NewServer returns a
+// non-nil error for an invalid OTELUpstream URL (no process exit).
+func TestNewServer_InvalidOTELUpstream(t *testing.T) {
+	cfg := &Config{
+		InferenceUpstream: "http://localhost",
+		OTELUpstream:      "://bad-url",
+		TokenSource:       warmToken("tok"),
+	}
+	_, err := NewServer(cfg)
+	if err == nil {
+		t.Fatal("expected non-nil error for invalid OTELUpstream, got nil")
 	}
 }

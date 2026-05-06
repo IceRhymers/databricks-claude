@@ -27,13 +27,25 @@ func fakeCommand(output string, fail bool) func(name string, args ...string) *ex
 	}
 }
 
+// TestIsAuthenticated_FakeCmdNameReturnsFalse verifies that when the CLI binary
+// does not exist, IsAuthenticated returns false cleanly (no panic or fatal).
+func TestIsAuthenticated_FakeCmdNameReturnsFalse(t *testing.T) {
+	// Use the real execCommandContext with a binary that cannot be found.
+	// pkg/cli.ResolveDatabricksCLI will return the name unchanged when not found,
+	// and exec will fail with a "not found" error — IsAuthenticated must return false.
+	result := IsAuthenticated("DEFAULT", "/nonexistent/path/to/fake-databricks-binary")
+	if result {
+		t.Error("expected IsAuthenticated to return false for nonexistent binary, got true")
+	}
+}
+
 func TestIsAuthenticated_Success(t *testing.T) {
 	origCtx := execCommandContext
 	defer func() { execCommandContext = origCtx }()
 
 	execCommandContext = fakeCommandContext(`{"access_token":"dapi-xxx","token_type":"Bearer"}`, false)
 
-	if !IsAuthenticated("DEFAULT") {
+	if !IsAuthenticated("DEFAULT", "") {
 		t.Error("expected IsAuthenticated to return true when access_token is present")
 	}
 }
@@ -44,7 +56,7 @@ func TestIsAuthenticated_NoToken(t *testing.T) {
 
 	execCommandContext = fakeCommandContext(`{"error":"no token"}`, false)
 
-	if IsAuthenticated("DEFAULT") {
+	if IsAuthenticated("DEFAULT", "") {
 		t.Error("expected IsAuthenticated to return false when access_token is absent")
 	}
 }
@@ -55,7 +67,7 @@ func TestIsAuthenticated_CommandFails(t *testing.T) {
 
 	execCommandContext = fakeCommandContext("", true)
 
-	if IsAuthenticated("DEFAULT") {
+	if IsAuthenticated("DEFAULT", "") {
 		t.Error("expected IsAuthenticated to return false when command fails")
 	}
 }
@@ -66,7 +78,7 @@ func TestEnsureAuthenticated_AlreadyAuthed(t *testing.T) {
 
 	execCommandContext = fakeCommandContext(`{"access_token":"dapi-xxx"}`, false)
 
-	if err := EnsureAuthenticated("DEFAULT"); err != nil {
+	if err := EnsureAuthenticated("DEFAULT", ""); err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
 }
@@ -84,7 +96,7 @@ func TestEnsureAuthenticated_LoginFails(t *testing.T) {
 	// login command fails
 	execCommand = fakeCommand("", true)
 
-	err := EnsureAuthenticated("DEFAULT")
+	err := EnsureAuthenticated("DEFAULT", "")
 	if err == nil {
 		t.Error("expected error when login fails")
 	}
@@ -110,7 +122,7 @@ func TestEnsureAuthenticated_LoginSucceeds(t *testing.T) {
 	// login succeeds
 	execCommand = fakeCommand("login ok", false)
 
-	if err := EnsureAuthenticated("DEFAULT"); err != nil {
+	if err := EnsureAuthenticated("DEFAULT", ""); err != nil {
 		t.Errorf("expected no error after successful login, got: %v", err)
 	}
 }

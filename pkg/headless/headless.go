@@ -49,13 +49,14 @@ type Config struct {
 
 // Ensure checks whether the proxy is healthy on the given port.
 // If not, it starts a detached headless proxy and polls until ready (max 10s).
-func Ensure(cfg Config) {
+// Returns an error if the proxy cannot be started or does not become healthy.
+func Ensure(cfg Config) error {
 	if cfg.Scheme == "" {
 		cfg.Scheme = "http"
 	}
 	if cfg.ManagedEnvVar != "" && os.Getenv(cfg.ManagedEnvVar) == "1" {
 		log.Printf("%s: --headless-ensure: skipped (managed session)", cfg.LogPrefix)
-		return
+		return nil
 	}
 
 	// Acquire refcount FIRST so every ensure/release pair is symmetric.
@@ -66,7 +67,7 @@ func Ensure(cfg Config) {
 	}
 
 	if health.ProxyHealthy(cfg.Port, cfg.Scheme) {
-		return // already running, refcount incremented
+		return nil // already running, refcount incremented
 	}
 
 	self := cfg.BinaryPath
@@ -77,7 +78,7 @@ func Ensure(cfg Config) {
 			if cfg.RefcountPath != "" {
 				refcount.Release(cfg.RefcountPath) // undo acquire on failure
 			}
-			log.Fatalf("%s: --headless-ensure: cannot find self: %v", cfg.LogPrefix, err)
+			return fmt.Errorf("%s: --headless-ensure: cannot find self: %v", cfg.LogPrefix, err)
 		}
 	}
 
@@ -88,7 +89,7 @@ func Ensure(cfg Config) {
 		if cfg.RefcountPath != "" {
 			refcount.Release(cfg.RefcountPath) // undo acquire on failure
 		}
-		log.Fatalf("%s: --headless-ensure: failed to start proxy: %v", cfg.LogPrefix, err)
+		return fmt.Errorf("%s: --headless-ensure: failed to start proxy: %v", cfg.LogPrefix, err)
 	}
 	if err := cmd.Process.Release(); err != nil {
 		log.Printf("%s: --headless-ensure: release warning: %v", cfg.LogPrefix, err)
@@ -98,13 +99,13 @@ func Ensure(cfg Config) {
 	for i := 0; i < 20; i++ {
 		time.Sleep(500 * time.Millisecond)
 		if health.ProxyHealthy(cfg.Port, cfg.Scheme) {
-			return
+			return nil
 		}
 	}
 	if cfg.RefcountPath != "" {
 		refcount.Release(cfg.RefcountPath) // undo acquire on failure
 	}
-	log.Fatalf("%s: --headless-ensure: proxy did not become healthy within 10s", cfg.LogPrefix)
+	return fmt.Errorf("%s: --headless-ensure: proxy did not become healthy within 10s", cfg.LogPrefix)
 }
 
 // buildArgs constructs the CLI arguments for the detached proxy subprocess.

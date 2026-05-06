@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"net"
 	"net/http"
 
@@ -31,8 +32,10 @@ func recoveryHandler(next http.Handler) http.Handler {
 
 // NewProxyServer returns an http.Handler that routes requests to the
 // inference upstream (default) and the OTEL upstream (/otel/).
+// Panics if the upstream URLs in config are invalid — callers in main should
+// validate URLs before calling this function.
 func NewProxyServer(config *ProxyConfig) http.Handler {
-	return proxy.NewServer(&proxy.Config{
+	h, err := proxy.NewServer(&proxy.Config{
 		InferenceUpstream: config.InferenceUpstream,
 		OTELUpstream:      config.OTELUpstream,
 		UCMetricsTable:    config.UCMetricsTable,
@@ -44,6 +47,10 @@ func NewProxyServer(config *ProxyConfig) http.Handler {
 		ToolName:          config.ToolName,
 		Version:           config.Version,
 	})
+	if err != nil {
+		log.Fatalf("databricks-claude: %v", err)
+	}
+	return h
 }
 
 // ServeProxy starts the proxy on the given listener.
