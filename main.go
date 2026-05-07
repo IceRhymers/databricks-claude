@@ -1049,6 +1049,12 @@ Databricks-Claude Flags:
                                persist them; no prior databricks-claude invocation needed.
   --uninstall-hooks            Remove databricks-claude hooks from ~/.claude/settings.json
   --no-update-check            Skip the automatic update check on startup
+  --with-websearch             Enable local fulfillment of Anthropic web_search/web_fetch
+                               tools (workaround until Databricks FMAPI ships native
+                               support; saved to state). Default: disabled.
+  --websearch-backend string   Search backend when --with-websearch is enabled.
+                               Values: duckduckgo (default, zero config), none
+  --websearch-fetch-budget int Max bytes returned per web_fetch call (default 102400)
   --version                    Print version and exit
   --help, -h                   Show this help message
 
