@@ -238,10 +238,15 @@ func handleContentBlockStart(emit func([]byte) error, frame []byte, ev sseFrame,
 	}
 	bi.toolUseID = serverID
 
-	rewrittenCB := map[string]string{
-		"type": "server_tool_use",
-		"id":   serverID,
-		"name": cb.Name,
+	// Emit server_tool_use with an empty input object — input_json_delta
+	// frames will populate it client-side, mirroring how Anthropic's native
+	// server_tool_use blocks arrive over the wire. Without "input": {} some
+	// SDK consumers reject the start event.
+	rewrittenCB := map[string]any{
+		"type":  "server_tool_use",
+		"id":    serverID,
+		"name":  cb.Name,
+		"input": map[string]any{},
 	}
 	rewrittenCBBytes, _ := json.Marshal(rewrittenCB)
 
@@ -316,7 +321,34 @@ func handleContentBlockStop(ctx context.Context, emit func([]byte) error, frame 
 	delete(state.activeBlocks, probe.Index)
 
 	if bi.overflowed {
-		// Skip injection; degraded to passthrough.
+		// Inject an error result so the SDK doesn't see an orphan
+		// server_tool_use block. Without a paired web_search_tool_result
+		// the conversation state is inconsistent and follow-up turns
+		// fail to correlate.
+		errBlock, _ := anthropic.BuildWebSearchErrorBlock(bi.toolUseID, "invalid_input")
+		injectIdx := bi.rewrittenIdx + 1
+		startEvent := map[string]any{
+			"type":          "content_block_start",
+			"index":         injectIdx,
+			"content_block": json.RawMessage(errBlock),
+		}
+		startBytes, _ := json.Marshal(startEvent)
+		if err := emitFrame(emit, "content_block_start", startBytes); err != nil {
+			return err
+		}
+		stopEvent := map[string]any{
+			"type":  "content_block_stop",
+			"index": injectIdx,
+		}
+		stopBytes, _ := json.Marshal(stopEvent)
+		if err := emitFrame(emit, "content_block_stop", stopBytes); err != nil {
+			return err
+		}
+		state.indexShift++
+		state.injectedAny = true
+		if verbose {
+			log.Printf("databricks-claude: websearch: SSE injected invalid_input error block for overflowed tool_use_id=%s", bi.toolUseID)
+		}
 		return nil
 	}
 

@@ -11,9 +11,9 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 )
 
@@ -44,7 +44,7 @@ type Config struct {
 	// header is omitted for /v1/traces requests.
 	UCTracesTable string
 	TokenSource   TokenSource
-	Verbose        bool
+	Verbose       bool
 	// ToolName identifies this proxy in /health responses (e.g. "databricks-claude").
 	ToolName string
 	// Version is the build version reported by /health.

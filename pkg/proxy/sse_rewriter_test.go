@@ -47,7 +47,7 @@ type flushRecorder struct {
 	status int
 }
 
-func newFlushRecorder() *flushRecorder { return &flushRecorder{header: http.Header{}, status: 200} }
+func newFlushRecorder() *flushRecorder       { return &flushRecorder{header: http.Header{}, status: 200} }
 func (f *flushRecorder) Header() http.Header { return f.header }
 func (f *flushRecorder) Write(b []byte) (int, error) {
 	return f.body.Write(b)
@@ -169,9 +169,21 @@ func TestSSERewriter_StreamingWebSearch_InputOverflow(t *testing.T) {
 	ws := WebSearchSettings{Enabled: true, Backend: &fakeBackend{results: nil}}
 	out := runPump(t, input, ws, rewrittenTools{HasWebSearch: true})
 
-	if strings.Contains(out, `"type":"web_search_tool_result"`) {
-		t.Errorf("expected no synthetic block on overflow:\n%s", out[:min(500, len(out))])
+	// On overflow we now inject an invalid_input error block so the SDK
+	// doesn't see an orphan server_tool_use without a paired result.
+	if !strings.Contains(out, `"type":"web_search_tool_result"`) {
+		t.Errorf("expected injected error result block on overflow:\n%s", out[:minInt(500, len(out))])
 	}
+	if !strings.Contains(out, `"error_code":"invalid_input"`) {
+		t.Errorf("expected invalid_input error_code on overflow:\n%s", out[:minInt(500, len(out))])
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // TestSSERewriter_StreamingWebSearch_InvalidJSON: malformed accumulated
@@ -482,11 +494,4 @@ func TestProxy_WebSearchEnabled_StreamingResponse_RewritesToWebSearchToolResult(
 	if rec.Header().Get("Content-Type") != "text/event-stream" {
 		t.Errorf("integration: Content-Type should be preserved as text/event-stream, got %q", rec.Header().Get("Content-Type"))
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
