@@ -54,6 +54,42 @@ There are three ways to use `databricks-claude`. Most people want **session hook
 
 The two automated modes are independent — neither requires the other — and the binary supports either or both.
 
+## Web Search & Fetch (Workaround, opt-in)
+
+> ⚠️ **This is a workaround, not a permanent feature.** Databricks AI Gateway's Anthropic compatibility layer doesn't yet support Anthropic's native `web_search` and `web_fetch` server-side tools. Until that ships, this proxy can locally fulfill those tool calls so Claude Code's research workflows work against Databricks-served models.
+>
+> When Databricks ships native server-side tool support, this flag will print a deprecation warning for one minor release before being removed.
+
+Enable with:
+
+```bash
+databricks-claude --with-websearch --profile <name>
+```
+
+How it works:
+
+- The proxy detects `web_search_*` and `web_fetch_*` entries in outgoing `/v1/messages` requests and rewrites them to standard client-tool definitions named `web_search` and `web_fetch`.
+- When the model emits a `tool_use` block targeting one of those names, Claude Code's own tool loop sees an unknown tool and returns an error `tool_result` on the next turn. The proxy intercepts that `tool_result` and substitutes its own locally-fulfilled output before forwarding upstream.
+- All fulfillment is **headless** — pure stdlib HTTP, no browser process. JavaScript-rendered pages are not supported.
+- `robots.txt` is enforced per host with a session cache.
+
+Flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--with-websearch` | `false` | Enable the workaround. Persists to `~/.claude/.databricks-claude.json`. |
+| `--websearch-backend` | `duckduckgo` | Search backend. Values: `duckduckgo` (zero config, HTML scrape), `none` (disable search but keep fetch). |
+| `--websearch-fetch-budget` | `102400` (100KB) | Max bytes returned per `web_fetch` call. Larger pages are truncated. |
+
+Limitations:
+
+- No JavaScript rendering — fetched pages are static HTML only.
+- `robots.txt` blocks return an error `tool_result`; the model is told why.
+- Per-fetch byte cap defaults to 100KB to protect the context window.
+- Search backends `brave` and `searxng` are deferred to follow-up work; only `duckduckgo` and `none` are wired today.
+
+When `--with-websearch=false` (the default), the proxy forwards request bytes unchanged — there is no behavior change for users who don't opt in.
+
 ## Session Hooks (recommended)
 
 Install hooks so every Claude Code session auto-starts the proxy on startup and releases it cleanly on exit — no manual `--headless` needed. The hooks keep the proxy running for all Claude clients — including ones that don't use the `databricks-claude` wrapper directly, such as the [Claude VS Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-code) and JetBrains/IntelliJ plugin.
