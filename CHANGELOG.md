@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.19.0](https://github.com/IceRhymers/databricks-claude/compare/v0.18.0...v0.19.0) (2026-05-11)
+
+
+### Features
+
+* add setup subcommand for fleet init scripts ([30d6f43](https://github.com/IceRhymers/databricks-claude/commit/30d6f438201590baab89a70bd0c1508451d658cc))
+* **authcheck:** add EnsureAuthenticatedWithStdout for stdout-sensitive callers ([e723dce](https://github.com/IceRhymers/databricks-claude/commit/e723dced7e65748daa5c18bedfbcf8686f332fc5))
+* Desktop MDM setup subcommand + endpoint profile key + helper auto-recovery ([3ccb00a](https://github.com/IceRhymers/databricks-claude/commit/3ccb00a371ca1137961ecc4d13e0c9131c745e4c))
+* **desktop:** credential helper auto-recovers via authcheck on token miss ([24fd3cc](https://github.com/IceRhymers/databricks-claude/commit/24fd3ccfd9b11940b9c965cd30bf3db6985c617b))
+* **desktop:** emit com.icerhymers.databricks-claude MDM payload in artifacts ([50af602](https://github.com/IceRhymers/databricks-claude/commit/50af6025e0cbdf4a811ba656c61dde65ea0824a6))
+* **mdmprofile:** add darwin/windows/other MDM profile readers ([7951f2a](https://github.com/IceRhymers/databricks-claude/commit/7951f2ada54701cd1c20b2c3b09cdd25e2d9ec2d))
+
+
+### Bug Fixes
+
+* **desktop:** persist resolved profile to state in generate-config ([1f98eb0](https://github.com/IceRhymers/databricks-claude/commit/1f98eb030e3ff7a836c3fe7316953d19048b5321))
+* **desktop:** treat state.Profile=DEFAULT as unset for MDM fall-through ([c7f5b90](https://github.com/IceRhymers/databricks-claude/commit/c7f5b906a3c4ac913d92030f3bf42011f11c8dad))
+* **desktop:** treat state.Profile=DEFAULT as unset for MDM fall-through; stop persisting DEFAULT ([c2dcfc9](https://github.com/IceRhymers/databricks-claude/commit/c2dcfc9ebd756ed49e47f406e140b5ac3e079596)), closes [#148](https://github.com/IceRhymers/databricks-claude/issues/148)
+
 ## [0.18.0](https://github.com/IceRhymers/databricks-claude/compare/v0.17.0...v0.18.0) (2026-05-07)
 
 
