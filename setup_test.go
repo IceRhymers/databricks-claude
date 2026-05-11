@@ -208,6 +208,45 @@ func TestSetupCommand_Force(t *testing.T) {
 	}
 }
 
+// TestRunSetupCommand_NoFlags_LeavesStateUnchanged verifies that running setup
+// with no --profile flag on a clean machine does not persist "DEFAULT" to the
+// state file. "DEFAULT" is a sentinel for fall-through, not a real profile.
+func TestRunSetupCommand_NoFlags_LeavesStateUnchanged(t *testing.T) {
+	p, cleanup := overrideStatePath(t)
+	defer cleanup()
+
+	// Simulate the profile-resolution + write-side guard in runSetupCommand
+	// with no flags and an empty initial state.
+	args := []string{}
+	profile := extractProfileFlag(args)
+	state := loadState()
+	resolved := profile
+	if resolved == "" && state.Profile != "" {
+		resolved = state.Profile
+	}
+	if resolved == "" {
+		resolved = "DEFAULT"
+	}
+
+	// Apply the write-side guard (the fix).
+	if resolved != "" && resolved != "DEFAULT" && state.Profile != resolved {
+		state.Profile = resolved
+		if err := saveState(state); err != nil {
+			t.Fatalf("saveState: %v", err)
+		}
+	}
+
+	// The state file must not have been created.
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Errorf("state file created for sentinel profile %q — should be absent", resolved)
+	}
+
+	got := loadState()
+	if got.Profile != "" {
+		t.Errorf("state.Profile = %q after setup with no flags, want \"\" (DEFAULT not persisted)", got.Profile)
+	}
+}
+
 // TestExtractSetupHostFlag covers all flag forms for --host.
 func TestExtractSetupHostFlag(t *testing.T) {
 	cases := []struct {

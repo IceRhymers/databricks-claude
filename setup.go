@@ -48,8 +48,10 @@ func runSetupCommand(args []string) {
 	}
 
 	// Persist resolved profile so subsequent databricks-claude invocations
-	// on this machine pick up the correct workspace.
-	if state.Profile != resolved {
+	// on this machine pick up the correct workspace. Skip "DEFAULT" — it is a
+	// sentinel for "fall through the chain", not a real profile choice
+	// (mirrors ensureconfig.go:42).
+	if resolved != "" && resolved != "DEFAULT" && state.Profile != resolved {
 		state.Profile = resolved
 		if err := saveState(state); err != nil {
 			fmt.Fprintf(os.Stderr, "databricks-claude: setup: failed to persist profile: %v\n", err)

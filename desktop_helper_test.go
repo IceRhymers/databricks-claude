@@ -220,6 +220,70 @@ func TestRunCredentialHelper_ColdCache_LoginFail(t *testing.T) {
 	}
 }
 
+// TestRunCredentialHelper_StateDefault_MDMPopulated_UsesMDM verifies that
+// when state.Profile is the "DEFAULT" sentinel AND MDM supplies a profile,
+// resolveCredHelperProfile advances past state and returns the MDM value.
+func TestRunCredentialHelper_StateDefault_MDMPopulated_UsesMDM(t *testing.T) {
+	_, cleanup := overrideStatePath(t)
+	defer cleanup()
+
+	// Seed state with the stale sentinel.
+	if err := saveState(persistentState{Profile: "DEFAULT"}); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+
+	orig := mdmReader
+	defer func() { mdmReader = orig }()
+	mdmReader = func(string) (string, error) { return "fleet-profile", nil }
+
+	got := resolveCredHelperProfile("")
+	if got != "fleet-profile" {
+		t.Errorf("resolveCredHelperProfile = %q, want fleet-profile (MDM must win over stale DEFAULT state)", got)
+	}
+}
+
+// TestRunCredentialHelper_StateDefault_NoMDM_FallsThroughToDEFAULT verifies
+// that when state.Profile is the sentinel AND MDM is empty, the helper still
+// falls through to "DEFAULT" — no regression on the no-config case.
+func TestRunCredentialHelper_StateDefault_NoMDM_FallsThroughToDEFAULT(t *testing.T) {
+	_, cleanup := overrideStatePath(t)
+	defer cleanup()
+
+	if err := saveState(persistentState{Profile: "DEFAULT"}); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+
+	orig := mdmReader
+	defer func() { mdmReader = orig }()
+	mdmReader = func(string) (string, error) { return "", nil }
+
+	got := resolveCredHelperProfile("")
+	if got != "DEFAULT" {
+		t.Errorf("resolveCredHelperProfile = %q, want DEFAULT (fall-through when MDM empty)", got)
+	}
+}
+
+// TestRunCredentialHelper_RealProfile_MDMPopulated_StateWins verifies that a
+// real profile in state beats MDM — the local admin's explicit choice wins
+// over fleet MDM (resolution order: flag > state > MDM > "DEFAULT").
+func TestRunCredentialHelper_RealProfile_MDMPopulated_StateWins(t *testing.T) {
+	_, cleanup := overrideStatePath(t)
+	defer cleanup()
+
+	if err := saveState(persistentState{Profile: "fevm"}); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+
+	orig := mdmReader
+	defer func() { mdmReader = orig }()
+	mdmReader = func(string) (string, error) { return "fleet-profile", nil }
+
+	got := resolveCredHelperProfile("")
+	if got != "fevm" {
+		t.Errorf("resolveCredHelperProfile = %q, want fevm (state beats MDM for real profiles)", got)
+	}
+}
+
 // ensureAuthForHelper is a thin test helper that calls
 // authcheck.EnsureAuthenticatedWithStdout through the public API.
 func ensureAuthForHelper(profile, cliPath string, w io.Writer) error {

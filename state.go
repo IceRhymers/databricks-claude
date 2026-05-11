@@ -10,6 +10,9 @@ import (
 // persistentState is the JSON schema for ~/.claude/.databricks-claude.json.
 // This file survives config restores and persists across sessions.
 type persistentState struct {
+	// Profile is the Databricks CLI profile name. Never stored as "DEFAULT" —
+	// that is a sentinel meaning "fall through the resolution chain", not a
+	// real user choice. Writers must guard: resolved != "" && resolved != "DEFAULT".
 	Profile string `json:"profile,omitempty"`
 	Port    int    `json:"port,omitempty"`
 	// DatabricksCLIPath pins the absolute path to the `databricks` CLI binary.
