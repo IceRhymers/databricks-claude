@@ -13,6 +13,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
+	"github.com/IceRhymers/databricks-claude/pkg/mdmprofile"
 )
 
 // helperDebugLog appends a single diagnostic line to
@@ -193,6 +196,16 @@ func runCredentialHelper(profile string) {
 	resolved := profile
 	if resolved == "" && state.Profile != "" {
 		resolved = state.Profile
+		helperDebugLog("profile from state file=%q", resolved)
+	}
+	if resolved == "" {
+		// Check MDM-managed preferences before falling back to DEFAULT.
+		// On darwin this reads /Library/Managed Preferences/<user>/com.icerhymers.databricks-claude.plist;
+		// on windows it reads HKCU\SOFTWARE\IceRhymers\databricks-claude\databricksProfile.
+		if mdmProfile, err := mdmprofile.Read("com.icerhymers.databricks-claude"); err == nil && mdmProfile != "" {
+			resolved = mdmProfile
+			helperDebugLog("profile from MDM=%q", resolved)
+		}
 	}
 	if resolved == "" {
 		resolved = "DEFAULT"
@@ -202,11 +215,27 @@ func runCredentialHelper(profile string) {
 	// state.DatabricksCLIPath ("" → fall through to PATH/fallback scan in
 	// resolveDatabricksCLI) overrides the default "databricks" lookup.
 	tp := NewTokenProvider(resolved, state.DatabricksCLIPath)
+	helperDebugLog("tp.Token first attempt profile=%q", resolved)
 	tok, err := tp.Token(context.Background())
 	if err != nil {
-		helperDebugLog("FAIL profile=%q err=%v", resolved, err)
-		fmt.Fprintf(os.Stderr, "databricks-claude: credential helper failed: %v\n", err)
-		os.Exit(1)
+		helperDebugLog("tp.Token first attempt FAIL profile=%q err=%v — invoking EnsureAuthenticated", resolved, err)
+		// Route login subprocess stdout to our stderr so Desktop's bare-token
+		// contract on our stdout is preserved.
+		if authErr := authcheck.EnsureAuthenticatedWithStdout(resolved, state.DatabricksCLIPath, os.Stderr); authErr != nil {
+			helperDebugLog("EnsureAuthenticated FAIL profile=%q err=%v", resolved, authErr)
+			fmt.Fprintf(os.Stderr, "databricks-claude: credential helper authentication failed: %v\n", authErr)
+			os.Exit(1)
+		}
+		helperDebugLog("tp.Token retry profile=%q", resolved)
+		tok, err = tp.Token(context.Background())
+		if err != nil {
+			helperDebugLog("tp.Token retry FAIL profile=%q err=%v", resolved, err)
+			fmt.Fprintf(os.Stderr, "databricks-claude: credential helper failed after re-authentication: %v\n", err)
+			os.Exit(1)
+		}
+		helperDebugLog("tp.Token retry OK profile=%q", resolved)
+	} else {
+		helperDebugLog("tp.Token first attempt OK profile=%q", resolved)
 	}
 	tok = strings.TrimSpace(tok)
 	if tok == "" {
