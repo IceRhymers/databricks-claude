@@ -260,6 +260,18 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databrick
 		resolved = "DEFAULT"
 	}
 
+	// Persist resolved profile so subsequent local databricks-claude invocations
+	// on the generating machine (without --profile) use the same workspace.
+	{
+		st := loadState()
+		if st.Profile != resolved {
+			st.Profile = resolved
+			if err := saveState(st); err != nil {
+				fmt.Fprintf(os.Stderr, "databricks-claude: warning: failed to persist profile to state: %v\n", err)
+			}
+		}
+	}
+
 	// Validate and persist the databricks-cli-path BEFORE network calls so a
 	// bad path fails fast.
 	if databricksCLIPath != "" {
