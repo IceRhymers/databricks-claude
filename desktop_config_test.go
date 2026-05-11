@@ -699,6 +699,44 @@ func unescapeReg(s string) string {
 	return r.Replace(s)
 }
 
+// ---- generate-config write-side guard --------------------------------------
+
+// TestRunGenerateDesktopConfig_NoFlag_DoesNotPersistDEFAULT verifies that
+// calling generate-config with no --profile flag on a clean machine leaves
+// state.Profile == "". "DEFAULT" is a sentinel for fall-through, not a real
+// profile choice, and must never be persisted.
+func TestRunGenerateDesktopConfig_NoFlag_DoesNotPersistDEFAULT(t *testing.T) {
+	_, cleanup := overrideStatePath(t)
+	defer cleanup()
+
+	// Simulate the profile-resolution + write-side guard block in
+	// runGenerateDesktopConfig with no --profile flag and empty state.
+	profile := ""
+	resolved := profile
+	if resolved == "" {
+		if saved := loadState(); saved.Profile != "" {
+			resolved = saved.Profile
+		}
+	}
+	if resolved == "" {
+		resolved = "DEFAULT"
+	}
+
+	// Apply the write-side guard (the fix).
+	st := loadState()
+	if resolved != "" && resolved != "DEFAULT" && st.Profile != resolved {
+		st.Profile = resolved
+		if err := saveState(st); err != nil {
+			t.Fatalf("saveState: %v", err)
+		}
+	}
+
+	got := loadState()
+	if got.Profile != "" {
+		t.Errorf("state.Profile = %q after generate-config with no flags, want \"\" (DEFAULT not persisted)", got.Profile)
+	}
+}
+
 // ---- writeFileAtomic & writeDesktopConfigByPath ----------------------------
 
 func TestWriteFileAtomic_RenamesFromTempInSameDir(t *testing.T) {

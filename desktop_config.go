@@ -178,12 +178,43 @@ Examples:
 `)
 }
 
+// mdmReader is the MDM profile-reader function. Overridable in tests so the
+// credential-helper resolution chain can be exercised on linux/CI without
+// requiring a real darwin/windows managed-prefs surface.
+var mdmReader = mdmprofile.Read
+
+// resolveCredHelperProfile implements the flag → state → MDM → "DEFAULT"
+// resolution chain. A "DEFAULT" value in state.Profile is treated as empty so
+// a stale state file cannot permanently bypass the MDM tier.
+func resolveCredHelperProfile(profile string) string {
+	state := loadState()
+	resolved := profile
+	if resolved == "" {
+		if state.Profile != "" && state.Profile != "DEFAULT" {
+			resolved = state.Profile
+			helperDebugLog("profile from state file=%q", resolved)
+		} else if state.Profile == "DEFAULT" {
+			helperDebugLog("state.Profile=DEFAULT skipped (sentinel)")
+		}
+	}
+	if resolved == "" {
+		if mdmProfile, err := mdmReader("com.icerhymers.databricks-claude"); err == nil && mdmProfile != "" {
+			resolved = mdmProfile
+			helperDebugLog("profile from MDM=%q", resolved)
+		}
+	}
+	if resolved == "" {
+		resolved = "DEFAULT"
+	}
+	return resolved
+}
+
 // runCredentialHelper fetches a fresh Databricks OAuth token and writes only
 // the raw token to stdout. Intended to be called by Claude Desktop via the
 // inferenceCredentialHelper MDM key. Stays silent on stderr on success.
 //
-// Profile resolution mirrors the main flow: explicit --profile flag > saved
-// state file > "DEFAULT".
+// Profile resolution: explicit --profile flag > saved state file (skipping the
+// "DEFAULT" sentinel) > MDM managed preferences > "DEFAULT".
 func runCredentialHelper(profile string) {
 	// Suppress all stdlib logging so the upstream tokencache cannot leak
 	// anything onto stderr while Claude Desktop is watching.
@@ -192,24 +223,8 @@ func runCredentialHelper(profile string) {
 	helperDebugLog("invoked args=%q HOME=%q PATH=%q USER=%q",
 		os.Args, os.Getenv("HOME"), os.Getenv("PATH"), os.Getenv("USER"))
 
+	resolved := resolveCredHelperProfile(profile)
 	state := loadState()
-	resolved := profile
-	if resolved == "" && state.Profile != "" {
-		resolved = state.Profile
-		helperDebugLog("profile from state file=%q", resolved)
-	}
-	if resolved == "" {
-		// Check MDM-managed preferences before falling back to DEFAULT.
-		// On darwin this reads /Library/Managed Preferences/<user>/com.icerhymers.databricks-claude.plist;
-		// on windows it reads HKCU\SOFTWARE\IceRhymers\databricks-claude\databricksProfile.
-		if mdmProfile, err := mdmprofile.Read("com.icerhymers.databricks-claude"); err == nil && mdmProfile != "" {
-			resolved = mdmProfile
-			helperDebugLog("profile from MDM=%q", resolved)
-		}
-	}
-	if resolved == "" {
-		resolved = "DEFAULT"
-	}
 	helperDebugLog("profile resolved=%q (input=%q) cli_path=%q", resolved, profile, state.DatabricksCLIPath)
 
 	// state.DatabricksCLIPath ("" → fall through to PATH/fallback scan in
@@ -291,9 +306,11 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databrick
 
 	// Persist resolved profile so subsequent local databricks-claude invocations
 	// on the generating machine (without --profile) use the same workspace.
+	// Skip when resolved is "" or "DEFAULT" — that is a sentinel meaning
+	// "fall through the chain", not a real user choice (mirrors ensureconfig.go:42).
 	{
 		st := loadState()
-		if st.Profile != resolved {
+		if resolved != "" && resolved != "DEFAULT" && st.Profile != resolved {
 			st.Profile = resolved
 			if err := saveState(st); err != nil {
 				fmt.Fprintf(os.Stderr, "databricks-claude: warning: failed to persist profile to state: %v\n", err)
