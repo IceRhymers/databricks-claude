@@ -1069,6 +1069,10 @@ Subcommands:
   update                       Check for a newer release and print upgrade instructions
   desktop <action>             Claude Desktop integration. Run 'databricks-claude desktop'
                                for actions (generate-config, credential-helper) and flags.
+  setup [flags]                Idempotent auth bootstrap. Persists the profile to state and
+                               runs 'databricks auth login' when not authenticated. Designed
+                               for fleet init scripts and per-user login agents.
+                               Run 'databricks-claude setup --help' for flags.
 
 Example Unity Catalog table setup (run in a Databricks SQL warehouse):
 

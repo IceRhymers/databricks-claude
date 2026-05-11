@@ -357,6 +357,46 @@ echo 'alias claude="databricks-claude"' >> ~/.zshrc  # or ~/.bashrc
 
 Claude Desktop integration lives under the `desktop` subcommand — run `databricks-claude desktop` for its action list and flags.
 
+## `setup` Subcommand
+
+Idempotent auth bootstrap. Persists the active profile to `~/.claude/.databricks-claude.json` and runs `databricks auth login` only when the profile isn't already authenticated. Safe to re-run on every login — designed for fleet init scripts and per-user LaunchAgents / login-trigger scripts.
+
+```bash
+# First-time bootstrap on a new endpoint:
+databricks-claude setup \
+  --profile databricks-ai-inference \
+  --host https://my-ai-workspace.cloud.databricks.com
+
+# Idempotent re-run (no-op when authed) — safe in a LaunchAgent:
+databricks-claude setup --profile databricks-ai-inference
+
+# Force a re-login (switched workspaces, or revoked the old token):
+databricks-claude setup --profile databricks-ai-inference --force
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--profile NAME` | Databricks CLI profile to bootstrap (default: saved state > `"DEFAULT"`) |
+| `--host URL` | Workspace URL, forwarded verbatim to `databricks auth login --host` on first login |
+| `--force` | Always re-run `databricks auth login` even when already authenticated |
+| `--help`, `-h` | Show subcommand help |
+
+**Behaviour:**
+
+1. Resolve profile (flag → saved state → `"DEFAULT"`) and persist it to the state file so subsequent `databricks-claude` invocations (including the Claude Desktop credential helper) pick it up.
+2. If already authenticated for that profile and `--force` was not passed: print a success line and exit 0 without spawning a browser.
+3. Otherwise exec `databricks auth login --profile X [--host Y]` with attached stdin/stdout/stderr (interactive browser OAuth flow).
+4. Re-check authentication. Exit 0 on success, non-zero on failure.
+
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| 0 | Already authenticated, or login succeeded |
+| 1 | State write failed, auth login failed, or still unauthenticated after login |
+
+`setup` is the same auth flow the credential helper uses for daily token recovery — running it proactively in a fleet init script keeps users from seeing the recovery browser tab on their first Claude Desktop launch.
+
 ## Headless Mode
 
 `--headless` starts the proxy without launching a `claude` child process, for use by IDE extensions and external tooling.
