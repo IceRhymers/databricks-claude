@@ -128,7 +128,11 @@ func TestRenderUnit_DATABRICKS_CLI_EnvSet(t *testing.T) {
 }
 
 // TestRenderUnit_DATABRICKS_CLI_AbsentWhenEmpty verifies that no Environment=
-// line is emitted when cliPath is empty (the default fallback).
+// line is emitted when cliPath is empty (the default fallback), AND that the
+// resulting [Service] block has no leftover blank line where the conditional
+// template branch would have rendered. Asserts exact equality of the relevant
+// stanza to lock in whitespace behavior — non-containment alone wouldn't
+// catch a stray newline from a future template refactor.
 func TestRenderUnit_DATABRICKS_CLI_AbsentWhenEmpty(t *testing.T) {
 	opts := installOptions{
 		binPath: "/usr/local/bin/databricks-claude",
@@ -144,5 +148,11 @@ func TestRenderUnit_DATABRICKS_CLI_AbsentWhenEmpty(t *testing.T) {
 
 	if strings.Contains(out, "DATABRICKS_CLI") {
 		t.Errorf("unit should not contain DATABRICKS_CLI when cliPath is empty\nfull output:\n%s", out)
+	}
+	// Lock in exact [Service]→ExecStart adjacency — no blank lines between
+	// "Type=simple" and "ExecStart=" when the conditional branch is skipped.
+	wantSnippet := "[Service]\nType=simple\nExecStart=/usr/local/bin/databricks-claude serve --port=49153 --profile=prod --log-file=/tmp/serve.log\nRestart=on-failure"
+	if !strings.Contains(out, wantSnippet) {
+		t.Errorf("unit [Service] block has unexpected whitespace when cliPath is empty\nwant snippet:\n%s\n\nfull output:\n%s", wantSnippet, out)
 	}
 }

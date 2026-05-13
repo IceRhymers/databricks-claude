@@ -492,7 +492,7 @@ By default, `serve install` verifies that the resolved profile has a valid Datab
 
 After install, a `/health` probe runs against `127.0.0.1:<port>` with a 10-second deadline to verify the daemon actually came up healthy. On timeout, the install command surfaces a diagnostics tail (`journalctl --user` on Linux, `launchctl print` plus the daemon stderr log on macOS) to stderr — but **does not auto-uninstall**. The unit file stays put so you can debug it. Re-running `serve install` is idempotent.
 
-**Limitation**: install must be run as the user the daemon will run as. Running `sudo databricks-claude serve install` writes a systemd unit owned by root or a LaunchAgent under `/Library/LaunchAgents`, neither of which is what the per-user `serve` design intends. MDM fleet rollouts that need cross-user install are out of scope for this command; deploy a system-wide LaunchDaemon or systemd system unit manually if you need that.
+**Limitation**: install must be run as the user the daemon will run as. Running `sudo databricks-claude serve install` writes a systemd unit owned by root or a LaunchAgent under `/Library/LaunchAgents`, neither of which is what the per-user `serve` design intends. If you need to install for a different user from a privileged shell, use `sudo -u <user> -- databricks-claude serve install` so the unit/plist lands in that user's `$HOME`. MDM fleet rollouts that need cross-user install at scale are out of scope for this command; deploy a system-wide LaunchDaemon or systemd system unit manually if you need that.
 
 #### Status / removal
 

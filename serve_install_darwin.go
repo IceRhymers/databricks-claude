@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"os/exec"
@@ -270,7 +271,12 @@ func daemonStatus(port int) (statusResult, error) {
 		if strings.Contains(s, "state = running") {
 			r.Running = true
 		}
-		// Extract last exit code.
+		// Extract last exit code. A clean exit ("0") or a sentinel
+		// ("(never exited)") is intentionally not surfaced — we only
+		// flag last-exit when it's actionable evidence of a crash-loop.
+		// One consequence: printStatusResult's `Last exit: 0` line is
+		// unreachable on darwin, which is fine — successful exits
+		// belong in the "Running: yes" rendering, not as a footnote.
 		for _, line := range strings.Split(s, "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, "last exit code = ") {
@@ -301,6 +307,13 @@ func daemonStatus(port int) (statusResult, error) {
 // daemon to aid post-install probe failure diagnosis. Returns ("", nil) when
 // neither source produced useful output — callers treat empty as "no
 // diagnostics available" and continue.
+//
+// SECURITY: `launchctl print` dumps the agent's configured environment
+// variables. We only ever set DATABRICKS_CLI (a path, not a secret); if a
+// future change ever adds a token or any other secret to the plist's
+// EnvironmentVariables dict, it will be surfaced verbatim here and end up in
+// any CI/MDM log capture. NEVER bake secrets into plist EnvironmentVariables
+// — use the token cache + the credential helper instead.
 func diagnosticsTail() (string, error) {
 	var parts []string
 
@@ -311,34 +324,77 @@ func diagnosticsTail() (string, error) {
 		parts = append(parts, "launchctl print:\n"+strings.TrimSpace(string(out)))
 	}
 
-	// Also tail the daemon's stderr log file if we can guess its path. The
-	// default lives under ~/Library/Logs/databricks-claude-daemon/serve.log;
-	// the actual path is overridable at install time, so we read the plist
-	// to find StandardErrorPath.
+	// Also tail the daemon's stderr log file. Parse the plist properly
+	// (encoding/xml + plist's key/value pairing) rather than substring
+	// scraping — a future plist key whose *value* contained the string
+	// "StandardErrorPath" would otherwise yield the wrong path.
 	if plist, err := plistPath(); err == nil {
-		if data, err := os.ReadFile(plist); err == nil {
-			s := string(data)
-			// crude scan for <key>StandardErrorPath</key><string>PATH</string>
-			marker := "<key>StandardErrorPath</key>"
-			if idx := strings.Index(s, marker); idx >= 0 {
-				tail := s[idx+len(marker):]
-				if openIdx := strings.Index(tail, "<string>"); openIdx >= 0 {
-					tail = tail[openIdx+len("<string>"):]
-					if closeIdx := strings.Index(tail, "</string>"); closeIdx >= 0 {
-						logPath := strings.TrimSpace(tail[:closeIdx])
-						if logData, err := os.ReadFile(logPath); err == nil {
-							lines := strings.Split(strings.TrimRight(string(logData), "\n"), "\n")
-							start := len(lines) - 50
-							if start < 0 {
-								start = 0
-							}
-							parts = append(parts, "stderr log tail ("+logPath+"):\n"+strings.Join(lines[start:], "\n"))
-						}
-					}
+		if logPath := readPlistStringKey(plist, "StandardErrorPath"); logPath != "" {
+			if logData, err := os.ReadFile(logPath); err == nil {
+				lines := strings.Split(strings.TrimRight(string(logData), "\n"), "\n")
+				start := len(lines) - 50
+				if start < 0 {
+					start = 0
 				}
+				parts = append(parts, "stderr log tail ("+logPath+"):\n"+strings.Join(lines[start:], "\n"))
 			}
 		}
 	}
 
 	return strings.Join(parts, "\n\n"), nil
+}
+
+// readPlistStringKey reads the value associated with key from an Apple
+// property-list XML file at path. Returns "" if the file can't be read,
+// isn't valid plist XML, or the key isn't present at the top-level <dict>.
+// Only handles the <key>NAME</key><string>VALUE</string> case — sufficient
+// for the LaunchAgent fields we emit. Nested dicts and array values are
+// not supported (we don't emit any).
+func readPlistStringKey(path, key string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	depth := 0
+	var pendingKey string
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			if t.Name.Local == "dict" {
+				depth++
+				continue
+			}
+			// Only consume key/string pairs at the top-level dict to
+			// avoid matching nested-dict entries (e.g. KeepAlive's
+			// SuccessfulExit) with the same name.
+			if depth != 1 {
+				continue
+			}
+			switch t.Name.Local {
+			case "key":
+				var s string
+				if err := dec.DecodeElement(&s, &t); err == nil {
+					pendingKey = s
+				}
+			case "string":
+				var s string
+				if err := dec.DecodeElement(&s, &t); err == nil && pendingKey == key {
+					return strings.TrimSpace(s)
+				}
+				pendingKey = ""
+			default:
+				// Any non-string value flushes the pending key.
+				pendingKey = ""
+			}
+		case xml.EndElement:
+			if t.Name.Local == "dict" {
+				depth--
+			}
+		}
+	}
 }

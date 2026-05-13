@@ -235,9 +235,17 @@ func runServe(args []string) {
 	// kickstart / schtasks /run) without prior auth, fail loudly here rather
 	// than spawning a browser prompt under a service manager with no tty —
 	// which would crash-loop until the systemd start-limit gives up.
+	//
+	// Recovery paths the user has, in order of preference:
+	//   1. `databricks-claude serve install` from a tty (re-runs the gate)
+	//   2. `databricks auth login --profile <name>` then restart the daemon
+	// Both work after a `serve install --skip-auth-check` deferred-auth
+	// install — the daemon will simply refuse to start until one of them
+	// completes.
 	if !authcheck.IsAuthenticated(resolvedProfile, "") {
 		log.Fatalf("databricks-claude: serve: profile %q is not authenticated — daemon cannot prompt; "+
-			"run `databricks-claude serve install` from a tty or `databricks auth login --profile %s` first",
+			"run `databricks-claude serve install` from a tty, or `databricks auth login --profile %s` "+
+			"then restart the daemon (this is the expected next step after `serve install --skip-auth-check`)",
 			resolvedProfile, resolvedProfile)
 	}
 

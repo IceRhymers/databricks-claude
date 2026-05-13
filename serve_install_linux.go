@@ -232,14 +232,13 @@ func daemonStatus(port int) (statusResult, error) {
 			case strings.HasPrefix(line, "Result="):
 				result := strings.TrimPrefix(line, "Result=")
 				if result != "" && result != "success" {
-					r.FailureDetail = "result=" + result
 					// A non-success Result without is-failed=true can
-					// happen mid-restart-loop; still mark as failed so the
-					// renderer flags it.
-					if result != "success" {
-						r.Failed = true
-						r.Running = false
-					}
+					// happen mid-restart-loop; mark as failed so the
+					// renderer flags it regardless of which signal we
+					// caught first.
+					r.FailureDetail = "result=" + result
+					r.Failed = true
+					r.Running = false
 				}
 			case strings.HasPrefix(line, "ExecMainStatus="):
 				code := strings.TrimPrefix(line, "ExecMainStatus=")

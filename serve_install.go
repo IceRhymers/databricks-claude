@@ -253,13 +253,15 @@ func runInstall(args []string) {
 	// $DATABRICKS_CLI ensures the daemon finds the same CLI the install ran.
 	cliPath := cli.ResolveDatabricksCLI(st.DatabricksCLIPath)
 	cliPathResolved := ""
-	if _, err := os.Stat(cliPath); err == nil {
-		// ResolveDatabricksCLI returned either a fallback dir hit or the
-		// $DATABRICKS_CLI override — both already absolute. If it returned
-		// "databricks" verbatim (PATH lookup), stat will fail; keep empty.
-		if filepath.IsAbs(cliPath) {
-			cliPathResolved = cliPath
-		}
+	if _, err := os.Stat(cliPath); err == nil && filepath.IsAbs(cliPath) {
+		// ResolveDatabricksCLI returns an absolute path in every tier that
+		// actually located the binary ($DATABRICKS_CLI override, PATH hit
+		// via exec.LookPath, fallback-dir scan). It only returns the
+		// verbatim string "databricks" when every tier missed — that's
+		// neither stat-able nor absolute, so it correctly leaves
+		// cliPathResolved empty (and the daemon falls back to the same
+		// resolver chain at runtime).
+		cliPathResolved = cliPath
 	}
 
 	// Install-time pre-auth gate.
@@ -504,6 +506,13 @@ manifest. When stdin is a tty, an unauthenticated profile triggers the
 interactive 'databricks auth login' flow. When stdin is not a tty, the
 install aborts with an actionable error instead of writing a guaranteed-
 broken unit. Use --skip-auth-check to bypass this gate.
+
+Windows note: stdin is conservatively treated as non-interactive on this
+platform regardless of how 'serve install' was invoked (cmd.exe interactive
+sessions included), because os.ModeCharDevice semantics differ on Windows
+and the typical deployment is schtasks-driven. Run 'databricks auth login
+--profile <name>' yourself before 'serve install', or pass --skip-auth-check
+to defer auth seeding until later.
 
 macOS note: if the binary is unsigned, a Gatekeeper warning is printed but
 the install proceeds. Run 'xattr -dr com.apple.quarantine <binary>' or sign

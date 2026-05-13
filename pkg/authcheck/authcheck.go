@@ -79,7 +79,7 @@ func EnsureOrCheck(profile, cmdName string, interactive bool) error {
 		return nil
 	}
 	if !interactive {
-		return fmt.Errorf("profile %q is not authenticated and stdin is not a tty (run `databricks auth login --profile %s` first, or pass --skip-auth-check to defer)", profile, profile)
+		return fmt.Errorf("not authenticated for profile %q (run `databricks auth login --profile %s` first, or pass --skip-auth-check to defer)", profile, profile)
 	}
 	return EnsureAuthenticated(profile, cmdName)
 }

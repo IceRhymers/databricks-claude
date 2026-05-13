@@ -20,10 +20,10 @@ func daemonStatus(_ int) (statusResult, error) {
 }
 
 // diagnosticsTail is a no-op on non-tier-1 platforms (freebsd/openbsd/etc.).
-// Returning ("", nil) is required so the install path on those platforms
-// doesn't break compilation — the per-OS dispatch already errors out at
-// installDaemon before we'd ever call this, but the cross-OS install code
-// references diagnosticsTail unconditionally.
+// On unsupported platforms installDaemon already returns an error before
+// runInstall ever reaches the post-install probe, so this function is in
+// practice unreachable; the stub exists purely so the cross-platform install
+// code (which references diagnosticsTail unconditionally) compiles.
 func diagnosticsTail() (string, error) {
 	return "", nil
 }

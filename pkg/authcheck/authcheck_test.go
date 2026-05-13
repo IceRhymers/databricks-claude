@@ -303,15 +303,22 @@ func TestEnsureOrCheck_UnauthedNonInteractive(t *testing.T) {
 	}
 }
 
-// TestEnsureOrCheck_CLINotFound verifies that a missing CLI binary is reported
-// as not-authenticated (IsAuthenticated returns false → non-interactive path
-// returns an error). This guards against the install path silently treating a
-// missing CLI as "no auth needed".
+// TestEnsureOrCheck_CLINotFound verifies that when the CLI subprocess fails
+// (binary missing, exec error, etc.) IsAuthenticated returns false and
+// EnsureOrCheck in non-interactive mode propagates that as a structured error
+// — guarding against the install path silently treating an unreachable CLI as
+// "no auth needed". Mocked via execCommandContext for consistency with the
+// other tests in this file (no real exec required).
 func TestEnsureOrCheck_CLINotFound(t *testing.T) {
-	// Use real exec (no stub) against a definitely-missing binary so the
-	// underlying `databricks auth token` invocation truly fails.
-	err := EnsureOrCheck("DEFAULT", "/nonexistent/path/to/fake-databricks-binary", false)
+	origCtx := execCommandContext
+	defer func() { execCommandContext = origCtx }()
+
+	// Simulate the CLI binary failing to execute (the exec.Command("false")
+	// pathway mirrors what os.Stat-of-missing-binary would produce upstream).
+	execCommandContext = fakeCommandContext("", true)
+
+	err := EnsureOrCheck("DEFAULT", "", false)
 	if err == nil {
-		t.Error("expected error when CLI binary is missing in non-interactive mode")
+		t.Error("expected error when CLI subprocess fails in non-interactive mode")
 	}
 }
