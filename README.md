@@ -510,6 +510,39 @@ databricks-claude serve uninstall
 
 > **Linux user-session note:** `systemd --user` services run inside your login session. If you log out, the daemon stops — it restarts automatically on your next login. This is correct behavior for interactive per-user deployments. If you want the daemon to survive all logouts, run `loginctl enable-linger` first (requires your admin's approval on managed devices). This is not done automatically.
 
+### Using `serve` with Claude Code
+
+Once you've installed the daemon (`serve install`), Claude Code still needs to know to talk to it. Rather than hand-editing `~/.claude/settings.json` and getting model names wrong as Databricks ships new ones, **let the wrapper bootstrap your settings once**:
+
+```bash
+# 1. One-time: bootstrap settings.json with the right env block
+#    (proxy URL, fake auth token, Databricks model routing, custom headers).
+databricks-claude --headless
+#    Wait for: PROXY_URL=http://127.0.0.1:49153
+#    Then stop it (Ctrl+C).
+
+# 2. Start the daemon as a service (or run `serve` directly).
+databricks-claude serve install
+```
+
+`claude` will now route through whichever instance is listening on `127.0.0.1:49153` — the daemon, in this case.
+
+**Why bootstrap via `--headless` instead of hand-editing `settings.json`?**
+
+The wrapper writes more than `ANTHROPIC_BASE_URL` on first run. It also writes Databricks-specific model routing (`ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`), the `x-databricks-use-coding-agent-mode` custom header, and the experimental-betas flag — and the model names are versioned (`databricks-claude-opus-4-7`, etc.), so they change over time. Letting the wrapper write them keeps you in sync with whatever the current shipping binary thinks is correct. Hand-edits get stale.
+
+These env keys persist after `--headless` exits — they're written via the bootstrap path (`ensureConfig`), not the per-session lifecycle (which restores). So one `--headless` run is genuinely one-time setup.
+
+**Notes:**
+
+- **The daemon does NOT mutate `~/.claude/settings.json`.** That's the whole point of the daemon vs. the per-session CLI wrapper — it lives outside the per-tool lifecycle. The one-time `--headless` bootstrap above is the wrapper doing its first-run setup; subsequent daemon restarts do not touch your settings.
+- **Re-bootstrap when model names drift.** If you upgrade `databricks-claude` and the project ships new default model names, re-run `databricks-claude --headless` once to refresh them. The bootstrap is idempotent and only writes keys that differ.
+- **OTEL tables persist to state.** Run `databricks-claude serve --otel-metrics-table foo --otel-logs-table bar` once; the daemon (or its installed service) picks them up from `~/.claude/.databricks-claude.json` on every restart thereafter.
+- **Don't run the CLI wrapper (`databricks-claude claude …`) at the same time as the daemon for the same workspace.** Pick one deployment mode per workspace; mixing both means two proxies fighting over the same port and settings block.
+- **Hooks coexist cleanly.** If you've also installed SessionStart hooks (`databricks-claude --install-hooks`), they probe the daemon's `/health` and no-op when it's running, falling back to per-session proxy only if the daemon is down.
+
+To stop using the daemon, run `databricks-claude serve uninstall` and remove the `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` lines from `~/.claude/settings.json` (or delete the whole `env` block if you don't use Claude Code anymore).
+
 ## Headless Mode
 
 `--headless` starts the proxy without launching a `claude` child process, for use by IDE extensions and external tooling.
