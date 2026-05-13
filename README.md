@@ -456,6 +456,60 @@ databricks-claude serve \
 
 **Port collision:** If port `49153` is unavailable at startup, `serve` prints the error and exits (unlike the CLI wrapper, which falls back to `:0`). The MDM-baked `gatewayBaseUrl` is a fixed URL that cannot follow a dynamic fallback. Stop the existing instance before restarting.
 
+### Installing as a background service
+
+Register the daemon as a per-user OS service so it starts automatically at login:
+
+| OS | One-liner |
+|----|-----------|
+| macOS | `databricks-claude serve install` |
+| Linux | `databricks-claude serve install` |
+| Windows | `databricks-claude serve install` |
+
+The install command writes a native service manifest and starts the daemon immediately:
+- **macOS:** LaunchAgent plist at `~/Library/LaunchAgents/databricks-claude-daemon.plist`
+- **Linux:** systemd user unit at `~/.config/systemd/user/databricks-claude-daemon.service`
+- **Windows:** Scheduled Task (logon trigger) via `schtasks.exe`
+
+Service name across all platforms: **`databricks-claude-daemon`**.
+
+Optional flags for `serve install`:
+- `--profile <name>` — Databricks profile to bake into the manifest
+- `--port <int>` — proxy port (default: 49153)
+- `--log-file <path>` — log file path (default: per-OS, e.g. `~/Library/Logs/databricks-claude-daemon/serve.log`)
+- `--otel-metrics-table`, `--otel-logs-table`, `--otel-traces-table` — OTEL UC tables
+- `--skip-auth-check` — skip the install-time auth probe (required for CI / MDM init scripts where stdin is not a tty and `databricks auth login` cannot prompt)
+
+#### Install-time authentication
+
+By default, `serve install` verifies that the resolved profile has a valid Databricks token **before** writing any service-manager manifest. Behaviour:
+
+- **Interactive tty + authed**: install proceeds silently.
+- **Interactive tty + not authed**: runs `databricks auth login --profile <name>` to prompt the browser flow, then proceeds.
+- **Non-tty + not authed**: aborts with an actionable error before writing any unit file. The daemon path is non-interactive (it cannot pop a browser under systemd/launchd/schtasks), so writing a unit that's guaranteed to crash-loop would be worse than failing fast.
+- **Non-tty + authed**: install proceeds silently.
+- **`--skip-auth-check`**: bypass the probe entirely. The unit is written immediately; the daemon will refuse to start until `databricks auth login --profile <name>` has been run separately. Use this in MDM fleet init scripts where auth is seeded out-of-band.
+
+After install, a `/health` probe runs against `127.0.0.1:<port>` with a 10-second deadline to verify the daemon actually came up healthy. On timeout, the install command surfaces a diagnostics tail (`journalctl --user` on Linux, `launchctl print` plus the daemon stderr log on macOS) to stderr — but **does not auto-uninstall**. The unit file stays put so you can debug it. Re-running `serve install` is idempotent.
+
+**Limitation**: install must be run as the user the daemon will run as. Running `sudo databricks-claude serve install` writes a systemd unit owned by root or a LaunchAgent under `/Library/LaunchAgents`, neither of which is what the per-user `serve` design intends. If you need to install for a different user from a privileged shell, use `sudo -u <user> -- databricks-claude serve install` so the unit/plist lands in that user's `$HOME`. MDM fleet rollouts that need cross-user install at scale are out of scope for this command; deploy a system-wide LaunchDaemon or systemd system unit manually if you need that.
+
+#### Status / removal
+
+```bash
+# Check if the daemon is registered, running, and healthy:
+databricks-claude serve status
+
+# Remove the OS service registration (stops the daemon too):
+databricks-claude serve uninstall
+```
+
+**After a binary upgrade:** The manifest bakes in the binary path at install time. Re-run `serve install` after upgrading to refresh the path. `serve status` will warn if the manifest path doesn't match the current binary.
+
+> **macOS Gatekeeper note:** If your binary is unsigned or quarantined, `serve install` prints a one-line warning but the install still proceeds. To suppress the warning, run `xattr -dr com.apple.quarantine /path/to/databricks-claude` or sign the binary. The install is not blocked.
+
+> **Linux user-session note:** `systemd --user` services run inside your login session. If you log out, the daemon stops — it restarts automatically on your next login. This is correct behavior for interactive per-user deployments. If you want the daemon to survive all logouts, run `loginctl enable-linger` first (requires your admin's approval on managed devices). This is not done automatically.
+
 ## Headless Mode
 
 `--headless` starts the proxy without launching a `claude` child process, for use by IDE extensions and external tooling.
@@ -508,7 +562,7 @@ databricks-claude --headless
 | `--idle-timeout` | `30m` | Idle timeout in headless mode (`0` disables) |
 | `--version` | | Print version and exit |
 | `--print-env` | | Print resolved configuration (token redacted) and exit |
-| `--help`, `-h` | | Print wrapper flags and the full `claude --help` output, then exit |
+| `--help`, `-h` | | Print the wrapper's flags and exit. Use `databricks-claude -- --help` to forward to claude's own `--help`. |
 
 All other flags and args are forwarded to `claude`.
 
@@ -572,7 +626,7 @@ If the token shows as empty or the base URL looks wrong, check your Databricks C
 
 ### View full usage
 
-`databricks-claude --help` (or `-h`) prints the wrapper's own flags followed by the complete `claude --help` output, so you see everything in one place.
+`databricks-claude --help` (or `-h`) prints only the wrapper's own flags and subcommands. To reach claude's own `--help` — or pass any flag through to the wrapped `claude` CLI — use the `--` separator: anything after `--` is forwarded verbatim. For example, `databricks-claude -- --help` shows claude's help, and `databricks-claude -- --model opus -p "hi"` runs claude with the given flags.
 
 ## Shell Tab Completions
 

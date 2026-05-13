@@ -135,6 +135,24 @@ func shouldPersistOTELTable(flagSet bool, resolved, stateVal string) bool {
 //	--otel-logs-table string     UC table for OTEL logs   (flag > state > MDM > empty)
 //	--otel-traces-table string   UC table for OTEL traces (flag > state > MDM > empty)
 func runServe(args []string) {
+	// Dispatch sub-subcommands BEFORE the stdout redirect and the --help
+	// short-circuit. Two reasons:
+	//   1. Sub-subcommand help (serve install --help, serve status --help)
+	//      must reach printServe{Install,Uninstall,Status}Help, not the
+	//      parent printServeHelp via the --help short-circuit below.
+	//   2. `serve status` is a one-shot user-facing command — its output
+	//      must go to real stdout so users can pipe / grep / parse it.
+	//      The os.Stdout = os.Stderr redirect below is for the long-lived
+	//      daemon path only, where it protects the LaunchAgent stdout log
+	//      from SDKs that write to stdout.
+	if len(args) > 0 {
+		switch args[0] {
+		case "install", "uninstall", "status":
+			runServeInstall(args)
+			return
+		}
+	}
+
 	// Belt-and-suspenders: redirect stdout to stderr so any transitive SDK call
 	// that writes to stdout doesn't corrupt the LaunchAgent stdout log.
 	os.Stdout = os.Stderr
@@ -211,9 +229,24 @@ func runServe(args []string) {
 		}
 	}
 
-	// Ensure authenticated before binding the port (interactive browser login may be needed).
-	if err := authcheck.EnsureAuthenticated(resolvedProfile, ""); err != nil {
-		log.Fatalf("databricks-claude: serve: auth failed: %v", err)
+	// Daemon-safe auth: never prompt. The interactive login flow is owned by
+	// `serve install` at install time (where stdin is a real tty). If the
+	// daemon was started directly (systemctl --user start / launchctl
+	// kickstart / schtasks /run) without prior auth, fail loudly here rather
+	// than spawning a browser prompt under a service manager with no tty —
+	// which would crash-loop until the systemd start-limit gives up.
+	//
+	// Recovery paths the user has, in order of preference:
+	//   1. `databricks-claude serve install` from a tty (re-runs the gate)
+	//   2. `databricks auth login --profile <name>` then restart the daemon
+	// Both work after a `serve install --skip-auth-check` deferred-auth
+	// install — the daemon will simply refuse to start until one of them
+	// completes.
+	if !authcheck.IsAuthenticated(resolvedProfile, "") {
+		log.Fatalf("databricks-claude: serve: profile %q is not authenticated — daemon cannot prompt; "+
+			"run `databricks-claude serve install` from a tty, or `databricks auth login --profile %s` "+
+			"then restart the daemon (this is the expected next step after `serve install --skip-auth-check`)",
+			resolvedProfile, resolvedProfile)
 	}
 
 	// Discover workspace host and construct the AI Gateway URL.
@@ -290,6 +323,7 @@ func runServe(args []string) {
 // printServeHelp prints usage for the `serve` subcommand to stderr.
 func printServeHelp() {
 	fmt.Fprint(os.Stderr, `Usage: databricks-claude serve [flags]
+       databricks-claude serve <install|uninstall|status> [flags]
 
 Long-lived daemon that serves Claude Code and Claude Desktop with persistent
 Databricks OAuth. A third deployment mode alongside the per-session CLI wrapper
@@ -310,7 +344,16 @@ Configure your client to point at the daemon:
 The daemon does NOT mutate settings.json itself — it stays outside the
 per-tool lifecycle by design.
 
-Flags:
+Sub-subcommands (OS service management):
+  install    Register and start the daemon as a per-user OS service.
+             Uses: launchctl (macOS), schtasks (Windows), systemctl --user (Linux).
+             Run 'databricks-claude serve install --help' for flags.
+  uninstall  Stop and remove the daemon OS service registration.
+             Run 'databricks-claude serve uninstall --help' for flags.
+  status     Report Registered / Running / Healthy in one shot.
+             Run 'databricks-claude serve status --help' for flags.
+
+Flags (for the daemon itself, not sub-subcommands):
   --port int                   Proxy listen port (default: 49153). The daemon
                                binds this port exclusively — MDM-baked
                                gatewayBaseUrl is a fixed URL and cannot follow
@@ -352,6 +395,16 @@ Endpoints:
 Examples:
   # Minimal daemon on default port:
   databricks-claude serve
+
+  # Register as an OS service and start:
+  databricks-claude serve install
+  databricks-claude serve install --profile databricks-ai-inference --port 49153
+
+  # Check service status:
+  databricks-claude serve status
+
+  # Remove OS service registration:
+  databricks-claude serve uninstall
 
   # With explicit profile, port, and log file:
   databricks-claude serve \
