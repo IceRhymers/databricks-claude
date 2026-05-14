@@ -1496,9 +1496,9 @@ func TestWriteClaudeConfig_MissingModelKeys(t *testing.T) {
 }
 
 // TestCompletionFlagsCoverAllKnownFlags ensures every flag in knownFlags has a
-// corresponding entry in flagDefs. This test fails immediately if someone adds
-// a flag to parseArgs without updating the completion metadata — preventing
-// silent drift between the real CLI and the generated shell completions.
+// corresponding entry in flagDefs. Trivially true after #170 (both are
+// derived from rootCommand) but kept as an alarm for future refactors that
+// might break the derivation.
 func TestCompletionFlagsCoverAllKnownFlags(t *testing.T) {
 	covered := make(map[string]bool, len(flagDefs))
 	for _, f := range flagDefs {
@@ -1506,7 +1506,7 @@ func TestCompletionFlagsCoverAllKnownFlags(t *testing.T) {
 	}
 	for flag := range knownFlags {
 		if !covered[flag] {
-			t.Errorf("flag %s is in knownFlags but missing from flagDefs in completion_flags.go", flag)
+			t.Errorf("flag %s is in knownFlags but missing from flagDefs (derivation drift in completion_flags.go)", flag)
 		}
 	}
 }
@@ -1517,7 +1517,143 @@ func TestKnownFlagsCoverAllFlagDefs(t *testing.T) {
 	for _, f := range flagDefs {
 		name := "--" + f.Name
 		if !knownFlags[name] {
-			t.Errorf("flagDef %q is missing from knownFlags in completion_flags.go", name)
+			t.Errorf("flagDef %q is missing from knownFlags (derivation drift in completion_flags.go)", name)
+		}
+	}
+}
+
+// TestRootTreeFlagsAreParseRecognised is the load-bearing parity check
+// added in #170: every flag declared in the rootCommand tree (Persistent
+// ++ Flags) must be RECOGNISED by parseArgs — i.e. must NOT be forwarded
+// to claude as a passthrough arg. Catches the failure mode where a flag
+// is added to the tree but no corresponding case is added to parseArgs's
+// switch (the flag would silently fall through to ClaudeArgs).
+//
+// We feed parseArgs a single `--<name>` token (with a type-appropriate
+// value for TakesArg flags so parsers that validate their input — e.g.
+// --idle-timeout, --websearch-fetch-budget — don't reject the synthetic
+// case). For non-TakesArg flags the token is sufficient on its own.
+func TestRootTreeFlagsAreParseRecognised(t *testing.T) {
+	// Type-appropriate synthetic values for flags whose parser validates
+	// the argument. Anything not listed gets the default "synthetic".
+	syntheticValues := map[string]string{
+		"port":                   "12345",
+		"idle-timeout":           "1s",
+		"websearch-fetch-budget": "1024",
+	}
+	for _, f := range rootCommand.AllFlags() {
+		name := "--" + f.Name
+		args := []string{name}
+		if f.TakesArg {
+			val := syntheticValues[f.Name]
+			if val == "" {
+				val = "synthetic"
+			}
+			args = append(args, val)
+		}
+		a, err := parseArgs(args)
+		if err != nil {
+			// parseArgs's switch has a `default:` that returns an error
+			// for any known flag with no matching case — so an error
+			// here means EITHER real drift (a flag declared in the tree
+			// but with no case in parseArgs) OR a synthetic value the
+			// flag's validator rejected. Both are genuine failures.
+			t.Errorf("parseArgs(%v) returned error: %v — either --%s is declared in the rootCommand tree but parseArgs has no case for it, or syntheticValues needs a type-appropriate entry for --%s", args, err, f.Name, f.Name)
+			continue
+		}
+		// Belt-and-suspenders: a recognised flag must not be forwarded
+		// to claude (would only fire if the default: guard were removed).
+		for _, ca := range a.ClaudeArgs {
+			if ca == name {
+				t.Errorf("tree flag %q was passed through to ClaudeArgs — parseArgs has no case for it", name)
+				break
+			}
+		}
+	}
+}
+
+// TestParseArgsCasesAreDeclaredInRootTree is the inverse: every "case
+// "--xxx":" in parseArgs must correspond to a flag declared in
+// rootCommand. Catches the failure mode where someone adds a switch case
+// without adding the FlagDef (dead code today; would silently break
+// completion). Implemented by reading main.go as text and grepping
+// `case "--..."` lines inside parseArgs.
+func TestParseArgsCasesAreDeclaredInRootTree(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	// Slice main.go to just the body of parseArgs to avoid stray `case`
+	// matches in other functions.
+	body := string(src)
+	startMarker := "func parseArgs("
+	startIdx := strings.Index(body, startMarker)
+	if startIdx < 0 {
+		t.Fatalf("could not locate %q in main.go", startMarker)
+	}
+	// parseArgs is followed by handleHelp; cut at the next top-level func.
+	endMarker := "\nfunc "
+	tail := body[startIdx+1:]
+	endIdx := strings.Index(tail, endMarker)
+	if endIdx < 0 {
+		t.Fatalf("could not locate end of parseArgs in main.go")
+	}
+	region := body[startIdx : startIdx+1+endIdx]
+
+	declared := rootCommand.KnownFlags()
+
+	// Match `case "--name":` and `case "--name", "--alias":` patterns.
+	// We split on lines and look for `case "--`.
+	for _, line := range strings.Split(region, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "case \"--") {
+			continue
+		}
+		// Pull every "--xxx" literal off the line.
+		rest := trimmed
+		for {
+			i := strings.Index(rest, "\"--")
+			if i < 0 {
+				break
+			}
+			j := strings.Index(rest[i+1:], "\"")
+			if j < 0 {
+				break
+			}
+			lit := rest[i+1 : i+1+j]
+			rest = rest[i+1+j+1:]
+			if !declared[lit] {
+				t.Errorf("parseArgs has `case %q` but no FlagDef in rootCommand declares it (drift in commands.go)", lit)
+			}
+		}
+	}
+}
+
+// TestRootCompletionDoesNotOfferDaemonFlags asserts the issue-#170
+// requirement that --daemon / --daemon-fake-key (desktop-scoped) no
+// longer appear in the root flag set. They are still parsed by the
+// desktop subcommand's own scanners (extractDaemonFlag /
+// extractDaemonFakeKeyFlag); this test just guards root completion.
+func TestRootCompletionDoesNotOfferDaemonFlags(t *testing.T) {
+	for _, f := range flagDefs {
+		switch f.Name {
+		case "daemon", "daemon-fake-key":
+			t.Errorf("flag --%s should not be offered as a root completion (it is desktop-scoped); remove it from rootCommand.Flags in commands.go", f.Name)
+		}
+	}
+}
+
+// TestRootPersistentFlagsAreProfileAndPort asserts the issue-#170
+// requirement that --profile and --port are declared as persistent on
+// the root command (so subcommand inheritance works in #171+).
+func TestRootPersistentFlagsAreProfileAndPort(t *testing.T) {
+	persistent := map[string]bool{}
+	for _, f := range rootCommand.Persistent {
+		persistent[f.Name] = true
+	}
+	for _, want := range []string{"profile", "port"} {
+		if !persistent[want] {
+			t.Errorf("rootCommand.Persistent should declare --%s", want)
 		}
 	}
 }
