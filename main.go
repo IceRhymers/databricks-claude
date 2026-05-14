@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/IceRhymers/databricks-claude/internal/cmd"
 	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
 	"github.com/IceRhymers/databricks-claude/pkg/cli"
 	"github.com/IceRhymers/databricks-claude/pkg/completion"
@@ -1163,6 +1164,14 @@ func parseArgs(args []string) (*Args, error) {
 							return nil, fmt.Errorf("--idle-timeout: %q is not a valid duration (use e.g. 30s, 5m, 1h)", raw)
 						}
 					}
+				default:
+					// name is in knownFlags (derived from the rootCommand
+					// tree) but no case above handles it. This can only
+					// happen if commands.go declares a flag parseArgs was
+					// never taught to parse — fail loudly instead of
+					// silently swallowing it. Guards the "every tree flag
+					// is parsed" half of #170's parity contract.
+					return nil, fmt.Errorf("internal: %s is a known flag but parseArgs has no case for it (drift between commands.go and parseArgs)", name)
 				}
 				i++
 				continue
@@ -1176,99 +1185,17 @@ func parseArgs(args []string) (*Args, error) {
 	return a, nil
 }
 
-// handleHelp prints the databricks-claude help message. Only the wrapper's
-// own flags and subcommands are documented here; claude's CLI help is
-// reachable via the `--` passthrough escape hatch (databricks-claude -- --help).
+// handleHelp prints the databricks-claude help message by rendering the
+// root command-tree node from internal/cmd. The actual help body lives in
+// commands.go (rootHelpTemplate, attached as rootCommand.Long); this
+// function is just a thin wrapper around cmd.Render that injects the
+// build-time Version. Only the wrapper's own flags and subcommands are
+// documented; claude's CLI help is reachable via the `--` passthrough
+// escape hatch (databricks-claude -- --help).
 func handleHelp() {
-	fmt.Printf(`databricks-claude v%s — Databricks AI Gateway proxy for Claude Code
-
-Transparently proxies the Claude Code CLI with Databricks AI Gateway authentication
-injected via environment variables.
-
-Usage:
-  databricks-claude [databricks-claude flags] [claude flags] [claude args]
-
-Databricks-Claude Flags:
-  --profile string      Databricks config profile (saved to ~/.claude/.databricks-claude.json)
-  --upstream string     Override the AI Gateway URL (default: auto-discovered)
-  --print-env           Print resolved configuration and exit (token redacted)
-  --verbose, -v         Enable debug logging to stderr
-  --log-file string     Write debug logs to a file (combinable with --verbose)
-  --otel                       Enable OpenTelemetry metrics + logs export
-  --otel-metrics-table string  Unity Catalog table for OTEL metrics
-  --otel-logs-table string     Unity Catalog table for OTEL logs (derived from metrics table if omitted)
-  --otel-traces                Enable OpenTelemetry traces export (Claude Code beta;
-                               requires --otel-traces-table; can be used standalone)
-  --otel-traces-table string   Unity Catalog table for OTEL traces (cat.schema.table)
-  --no-otel                    Clear persisted OTEL keys and disable OTEL for future sessions
-  --no-otel-metrics            Clear persisted OTEL metrics keys (other signals untouched)
-  --no-otel-logs               Clear persisted OTEL logs keys (other signals untouched)
-  --no-otel-traces             Clear persisted OTEL traces keys (other signals untouched)
-  --proxy-api-key string       Require Bearer token auth on all proxy requests
-  --tls-cert string            Path to TLS certificate file (requires --tls-key)
-  --tls-key string             Path to TLS private key file (requires --tls-cert)
-  --port int                   Fixed proxy port (default: 49153, saved to state)
-  --headless                   Start proxy without launching claude (for IDE extensions)
-  --write-claude-config        Write first-run settings.json env block (proxy URL, model
-                               routing, custom headers) and exit — no proxy startup, no
-                               port binding, no child process. Designed for MDM / fleet
-                               init scripts and as a cleaner alternative to the
-                               '--headless then Ctrl+C' workaround. Idempotent.
-                               Accepts --profile, --port, and OTEL table flags.
-  --headless-ensure            Start proxy if not running (called by SessionStart hook)
-  --headless-release           Decrement proxy refcount (called by Stop hook)
-  --idle-timeout duration      Idle timeout for headless mode (default 30m, 0 disables; use e.g. 30s, 5m, 1h)
-  --install-hooks              Install SessionStart/SessionEnd hooks AND perform first-run
-                               env setup (idempotent). Accepts --profile and --port to
-                               persist them; no prior databricks-claude invocation needed.
-  --uninstall-hooks            Remove databricks-claude hooks from ~/.claude/settings.json
-  --no-update-check            Skip the automatic update check on startup
-  --with-websearch             Enable local fulfillment of Anthropic web_search/web_fetch
-                               tools (workaround until Databricks FMAPI ships native
-                               support; saved to state). Default: disabled.
-  --websearch-backend string   Search backend when --with-websearch is enabled.
-                               Values: duckduckgo (default, zero config), none
-  --websearch-fetch-budget int Max bytes returned per web_fetch call (default 102400)
-  --version                    Print version and exit
-  --help, -h                   Show this help message
-
-Subcommands:
-  completion <shell>           Generate shell completions (bash, zsh, fish)
-  update                       Check for a newer release and print upgrade instructions
-  desktop <action>             Claude Desktop integration. Run 'databricks-claude desktop'
-                               for actions (generate-config, credential-helper) and flags.
-  setup [flags]                Idempotent auth bootstrap. Persists the profile to state and
-                               runs 'databricks auth login' when not authenticated. Designed
-                               for fleet init scripts and per-user login agents.
-                               Run 'databricks-claude setup --help' for flags.
-  serve [install|uninstall|status|flags]
-                               Long-lived daemon serving Claude Code and Claude
-                               Desktop with persistent Databricks OAuth. Owns
-                               OAuth refresh; exposes inference + OTLP on
-                               127.0.0.1. No refcount, no /shutdown, append-only
-                               logging. A third deployment mode alongside the
-                               per-session CLI wrapper and SessionStart hooks.
-                               Sub-subcommands register the daemon as a per-user
-                               OS service (LaunchAgent/schtasks/systemd --user).
-                               Run 'databricks-claude serve --help' for flags.
-                               Run 'databricks-claude serve install --help' etc.
-
-Example Unity Catalog table setup (run in a Databricks SQL warehouse):
-
-  CREATE TABLE main.claude_telemetry.claude_otel_metrics (
-    ... -- see https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta
-  ) USING DELTA TBLPROPERTIES ('otel.schemaVersion' = 'v1');
-
-  CREATE TABLE main.claude_telemetry.claude_otel_logs (
-    ... -- see https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta
-  ) USING DELTA TBLPROPERTIES ('otel.schemaVersion' = 'v1');
-
-Passthrough to claude:
-  Anything after a "--" separator is forwarded to the claude CLI unchanged.
-  Examples:
-    databricks-claude -- --help                # show claude's own help
-    databricks-claude -- --model opus -p "hi"  # run claude with extra flags
-`, Version)
+	if err := cmd.Render(os.Stdout, rootCommand, map[string]string{"Version": Version}); err != nil {
+		fmt.Fprintf(os.Stderr, "databricks-claude: failed to render help: %v\n", err)
+	}
 }
 
 // databricksFullSetupEnv returns the Databricks-specific env keys written
