@@ -13,7 +13,7 @@ Reusable library packages extracted from the root `main` package. Each sub-packa
 | `authcheck/` | Pre-flight Databricks authentication verification and interactive login (see `authcheck/AGENTS.md`) |
 | `childproc/` | Child process lifecycle: start, signal forwarding, exit code propagation (see `childproc/AGENTS.md`) |
 | `completion/` | Shell completion script generation (bash, zsh, fish) from `FlagDef` slices |
-| `headless/` | Headless mode helpers: `Ensure` (start-if-absent) and `Release` (refcount decrement) |
+| `headless/` | Detached-proxy spawn helpers: `Ensure` (start-if-absent) and refcount integration. `Config.EnsureCommand` (added in #174) lets databricks-claude spawn `serve --session-mode` instead of the deleted `--headless` root flag; siblings (databricks-codex, databricks-opencode) leave it empty for the legacy `--headless` shape. |
 | `health/` | `/health` endpoint handler returning JSON liveness data |
 | `lifecycle/` | HTTP handler wrapper adding `/shutdown` and idle timeout |
 | `portbind/` | Port binding helpers with configured-port support |

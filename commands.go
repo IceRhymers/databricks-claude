@@ -79,9 +79,6 @@ var rootCommand = cmd.Command{
 		{Name: "proxy-api-key", Description: "Require this API key on all proxy requests", TakesArg: true},
 		{Name: "tls-cert", Description: "TLS certificate file for the local proxy (requires --tls-key)", TakesArg: true, Completer: "__files"},
 		{Name: "tls-key", Description: "TLS private key file for the local proxy (requires --tls-cert)", TakesArg: true, Completer: "__files"},
-		{Name: "headless", Description: "Start proxy without launching claude (for IDE extensions or hooks)"},
-		{Name: "idle-timeout", Description: "Idle timeout for headless mode (default: 30m; 0 disables; use e.g. 30s, 5m, 1h)", TakesArg: true,
-			Default: "30m"},
 		{Name: "no-update-check", Description: "Skip the automatic update check on startup",
 			EnvVar: "DATABRICKS_NO_UPDATE_CHECK"},
 		// NOTE: --daemon and --daemon-fake-key are *desktop generate-config*
@@ -162,18 +159,31 @@ var setupCommand = cmd.Command{
 }
 
 // serveCommand declares the `serve` subcommand's flags + help body, AND its
-// own Subcommands (install / uninstall / status). --daemon and
-// --daemon-fake-key are NOT here — they belong on `desktop` (issue-#171
-// requirement: those are desktop-scoped, not serve-scoped).
+// own Subcommands (install / uninstall / status). --daemon-fake-key is NOT
+// here — it belongs on `desktop` (issue-#171 requirement: that flag is
+// desktop-scoped, not serve-scoped).
+//
+// #174 consolidated the root --headless and --idle-timeout flags onto this
+// command via `serve --session-mode`. The two modes (--session-mode and
+// --daemon) are mutually exclusive and one of them is required (or one of
+// the install|uninstall|status sub-subcommands) — bare `serve` is a hard
+// error, eliminating the silent-degradation hazard at the hooks spawn site.
 var serveCommand = cmd.Command{
 	Name:  "serve",
-	Short: "Long-lived daemon; sub-subcommands: install, uninstall, status",
+	Short: "Run the standalone proxy: --session-mode or --daemon (sub-subcommands: install, uninstall, status)",
 	Long:  serveHelpTemplate,
 	Flags: []cmd.FlagDef{
+		{Name: "session-mode", Description: "Run as a session-scoped proxy (refcounted, /shutdown, idle-timeout, settings.json restore)"},
+		{Name: "daemon", Description: "Run as a long-lived daemon (no refcount, no /shutdown, exclusive port, daemon:true in /health)"},
 		{Name: "port", Description: "Proxy listen port (default: 49153)", TakesArg: true, StateKey: "port", Default: "49153"},
 		{Name: "profile", Description: "Databricks CLI profile (flag > saved state > MDM > DEFAULT)", TakesArg: true, Completer: "__databricks_profiles", StateKey: "profile", MDMKey: "databricksProfile", Default: "DEFAULT"},
 		{Name: "log-file", Description: "Append to this file instead of discarding logs (O_APPEND)", TakesArg: true, Completer: "__files"},
 		{Name: "verbose", Short: "v", Description: "Also write debug logs to stderr"},
+		{Name: "idle-timeout", Description: "Idle timeout for --session-mode (default: 30m; 0 disables; e.g. 30s, 5m, 1h)", TakesArg: true, Default: "30m"},
+		{Name: "proxy-api-key", Description: "Require Bearer token auth on all proxy requests (--session-mode)", TakesArg: true},
+		{Name: "tls-cert", Description: "TLS certificate file (--session-mode; requires --tls-key)", TakesArg: true, Completer: "__files"},
+		{Name: "tls-key", Description: "TLS private key file (--session-mode; requires --tls-cert)", TakesArg: true, Completer: "__files"},
+		{Name: "upstream", Description: "Override the AI Gateway URL (--session-mode)", TakesArg: true},
 		{Name: "otel-metrics-table", Description: "Unity Catalog table for OTEL metrics (flag > state > MDM > empty)", TakesArg: true, StateKey: "otel_metrics_table", MDMKey: "otelMetricsTable"},
 		{Name: "otel-logs-table", Description: "Unity Catalog table for OTEL logs (flag > state > MDM > empty)", TakesArg: true, StateKey: "otel_logs_table", MDMKey: "otelLogsTable"},
 		{Name: "otel-traces-table", Description: "Unity Catalog table for OTEL traces (flag > state > MDM > empty)", TakesArg: true, StateKey: "otel_traces_table", MDMKey: "otelTracesTable"},
@@ -242,8 +252,6 @@ Databricks-Claude Flags:
   --tls-cert string            Path to TLS certificate file (requires --tls-key)
   --tls-key string             Path to TLS private key file (requires --tls-cert)
   --port int                   Fixed proxy port (default: 49153, saved to state)
-  --headless                   Start proxy without launching claude (for IDE extensions)
-  --idle-timeout duration      Idle timeout for headless mode (default 30m, 0 disables; use e.g. 30s, 5m, 1h)
   --no-update-check            Skip the automatic update check on startup
   --version                    Print version and exit
   --help, -h                   Show this help message
@@ -275,13 +283,17 @@ Subcommands:
                                  hooks session-start             (hook-invoked internal)
                                  hooks session-end               (hook-invoked internal)
                                Run 'databricks-claude hooks --help' for details.
-  serve [install|uninstall|status|flags]
-                               Long-lived daemon serving Claude Code and Claude
-                               Desktop with persistent Databricks OAuth. Owns
-                               OAuth refresh; exposes inference + OTLP on
-                               127.0.0.1. No refcount, no /shutdown, append-only
-                               logging. A third deployment mode alongside the
-                               per-session CLI wrapper and SessionStart hooks.
+  serve --session-mode | --daemon | install|uninstall|status [flags]
+                               Run the standalone proxy under one of two
+                               lifecycle policies. One mode flag is REQUIRED
+                               (bare 'serve' is a hard error to prevent
+                               silent-degradation at the hooks spawn site).
+                                 --session-mode  Refcounted, /shutdown route,
+                                                 idle-timeout-driven exit,
+                                                 settings.json restore.
+                                 --daemon        Long-lived; no refcount, no
+                                                 /shutdown, exclusive port,
+                                                 daemon:true in /health.
                                Sub-subcommands register the daemon as a per-user
                                OS service (LaunchAgent/schtasks/systemd --user).
                                Run 'databricks-claude serve --help' for flags.
@@ -306,29 +318,36 @@ Passthrough to claude:
 
 // serveHelpTemplate is the verbatim body of the deleted printServeHelp(),
 // preserved here so cmd.Render(serveCommand, …) emits byte-identical output.
-const serveHelpTemplate = `Usage: databricks-claude serve [flags]
+const serveHelpTemplate = `Usage: databricks-claude serve --session-mode | --daemon [flags]
        databricks-claude serve <install|uninstall|status> [flags]
 
-Long-lived daemon that serves Claude Code and Claude Desktop with persistent
-Databricks OAuth. A third deployment mode alongside the per-session CLI wrapper
-(databricks-claude claude ...) and SessionStart hooks — useful when you want a
-single OAuth-refreshing proxy that survives across sessions.
+Run the standalone proxy under one of two lifecycle policies. One mode flag
+is REQUIRED — bare 'serve' (no mode flag and no sub-subcommand) is a hard
+error so a typo at the hooks spawn site can't silently degrade to the wrong
+lifecycle.
 
-Owns Databricks OAuth refresh and exposes inference + OTLP on 127.0.0.1.
-Distinguished from --headless mode by: no session refcount, no /shutdown
-route, append-only logging, and daemon:true in /health so hooks can detect
-and no-op.
+Three deployment modes share the binary: (1) the per-session CLI wrapper
+(databricks-claude [args] -- claude-args), (2) SessionStart hooks (hooks
+install / hooks session-start), and (3) this command. Modes (1) and (2) use
+--session-mode; mode (3) uses --daemon (with optional install|uninstall|status
+sub-subcommands to register the daemon as a per-user OS service).
 
-Designed for LaunchAgent or systemd service deployment, where a plist or
-unit file invokes 'databricks-claude serve' once and keeps it running.
-Configure your client to point at the daemon:
-  Claude Desktop: via MDM, set gatewayBaseUrl: http://127.0.0.1:<port>.
-  Claude Code:    edit ~/.claude/settings.json once to set
-                  ANTHROPIC_BASE_URL=http://127.0.0.1:<port> in the env block.
-The daemon does NOT mutate settings.json itself — it stays outside the
-per-tool lifecycle by design.
+1. SESSION MODE  (databricks-claude serve --session-mode)
+   Refcounted, /shutdown route, idle-timeout-driven exit, settings.json
+   restore-on-exit, fallback-port bind. This is the lifecycle that IDE
+   extensions and the SessionStart hook spawn behind the scenes. Was the
+   --headless root flag prior to #174.
 
-Sub-subcommands (OS service management):
+2. DAEMON MODE  (databricks-claude serve --daemon)
+   No refcount, no /shutdown route (returns 404), exclusive-port bind,
+   daemon:true in /health, append-only logging, never mutates settings.json.
+   Designed for LaunchAgent / systemd / schtasks service deployment.
+   Configure your client to point at the daemon:
+     Claude Desktop: via MDM, set gatewayBaseUrl: http://127.0.0.1:<port>.
+     Claude Code:    edit ~/.claude/settings.json once to set
+                     ANTHROPIC_BASE_URL=http://127.0.0.1:<port> in the env block.
+
+Sub-subcommands (daemon OS service management — no mode flag needed):
   install    Register and start the daemon as a per-user OS service.
              Uses: launchctl (macOS), schtasks (Windows), systemctl --user (Linux).
              Run 'databricks-claude serve install --help' for flags.
@@ -337,18 +356,31 @@ Sub-subcommands (OS service management):
   status     Report Registered / Running / Healthy in one shot.
              Run 'databricks-claude serve status --help' for flags.
 
-Flags (for the daemon itself, not sub-subcommands):
-  --port int                   Proxy listen port (default: 49153). The daemon
-                               binds this port exclusively — MDM-baked
+Mode flags (one is REQUIRED unless using a sub-subcommand):
+  --session-mode               Session-scoped lifecycle (was --headless)
+  --daemon                     Long-lived daemon lifecycle
+
+Common flags:
+  --port int                   Proxy listen port (default: 49153). In --daemon
+                               mode the port is bound exclusively — MDM-baked
                                gatewayBaseUrl is a fixed URL and cannot follow
-                               a fallback port.
+                               a fallback. In --session-mode a fallback port
+                               is acquired if the configured one is taken.
   --profile string             Databricks config profile (default: saved
                                state > MDM databricksProfile key > "DEFAULT")
   --log-file string            Append to this file instead of discarding logs.
-                               Safe for log rotation (O_APPEND). Restarts
-                               preserve prior content (not O_TRUNC).
+                               Safe for log rotation (O_APPEND).
   --verbose, -v                Also write debug logs to stderr (combinable
                                with --log-file)
+
+Session-mode flags (--session-mode only):
+  --idle-timeout duration      Idle timeout (default 30m; 0 disables; e.g. 30s, 5m, 1h)
+  --proxy-api-key string       Require Bearer token auth on all proxy requests
+  --tls-cert string            TLS certificate file (requires --tls-key)
+  --tls-key string             TLS private key file (requires --tls-cert)
+  --upstream string            Override the AI Gateway URL (default: auto-discovered)
+
+Daemon-mode flags (--daemon only):
   --otel-metrics-table string  Unity Catalog table for OTEL metrics
                                (cat.schema.table). Resolution: flag > saved
                                state > MDM otelMetricsTable key > empty.
@@ -357,6 +389,7 @@ Flags (for the daemon itself, not sub-subcommands):
                                actionable failure — not silent).
   --otel-logs-table string     Unity Catalog table for OTEL logs (same chain)
   --otel-traces-table string   Unity Catalog table for OTEL traces (same chain)
+
   --help, -h                   Show this help message
 
 MDM keys (domain: com.icerhymers.databricks-claude):
@@ -370,17 +403,24 @@ mutate ~/.claude/settings.json to configure Claude Code's OTLP emission.
 In daemon mode, Claude Desktop reads OTLP config from MDM, not from any
 wrapper-mutated file. Omit otlpEndpoint from the MDM profile to disable OTLP.
 
-Endpoints:
+Endpoints (--daemon):
   GET /health   Returns {"tool":"databricks-claude","daemon":true,"version":"...",
                          "profile":"...","token_valid_until":"..."}
   POST /shutdown  Not registered — returns 404. Stop the daemon via SIGTERM
                   (e.g. launchctl stop or systemctl stop).
 
-Examples:
-  # Minimal daemon on default port:
-  databricks-claude serve
+Endpoints (--session-mode):
+  GET /health   Returns {"tool":"databricks-claude","daemon":false,...}
+  POST /shutdown  Decrements the session refcount; proxy exits when count = 0.
 
-  # Register as an OS service and start:
+Examples:
+  # Session-scoped proxy for an IDE extension or external tooling:
+  databricks-claude serve --session-mode --port 49153
+
+  # Long-lived daemon on default port:
+  databricks-claude serve --daemon
+
+  # Register the daemon as an OS service and start:
   databricks-claude serve install
   databricks-claude serve install --profile databricks-ai-inference --port 49153
 
@@ -390,20 +430,22 @@ Examples:
   # Remove OS service registration:
   databricks-claude serve uninstall
 
-  # With explicit profile, port, and log file:
-  databricks-claude serve \
+  # Daemon with explicit profile, port, and log file:
+  databricks-claude serve --daemon \
     --profile databricks-ai-inference \
     --port 49153 \
     --log-file /var/log/databricks-claude/daemon.log
 
-  # With OTEL table routing:
-  databricks-claude serve \
+  # Daemon with OTEL table routing:
+  databricks-claude serve --daemon \
     --otel-metrics-table main.claude_telemetry.claude_otel_metrics \
     --otel-logs-table main.claude_telemetry.claude_otel_logs
 
 Exit codes:
-  0   Clean shutdown on SIGINT/SIGTERM
+  0   Clean shutdown on SIGINT/SIGTERM (or /shutdown in --session-mode)
   1   Startup failure (auth, port collision, host discovery)
+  2   Missing or conflicting mode flags (e.g. bare 'serve', or both
+      --session-mode and --daemon set)
 `
 
 // serveInstallHelpTemplate is the verbatim body of the deleted

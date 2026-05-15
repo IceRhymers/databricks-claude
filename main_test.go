@@ -189,10 +189,17 @@ func TestParseArgs_Mixed(t *testing.T) {
 	}
 }
 
-func TestParseArgs_Headless(t *testing.T) {
-	a, _ := parseArgs([]string{"--headless"})
-	if !a.Headless {
-		t.Error("expected headless=true for --headless")
+// #174: --headless is removed from the root flag namespace and now lives
+// behind `serve --session-mode`. This test asserts the breaking-change
+// passthrough contract: --headless is forwarded to claude as an unknown
+// flag (NOT aliased to anything).
+func TestParseArgs_HeadlessRemovedPassThrough(t *testing.T) {
+	a, err := parseArgs([]string{"--headless"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error for legacy --headless (must pass through, not error): %v", err)
+	}
+	if len(a.ClaudeArgs) != 1 || a.ClaudeArgs[0] != "--headless" {
+		t.Errorf("expected --headless to forward to ClaudeArgs (removed in #174, not aliased), got ClaudeArgs=%v", a.ClaudeArgs)
 	}
 }
 
@@ -200,16 +207,6 @@ func TestParseArgs_NoUpdateCheck(t *testing.T) {
 	a, _ := parseArgs([]string{"--no-update-check"})
 	if !a.NoUpdateCheck {
 		t.Error("expected noUpdateCheck=true for --no-update-check")
-	}
-}
-
-func TestParseArgs_HeadlessWithOtherFlags(t *testing.T) {
-	a, _ := parseArgs([]string{"--headless", "--verbose"})
-	if !a.Headless {
-		t.Error("expected headless=true")
-	}
-	if !a.Verbose {
-		t.Error("expected verbose=true")
 	}
 }
 
@@ -456,10 +453,38 @@ func TestHandleHelp_AllFlagsPresent(t *testing.T) {
 	out := captureStdout(func() {
 		handleHelp()
 	})
-	flags := []string{"--profile", "--upstream", "--verbose", "-v", "--log-file", "--headless", "--idle-timeout", "--version", "--help"}
+	flags := []string{"--profile", "--upstream", "--verbose", "-v", "--log-file", "--version", "--help"}
 	for _, flag := range flags {
 		if !strings.Contains(out, flag) {
 			t.Errorf("expected help output to contain flag %q, got:\n%s", flag, out)
+		}
+	}
+}
+
+// TestHandleHelp_DoesNotContainHeadlessFlagsInTable is the inverse of
+// #174's "removed, not aliased" contract: the legacy --headless and
+// --idle-timeout root flags MUST NOT appear in the root help's flag table
+// (the "Databricks-Claude Flags:" section). They live behind
+// `serve --session-mode` now. Migration prose elsewhere in the help body
+// (e.g. "was --headless prior to #174") is allowed.
+func TestHandleHelp_DoesNotContainHeadlessFlagsInTable(t *testing.T) {
+	out := captureStdout(func() {
+		handleHelp()
+	})
+	// Locate the "Databricks-Claude Flags:" section and slice up to the
+	// next section header. Matches the rootHelpTemplate layout.
+	flagSectionStart := strings.Index(out, "Databricks-Claude Flags:")
+	if flagSectionStart < 0 {
+		t.Fatalf("could not locate 'Databricks-Claude Flags:' section in help output:\n%s", out)
+	}
+	flagSection := out[flagSectionStart:]
+	// Cut at the next blank-line-then-capitalized-section marker.
+	if idx := strings.Index(flagSection, "\nSubcommands:"); idx >= 0 {
+		flagSection = flagSection[:idx]
+	}
+	for _, flag := range []string{"--headless", "--idle-timeout"} {
+		if strings.Contains(flagSection, flag) {
+			t.Errorf("removed flag %q must not appear in root help flag table (#174), got section:\n%s", flag, flagSection)
 		}
 	}
 }
@@ -738,47 +763,31 @@ func TestProfileResolution_StateFileWins(t *testing.T) {
 	})
 }
 
-// --- idle-timeout flag tests ---
+// --- idle-timeout flag tests (#174 — moved to `serve --session-mode`) ---
+//
+// The legacy --idle-timeout root flag is gone after #174. Like --headless,
+// it now passes through to claude as an unknown flag. The session-mode
+// equivalent lives on `serve --session-mode --idle-timeout` and is exercised
+// by parseServeFlags tests in serve_test.go.
 
-func TestParseArgs_IdleTimeoutDefault(t *testing.T) {
-	a, _ := parseArgs([]string{})
-	if a.IdleTimeout != 30*time.Minute {
-		t.Errorf("expected default idleTimeout=30m, got %v", a.IdleTimeout)
+func TestParseArgs_IdleTimeoutRemovedPassThrough(t *testing.T) {
+	a, err := parseArgs([]string{"--idle-timeout", "10m"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error for legacy --idle-timeout (must pass through, not error): %v", err)
 	}
-}
-
-func TestParseArgs_IdleTimeoutCustom(t *testing.T) {
-	a, _ := parseArgs([]string{"--idle-timeout", "10m"})
-	if a.IdleTimeout != 10*time.Minute {
-		t.Errorf("expected idleTimeout=10m, got %v", a.IdleTimeout)
-	}
-}
-
-func TestParseArgs_IdleTimeoutZero(t *testing.T) {
-	a, _ := parseArgs([]string{"--idle-timeout", "0"})
-	if a.IdleTimeout != 0 {
-		t.Errorf("expected idleTimeout=0, got %v", a.IdleTimeout)
-	}
-}
-
-func TestParseArgs_IdleTimeoutEquals(t *testing.T) {
-	a, _ := parseArgs([]string{"--idle-timeout=5m"})
-	if a.IdleTimeout != 5*time.Minute {
-		t.Errorf("expected idleTimeout=5m, got %v", a.IdleTimeout)
-	}
-}
-
-func TestParseArgs_IdleTimeoutBareNumber(t *testing.T) {
-	_, err := parseArgs([]string{"--idle-timeout", "30"})
-	if err == nil {
-		t.Error("expected error for bare integer --idle-timeout value, got nil")
-	}
-}
-
-func TestParseArgs_IdleTimeoutBareNumberEquals(t *testing.T) {
-	_, err := parseArgs([]string{"--idle-timeout=30"})
-	if err == nil {
-		t.Error("expected error for bare integer --idle-timeout=value, got nil")
+	// Both the flag and its value forward to claude as unknown args.
+	wantContains := []string{"--idle-timeout", "10m"}
+	for _, want := range wantContains {
+		found := false
+		for _, ca := range a.ClaudeArgs {
+			if ca == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected %q to forward to ClaudeArgs (removed in #174), got ClaudeArgs=%v", want, a.ClaudeArgs)
+		}
 	}
 }
 
@@ -1152,8 +1161,7 @@ func TestRootTreeFlagsAreParseRecognised(t *testing.T) {
 	// Type-appropriate synthetic values for flags whose parser validates
 	// the argument. Anything not listed gets the default "synthetic".
 	syntheticValues := map[string]string{
-		"port":         "12345",
-		"idle-timeout": "1s",
+		"port": "12345",
 	}
 	for _, f := range rootCommand.AllFlags() {
 		name := "--" + f.Name
@@ -1323,10 +1331,15 @@ func assertFlagSetEqual(t *testing.T, label string, c cmd.Command, want []string
 
 // TestServeCommandParity verifies that serveCommand declares EXACTLY the
 // flags parseServeFlags consumes — no more, no less. Mirrors
-// TestRootTreeFlagsAreParseRecognised but for the serve subcommand.
+// TestRootTreeFlagsAreParseRecognised but for the serve subcommand. Updated
+// in #174 to include the new mode flags (--session-mode, --daemon) and the
+// session-only flags lifted from the deleted root --headless path
+// (--idle-timeout, --proxy-api-key, --tls-cert, --tls-key, --upstream).
 func TestServeCommandParity(t *testing.T) {
 	assertFlagSetEqual(t, "serveCommand", serveCommand, []string{
+		"session-mode", "daemon",
 		"port", "log-file", "verbose", "profile",
+		"idle-timeout", "proxy-api-key", "tls-cert", "tls-key", "upstream",
 		"otel-metrics-table", "otel-logs-table", "otel-traces-table",
 		"help",
 	})

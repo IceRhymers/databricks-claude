@@ -14,14 +14,22 @@ import (
 )
 
 // headlessEnsure checks whether the proxy is healthy on the given port.
-// If not, it starts a detached headless proxy and polls until ready (max 10s).
-// Called by the SessionStart hook via: databricks-claude hooks session-start
+// If not, it starts a detached session-scoped proxy and polls until ready
+// (max 10s). Called by the SessionStart hook via: databricks-claude hooks
+// session-start.
+//
+// The spawn invocation targets `databricks-claude serve --session-mode
+// --port=<N>` (post-#174), not the deleted `--headless` root flag. The
+// EnsureCommand field on pkg/headless.Config carries that override; siblings
+// (databricks-codex, databricks-opencode) still emit the legacy --headless
+// prefix because they leave EnsureCommand empty.
 func headlessEnsure(port int) {
 	if err := headless.Ensure(headless.Config{
 		Port:          port,
 		ManagedEnvVar: "DATABRICKS_CLAUDE_MANAGED",
 		LogPrefix:     "databricks-claude",
 		RefcountPath:  refcount.PathForPort(".databricks-claude-sessions", port),
+		EnsureCommand: []string{"serve", "--session-mode"},
 	}); err != nil {
 		log.Fatalf("databricks-claude: %v", err)
 	}
