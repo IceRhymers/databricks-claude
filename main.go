@@ -6,15 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/IceRhymers/databricks-claude/internal/cmd"
@@ -22,7 +19,6 @@ import (
 	"github.com/IceRhymers/databricks-claude/pkg/cli"
 	"github.com/IceRhymers/databricks-claude/pkg/completion"
 	"github.com/IceRhymers/databricks-claude/pkg/health"
-	"github.com/IceRhymers/databricks-claude/pkg/lifecycle"
 	"github.com/IceRhymers/databricks-claude/pkg/mdmprofile"
 	"github.com/IceRhymers/databricks-claude/pkg/portbind"
 	"github.com/IceRhymers/databricks-claude/pkg/proxy"
@@ -44,6 +40,10 @@ var Version = "dev"
 // #173 removed the 4 hooks-lifecycle fields (InstallHooks, UninstallHooks,
 // HeadlessEnsure, HeadlessRelease). Their entrypoints now live under the
 // `hooks` subcommand tree (install / uninstall / session-start / session-end).
+//
+// #174 removed Headless and IdleTimeout. The session-scoped standalone proxy
+// now lives behind `serve --session-mode` (with --idle-timeout colocated as
+// a `serve` flag).
 type Args struct {
 	Profile       string
 	Verbose       bool
@@ -55,8 +55,6 @@ type Args struct {
 	TLSCert       string
 	TLSKey        string
 	Port          int
-	Headless      bool
-	IdleTimeout   time.Duration
 	NoUpdateCheck bool
 	ClaudeArgs    []string
 }
@@ -457,42 +455,20 @@ func main() {
 	}
 	handler := NewProxyServer(proxyConfig)
 
-	// --- Reference counting (before server start so lifecycle wrapper can use refcountPath) ---
-	// In headless mode, sessions manage the refcount via hooks (--headless-ensure
-	// acquires, --headless-release releases). The proxy itself does NOT self-acquire
-	// so the last session's release brings the count to 0 and triggers shutdown.
-	// In wrapper mode, the parent process acquires here and releases on exit.
+	// --- Reference counting ---
+	// Wrapper mode: the parent process acquires here and releases on exit.
+	// (Session-scoped standalone proxies that used to self-skip this acquire
+	// when --headless was set now live in `serve --session-mode`, which
+	// owns its own refcount management. See #174.)
 	refcountPath := refcount.PathForPort(".databricks-claude-sessions", port)
-	if !a.Headless {
-		if err := refcount.Acquire(refcountPath); err != nil {
-			log.Printf("databricks-claude: refcount acquire warning: %v", err)
-		}
-	}
-
-	// In headless mode, wrap handler with /shutdown endpoint and idle timeout.
-	// promoteCh is closed when this process wins the health-watcher election
-	// and takes over as the primary proxy owner; WrapWithLifecycle uses it to
-	// promote IsOwner so /shutdown correctly triggers shutdown after takeover.
-	var doneCh chan struct{}
-	var promoteCh chan struct{}
-	if a.Headless {
-		doneCh = make(chan struct{})
-		if !isOwner {
-			promoteCh = make(chan struct{})
-		}
-		handler = lifecycle.WrapWithLifecycle(lifecycle.Config{
-			Inner:        handler,
-			RefcountPath: refcountPath,
-			IsOwner:      isOwner,
-			PromoteCh:    promoteCh,
-			IdleTimeout:  a.IdleTimeout,
-			APIKey:       a.ProxyAPIKey,
-			DoneCh:       doneCh,
-			LogPrefix:    "databricks-claude",
-		})
+	if err := refcount.Acquire(refcountPath); err != nil {
+		log.Printf("databricks-claude: refcount acquire warning: %v", err)
 	}
 
 	// --- Start proxy if we own the port; otherwise watch for owner death ---
+	// promoteCh is no longer needed in wrapper mode (was only consumed by the
+	// lifecycle wrapper, which only ran in --headless). Wrapper mode does not
+	// register /shutdown — sessions exit by closing the child claude process.
 	if isOwner {
 		go func() {
 			srv := &http.Server{Handler: handler}
@@ -507,15 +483,7 @@ func main() {
 			}
 		}()
 	} else {
-		// Watch for owner death and take over the proxy if needed.
-		// onTakeover closes promoteCh so the lifecycle wrapper promotes this
-		// process to owner, enabling /shutdown to trigger a clean shutdown.
-		onTakeover := func() {
-			if promoteCh != nil {
-				close(promoteCh)
-			}
-		}
-		go health.WatchProxy(port, handler, a.TLSCert, a.TLSKey, "databricks-claude", onTakeover)
+		go health.WatchProxy(port, handler, a.TLSCert, a.TLSKey, "databricks-claude", func() {})
 	}
 
 	// --- Write config once (idempotent) ---
@@ -567,21 +535,12 @@ func main() {
 	}
 
 	if err := bootstrapSettings(a.Port, resolvedProfile, proxyURL, otelEnv); err != nil {
-		if a.Headless {
-			fmt.Fprintf(os.Stderr, "databricks-claude: warning: config write failed: %v\n", err)
-		} else {
-			log.Fatalf("databricks-claude: %v", err)
-		}
+		log.Fatalf("databricks-claude: %v", err)
 	}
 
 	// --- Log startup info ---
 	log.Printf("databricks-claude: proxy on %s (owner=%v), profile=%s, upstream=%s",
 		proxyURL, isOwner, resolvedProfile, inferenceUpstream)
-
-	if a.Headless {
-		runHeadless(proxyURL, ln, isOwner, refcountPath, doneCh)
-		return
-	}
 
 	// --- Synchronous update check (before child to avoid stderr interleaving) ---
 	if !a.NoUpdateCheck && os.Getenv("DATABRICKS_NO_UPDATE_CHECK") != "1" {
@@ -608,31 +567,6 @@ func main() {
 	os.Exit(exitCode)
 }
 
-// runHeadless runs the proxy without launching a claude child process.
-// It prints the proxy URL to stdout, then blocks until SIGINT/SIGTERM
-// or until doneCh is closed (by /shutdown or idle timeout).
-// The watchProxy goroutine (for non-owner sessions) is already started
-// before this function is called.
-func runHeadless(proxyURL string, ln net.Listener, isOwner bool, refcountPath string, doneCh chan struct{}) {
-	fmt.Printf("PROXY_URL=%s\n", proxyURL)
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case <-sigCh:
-		signal.Stop(sigCh)
-	case <-doneCh:
-		// Triggered by /shutdown or idle timeout.
-	}
-
-	// Release refcount. If /shutdown already released, Release floors at 0.
-	n, _ := refcount.Release(refcountPath)
-	if n == 0 && isOwner {
-		ln.Close()
-	}
-}
-
 // envBlock returns the "env" sub-map from a settings document, or an empty map.
 func envBlock(doc map[string]interface{}) map[string]interface{} {
 	if env, ok := doc["env"]; ok {
@@ -645,8 +579,8 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 
 // parseArgs separates databricks-claude flags from claude flags.
 // databricks-claude owns: --profile, --port, --verbose/-v, --version, --help,
-// --upstream, --log-file, --proxy-api-key, --tls-cert, --tls-key, --headless,
-// --idle-timeout, --no-update-check.
+// --upstream, --log-file, --proxy-api-key, --tls-cert, --tls-key,
+// --no-update-check.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
 //
@@ -660,10 +594,11 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 // --uninstall-hooks, --headless-ensure, --headless-release) — they live
 // behind the `hooks` subcommand tree now (hooks install / uninstall /
 // session-start / session-end). Same "removed, not aliased" semantics.
+//
+// #174 removed --headless and --idle-timeout — they live behind
+// `serve --session-mode` now. Same "removed, not aliased" semantics.
 func parseArgs(args []string) (*Args, error) {
-	a := &Args{
-		IdleTimeout: 30 * time.Minute, // default
-	}
+	a := &Args{}
 
 	// knownFlags is defined at package level in completion_flags.go,
 	// derived from flagDefs so completions and parsing stay in sync.
@@ -757,23 +692,8 @@ func parseArgs(args []string) (*Args, error) {
 						i++
 						a.Port, _ = strconv.Atoi(args[i])
 					}
-				case "--headless":
-					a.Headless = true
 				case "--no-update-check":
 					a.NoUpdateCheck = true
-				case "--idle-timeout":
-					raw := value
-					if raw == "" && i+1 < len(args) {
-						i++
-						raw = args[i]
-					}
-					if raw != "" {
-						if d, err := time.ParseDuration(raw); err == nil {
-							a.IdleTimeout = d
-						} else {
-							return nil, fmt.Errorf("--idle-timeout: %q is not a valid duration (use e.g. 30s, 5m, 1h)", raw)
-						}
-					}
 				default:
 					// name is in knownFlags (derived from the rootCommand
 					// tree) but no case above handles it. This can only

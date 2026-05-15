@@ -23,6 +23,8 @@ Transparent proxy wrapper for Claude Code that auto-refreshes Databricks OAuth t
 | `desktop_config.go` | `desktop` subcommand: `generate-config` writing `.mobileconfig`, `.reg`, and `.json` artifacts for Claude Desktop; credential-helper alias dispatch |
 | `desktop_trust.go` | `generate-trust-profile` subcommand for MDM trust profile generation |
 | `setup.go` | `setup` subcommand: idempotent auth bootstrap for fleet init scripts — resolves and persists the profile, then runs `databricks auth login` if not already authenticated (or always with `--force`) |
+| `serve.go` | `serve` subcommand dispatcher: `runServe(args)` routes to `runServeInstall` (sub-subcommands), `runServeSession` (--session-mode), or the inline daemon body (--daemon). `determineServeMode` enforces the required-explicit-mode invariant; `buildServeProxyConfig(state, resolved, mode)` is the shared `proxy.Config` factory across both lifecycle policies. |
+| `serve_session.go` | `runServeSession(args)` body for `serve --session-mode`. Refcounted, `/shutdown` route, idle-timeout, settings.json restore. Was the `--headless` root flag prior to #174. |
 | `serve_install.go` | Cross-platform dispatcher for `serve install`/`uninstall`/`status` sub-subcommands; flag parsing, binary resolution, status pretty-print |
 | `serve_install_darwin.go` | macOS LaunchAgent plist rendering and `launchctl` orchestration (build tag: `darwin`) |
 | `serve_install_linux.go` | Linux systemd user unit rendering and `systemctl --user` orchestration (build tag: `linux`) |

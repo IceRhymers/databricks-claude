@@ -95,7 +95,7 @@ When `with_websearch=false` (the default), the proxy forwards request bytes unch
 
 ## Session Hooks (recommended)
 
-Install hooks so every Claude Code session auto-starts the proxy on startup and releases it cleanly on exit — no manual `--headless` needed. The hooks keep the proxy running for all Claude clients — including ones that don't use the `databricks-claude` wrapper directly, such as the [Claude VS Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-code) and JetBrains/IntelliJ plugin.
+Install hooks so every Claude Code session auto-starts the proxy on startup and releases it cleanly on exit — no manual `serve --session-mode` needed. The hooks keep the proxy running for all Claude clients — including ones that don't use the `databricks-claude` wrapper directly, such as the [Claude VS Code extension](https://marketplace.visualstudio.com/items?itemName=Anthropic.claude-code) and JetBrains/IntelliJ plugin.
 
 > **Coexists with Claude Desktop.** If you've also installed the Claude Desktop mobileconfig, the hook's proxy lifecycle is harmless inside Desktop sessions — Desktop's inference does not consult `ANTHROPIC_BASE_URL` (it uses its own MDM-driven `inferenceCredentialHelper`).
 
@@ -605,32 +605,41 @@ The hooks deployment mode is unchanged behaviorally from earlier releases — th
 
 ## serve Subcommand
 
-Long-lived daemon that serves **both Claude Code and Claude Desktop** with persistent Databricks OAuth. A third deployment mode alongside the per-session CLI wrapper (`databricks-claude claude …`) and SessionStart hooks — useful when you want a single OAuth-refreshing proxy that survives across sessions.
+`serve` runs the standalone proxy under one of two lifecycle policies. **One mode flag is REQUIRED** — bare `serve` (no `--session-mode`, no `--daemon`, no sub-subcommand) is a hard error so a typo at the hooks spawn site can't silently degrade to the wrong lifecycle.
 
-Owns Databricks OAuth refresh and exposes inference + OTLP on `127.0.0.1`. Distinguished from `--headless` mode by: no session refcount, no `/shutdown` route, append-only logging, and `daemon:true` in `/health` so hooks can detect and no-op.
+| Mode | One-liner |
+|------|-----------|
+| `serve --session-mode` | Session-scoped proxy. Refcounted, `/shutdown` route, idle-timeout, settings.json restore-on-exit, fallback-port bind. Was the `--headless` root flag prior to #174. Used by IDE extensions and the `hooks session-start` internal. |
+| `serve --daemon` | Long-lived daemon. No refcount, no `/shutdown`, exclusive-port bind, `daemon:true` in `/health`, append-only logging, never mutates `settings.json`. |
+| `serve install\|uninstall\|status` | Daemon OS-service registration (LaunchAgent / schtasks / systemd --user). No mode flag needed — these are meta-operations on the daemon's service manifest. |
 
-Designed for LaunchAgent (macOS) or systemd (Linux) deployment, where the daemon is started once at login and kept running. Configure your client to point at the daemon:
+`serve` is the standalone-proxy entrypoint for the **third deployment mode** (long-lived daemon) alongside the per-session CLI wrapper (`databricks-claude [args] -- claude-args`) and the SessionStart hooks (`hooks install`).
+
+### Daemon mode
+
+Owns Databricks OAuth refresh and exposes inference + OTLP on `127.0.0.1`. Designed for LaunchAgent (macOS) or systemd (Linux) deployment, where the daemon is started once at login and kept running. Configure your client to point at the daemon:
 - **Claude Desktop:** via MDM, set `gatewayBaseUrl: http://127.0.0.1:<port>` with a static fake API key (no per-user secret distribution).
 - **Claude Code:** edit `~/.claude/settings.json` once to set `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` in the env block. The daemon does NOT mutate `settings.json` itself — it stays outside the per-tool lifecycle by design.
 
 ```bash
 # Minimal daemon on default port:
-databricks-claude serve
+databricks-claude serve --daemon
 
 # With explicit profile, port, and persistent log file:
-databricks-claude serve \
+databricks-claude serve --daemon \
   --profile databricks-ai-inference \
   --port 49153 \
   --log-file /var/log/databricks-claude/daemon.log
 
 # With OTEL table routing:
-databricks-claude serve \
+databricks-claude serve --daemon \
   --otel-metrics-table main.claude_telemetry.claude_otel_metrics \
   --otel-logs-table main.claude_telemetry.claude_otel_logs
 ```
 
 | Flag | Purpose |
 |------|---------|
+| `--daemon` | **Required** to select the daemon lifecycle (or use a sub-subcommand). |
 | `--port int` | Proxy listen port (default: `49153`). Bound exclusively — MDM-baked `gatewayBaseUrl` is a fixed URL and cannot follow a fallback port. |
 | `--profile string` | Databricks config profile (default: saved state → MDM `databricksProfile` key → `"DEFAULT"`) |
 | `--log-file string` | Append-only log file (`O_APPEND`, not `O_TRUNC`). Safe for log rotation. Restarts preserve prior content. |
@@ -750,32 +759,47 @@ The wrapper writes more than `ANTHROPIC_BASE_URL` on first run. It also writes D
 
 The write is idempotent — `ensureConfig` short-circuits when the env block already matches.
 
-**Fallback (if `config write` is unavailable):** Use `databricks-claude --headless`, wait for `PROXY_URL=http://127.0.0.1:49153`, then stop it (Ctrl+C). This works but binds the proxy port unnecessarily — use `config write` instead.
+**Fallback (if `config write` is unavailable):** Use `databricks-claude serve --session-mode`, wait for `PROXY_URL=http://127.0.0.1:49153`, then stop it (Ctrl+C). This works but binds the proxy port unnecessarily — use `config write` instead.
 
 **Notes:**
 
 - **The daemon does NOT mutate `~/.claude/settings.json`.** That's the whole point of the daemon vs. the per-session CLI wrapper — it lives outside the per-tool lifecycle. The one-time `config write` bootstrap above is the wrapper doing its first-run setup; subsequent daemon restarts do not touch your settings.
 - **Re-bootstrap when model names drift.** If you upgrade `databricks-claude` and the project ships new default model names, re-run `databricks-claude config write` once to refresh them. The bootstrap is idempotent and only writes keys that differ.
-- **OTEL tables persist to state.** Run `databricks-claude serve --otel-metrics-table foo --otel-logs-table bar` once; the daemon (or its installed service) picks them up from `~/.claude/.databricks-claude.json` on every restart thereafter.
+- **OTEL tables persist to state.** Run `databricks-claude serve --daemon --otel-metrics-table foo --otel-logs-table bar` once; the daemon (or its installed service) picks them up from `~/.claude/.databricks-claude.json` on every restart thereafter.
 - **Don't run the CLI wrapper (`databricks-claude claude …`) at the same time as the daemon for the same workspace.** Pick one deployment mode per workspace; mixing both means two proxies fighting over the same port and settings block.
 - **Hooks coexist cleanly.** If you've also installed SessionStart hooks (`databricks-claude hooks install`), they probe the daemon's `/health` and no-op when it's running, falling back to per-session proxy only if the daemon is down.
 
 To stop using the daemon, run `databricks-claude serve uninstall` and remove the `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` lines from `~/.claude/settings.json` (or delete the whole `env` block if you don't use Claude Code anymore).
 
-## Headless Mode
+## Session-Scoped Proxy (`serve --session-mode`)
 
-`--headless` starts the proxy without launching a `claude` child process, for use by IDE extensions and external tooling.
+`serve --session-mode` starts the proxy without launching a `claude` child process, for use by IDE extensions and external tooling. This was the `--headless` root flag prior to #174 — see the breaking-change callout below.
 
 ```bash
-databricks-claude --headless
+databricks-claude serve --session-mode
 # prints: PROXY_URL=http://127.0.0.1:<port>
 ```
 
 ### Lifecycle Management
 
-- **`GET /health`** — liveness check, returns `{"tool":"databricks-claude","version":"...","pid":...}`
+- **`GET /health`** — liveness check, returns `{"tool":"databricks-claude","version":"...","pid":...,"daemon":false}`
 - **`POST /shutdown`** — decrements the session refcount; when it reaches 0, the proxy exits. Returns `{"remaining": N, "exiting": true/false}`
-- **Idle timeout** — after 30 minutes with no proxied requests, the proxy shuts down automatically. Configure with `--idle-timeout <duration>` (e.g. `10m`, `1h`). Use `--idle-timeout 0` to disable.
+- **Idle timeout** — after 30 minutes with no proxied requests, the proxy shuts down automatically. Configure with `--idle-timeout <duration>` (e.g. `10m`, `1h`). Use `--idle-timeout 0` to disable. Only meaningful in `--session-mode` — the `--daemon` lifecycle has no idle exit.
+
+### Optional flags (session mode)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | `49153` | Proxy listen port (fallback-aware in session mode). |
+| `--idle-timeout` | `30m` | Idle timeout (`0` disables). Only meaningful in `--session-mode`. |
+| `--proxy-api-key` | | Require Bearer token auth on all proxy requests. |
+| `--tls-cert`, `--tls-key` | | Enable TLS on the proxy listener. |
+| `--upstream` | auto-discovered | Override the AI Gateway URL. |
+| `--profile` | state → `DEFAULT` | Databricks CLI profile. |
+| `--log-file` | | Write debug logs to a file. |
+| `--verbose`, `-v` | `false` | Enable debug logging to stderr. |
+
+> **Breaking change (#174):** `databricks-claude --headless` is now `databricks-claude serve --session-mode`. `--idle-timeout` moved from root to a `serve` flag. Bare `serve` (no mode flag, no sub-subcommand) now exits with code 2 — specify `--session-mode`, `--daemon`, or one of `install|uninstall|status`. The required-explicit-mode invariant prevents a typo at the hooks spawn site from silently degrading to the daemon lifecycle (wrong refcount semantics, broken `hooks session-end`).
 
 ## How It Works
 
@@ -801,8 +825,6 @@ databricks-claude --headless
 | `--port` | `49153` | Proxy listen port (saved for future sessions) |
 | `--tls-cert` | | Path to TLS certificate file (requires `--tls-key`) |
 | `--tls-key` | | Path to TLS private key file (requires `--tls-cert`) |
-| `--headless` | `false` | Start proxy without launching claude (for IDE extensions) |
-| `--idle-timeout` | `30m` | Idle timeout in headless mode (`0` disables) |
 | `--version` | | Print version and exit |
 | `--help`, `-h` | | Print the wrapper's flags and exit. Use `databricks-claude -- --help` to forward to claude's own `--help`. |
 
