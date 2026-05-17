@@ -45,6 +45,18 @@ type Config struct {
 	// TLSKey is the path to the TLS key file.
 	// When non-empty, --tls-key is forwarded to the subprocess.
 	TLSKey string
+
+	// EnsureCommand, when non-empty, replaces the default "--headless" prefix
+	// in the spawn argv. Set by callers whose binary has consolidated the
+	// session-scoped lifecycle behind a different command word — e.g.
+	// databricks-claude (issue #174) sets this to []string{"serve",
+	// "--session-mode"} so the spawned child reaches the new entrypoint
+	// instead of the deleted root flag.
+	//
+	// When empty (the default), buildArgs emits the legacy "--headless"
+	// invocation — keeps siblings (databricks-codex, databricks-opencode)
+	// byte-identical with their pre-#174 expectations.
+	EnsureCommand []string
 }
 
 // Ensure checks whether the proxy is healthy on the given port.
@@ -117,8 +129,22 @@ func Ensure(cfg Config) error {
 }
 
 // buildArgs constructs the CLI arguments for the detached proxy subprocess.
+//
+// Default shape: "--headless --port=N [TLS flags]" — preserved for the
+// shared-substrate siblings (databricks-codex, databricks-opencode) whose
+// binaries still own the legacy --headless root flag.
+//
+// When cfg.EnsureCommand is non-empty, that prefix replaces "--headless".
+// databricks-claude post-#174 passes []string{"serve", "--session-mode"} so
+// the spawned child reaches the consolidated entrypoint. The prefix is
+// emitted verbatim, then "--port=N" + optional TLS flags are appended.
 func buildArgs(cfg Config) []string {
-	args := []string{"--headless", fmt.Sprintf("--port=%d", cfg.Port)}
+	prefix := []string{"--headless"}
+	if len(cfg.EnsureCommand) > 0 {
+		prefix = cfg.EnsureCommand
+	}
+	args := append([]string{}, prefix...)
+	args = append(args, fmt.Sprintf("--port=%d", cfg.Port))
 	if cfg.TLSCert != "" {
 		args = append(args, "--tls-cert="+cfg.TLSCert)
 	}

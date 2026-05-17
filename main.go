@@ -6,22 +6,19 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/IceRhymers/databricks-claude/internal/cmd"
 	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
 	"github.com/IceRhymers/databricks-claude/pkg/cli"
 	"github.com/IceRhymers/databricks-claude/pkg/completion"
 	"github.com/IceRhymers/databricks-claude/pkg/health"
-	"github.com/IceRhymers/databricks-claude/pkg/lifecycle"
 	"github.com/IceRhymers/databricks-claude/pkg/mdmprofile"
 	"github.com/IceRhymers/databricks-claude/pkg/portbind"
 	"github.com/IceRhymers/databricks-claude/pkg/proxy"
@@ -34,45 +31,32 @@ import (
 var Version = "dev"
 
 // Args holds all parsed command-line arguments for databricks-claude.
+//
+// #172 removed the 14 "persistent config editor" fields (PrintEnv, OTEL,
+// OTELMetricsTable*, OTELLogsTable*, OTELTraces, OTELTracesTable*, NoOTEL*,
+// WriteClaudeConfig, WithWebSearch*, WebSearchBackend*, WebSearchFetchBudget*).
+// Their mutation paths now live under the `config` subcommand tree.
+//
+// #173 removed the 4 hooks-lifecycle fields (InstallHooks, UninstallHooks,
+// HeadlessEnsure, HeadlessRelease). Their entrypoints now live under the
+// `hooks` subcommand tree (install / uninstall / session-start / session-end).
+//
+// #174 removed Headless and IdleTimeout. The session-scoped standalone proxy
+// now lives behind `serve --session-mode` (with --idle-timeout colocated as
+// a `serve` flag).
 type Args struct {
-	Profile                 string
-	Verbose                 bool
-	Version                 bool
-	ShowHelp                bool
-	PrintEnv                bool
-	OTEL                    bool
-	OTELMetricsTable        string
-	OTELMetricsTableSet     bool
-	OTELLogsTable           string
-	OTELLogsTableSet        bool
-	OTELTraces              bool
-	OTELTracesTable         string
-	OTELTracesTableSet      bool
-	Upstream                string
-	LogFile                 string
-	NoOTEL                  bool
-	NoOTELMetrics           bool
-	NoOTELLogs              bool
-	NoOTELTraces            bool
-	ProxyAPIKey             string
-	TLSCert                 string
-	TLSKey                  string
-	Port                    int
-	Headless                bool
-	WriteClaudeConfig       bool
-	IdleTimeout             time.Duration
-	InstallHooks            bool
-	UninstallHooks          bool
-	HeadlessEnsure          bool
-	HeadlessRelease         bool
-	NoUpdateCheck           bool
-	WithWebSearch           bool
-	WithWebSearchSet        bool
-	WebSearchBackend        string
-	WebSearchBackendSet     bool
-	WebSearchFetchBudget    int
-	WebSearchFetchBudgetSet bool
-	ClaudeArgs              []string
+	Profile       string
+	Verbose       bool
+	Version       bool
+	ShowHelp      bool
+	Upstream      string
+	LogFile       string
+	ProxyAPIKey   string
+	TLSCert       string
+	TLSKey        string
+	Port          int
+	NoUpdateCheck bool
+	ClaudeArgs    []string
 }
 
 func main() {
@@ -152,6 +136,27 @@ func main() {
 		return
 	}
 
+	// `config` subcommand — persistent config editor (OTEL signals, websearch,
+	// settings.json env block, resolved-config diagnostic). Consolidates the
+	// 14 flags removed from the root in #172 — the flags that mutate state /
+	// settings.json for FUTURE runs rather than affecting the current
+	// invocation. The transparent-proxy launcher path below is intentionally
+	// flag-driven and bare; persistent state mutation lives behind this tree.
+	if len(os.Args) >= 2 && os.Args[1] == "config" {
+		runConfigCommand(os.Args[2:])
+		return
+	}
+
+	// `hooks` subcommand — session-hook deployment mode. install/uninstall
+	// manage the SessionStart/SessionEnd entries in ~/.claude/settings.json;
+	// session-start/session-end are the hook-invoked refcount-managed proxy
+	// lifecycle internals (formerly --headless-ensure / --headless-release
+	// before #173 consolidated them off the root flag namespace).
+	if len(os.Args) >= 2 && os.Args[1] == "hooks" {
+		runHooksCommand(os.Args[2:])
+		return
+	}
+
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
@@ -172,231 +177,6 @@ func main() {
 	if a.Version {
 		fmt.Printf("databricks-claude %s\n", Version)
 		os.Exit(0)
-	}
-
-	// --- Hook lifecycle commands (handled before auth/config setup) ---
-	if a.InstallHooks || a.UninstallHooks {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			log.Fatalf("databricks-claude: cannot determine home dir: %v", err)
-		}
-		sp := filepath.Join(homeDir, ".claude", "settings.json")
-		if a.InstallHooks {
-			// First-run env setup: persist profile/port and write
-			// ANTHROPIC_BASE_URL placeholder so users no longer need to run
-			// `databricks-claude` once before installing hooks. The placeholder
-			// URL is overwritten by --headless-ensure at session start with
-			// the discovered gateway URL.
-			resolvedProfile := a.Profile
-			if resolvedProfile == "" {
-				resolvedProfile = "DEFAULT"
-			}
-			port := resolvePort(a.Port, loadState())
-			placeholder := fmt.Sprintf("http://127.0.0.1:%d", port)
-			if err := bootstrapSettings(a.Port, resolvedProfile, placeholder, nil); err != nil {
-				log.Fatalf("databricks-claude: --install-hooks bootstrap: %v", err)
-			}
-			if err := installHooks(sp); err != nil {
-				log.Fatalf("databricks-claude: --install-hooks: %v", err)
-			}
-			fmt.Fprintln(os.Stderr, "databricks-claude: hooks installed — SessionStart and SessionEnd hooks added to ~/.claude/settings.json")
-		} else {
-			if err := uninstallHooks(sp); err != nil {
-				log.Fatalf("databricks-claude: --uninstall-hooks: %v", err)
-			}
-			fmt.Fprintln(os.Stderr, "databricks-claude: hooks removed from ~/.claude/settings.json")
-		}
-		os.Exit(0)
-	}
-
-	// --- Headless hook commands (called by installed hooks, not by end users) ---
-	if a.HeadlessEnsure || a.HeadlessRelease {
-		state := loadState()
-		port := resolvePort(a.Port, state)
-		if a.HeadlessEnsure {
-			headlessEnsure(port)
-		} else {
-			headlessRelease(port)
-		}
-		os.Exit(0)
-	}
-
-	// --- Write Claude config and exit (no proxy, no port bind, no child) ---
-	if a.WriteClaudeConfig {
-		wcProfile := a.Profile
-		if wcProfile == "" {
-			if saved := loadState(); saved.Profile != "" {
-				wcProfile = saved.Profile
-			}
-		}
-		if wcProfile == "" {
-			wcProfile = "DEFAULT"
-		}
-
-		wcPort := resolvePort(a.Port, loadState())
-		wcProxyURL := fmt.Sprintf("http://127.0.0.1:%d", wcPort)
-
-		if _, err := DiscoverHost(wcProfile, ""); err != nil {
-			log.Fatalf("databricks-claude: failed to discover host for profile %q: %v\nRun 'databricks auth login --profile %s' first",
-				wcProfile, err, wcProfile)
-		}
-
-		// Resolve OTEL tables: flag → state → empty.
-		wcState := loadState()
-		ucMetrics := wcState.OtelMetricsTable
-		ucLogs := wcState.OtelLogsTable
-		ucTraces := wcState.OtelTracesTable
-		if a.OTELMetricsTableSet {
-			ucMetrics = a.OTELMetricsTable
-		}
-		if a.OTELLogsTableSet {
-			ucLogs = a.OTELLogsTable
-		} else if ucLogs == "" && ucMetrics != "" {
-			ucLogs = deriveLogsTable(ucMetrics)
-		}
-		if a.OTELTracesTableSet {
-			ucTraces = a.OTELTracesTable
-		}
-
-		// Persist any newly-set table names.
-		{
-			mutated := false
-			if a.OTELMetricsTableSet && wcState.OtelMetricsTable != ucMetrics {
-				wcState.OtelMetricsTable = ucMetrics
-				mutated = true
-			}
-			if a.OTELLogsTableSet && wcState.OtelLogsTable != ucLogs {
-				wcState.OtelLogsTable = ucLogs
-				mutated = true
-			}
-			if a.OTELTracesTableSet && wcState.OtelTracesTable != ucTraces {
-				wcState.OtelTracesTable = ucTraces
-				mutated = true
-			}
-			if mutated {
-				if err := saveState(wcState); err != nil {
-					log.Fatalf("databricks-claude: could not persist OTEL tables: %v", err)
-				}
-			}
-		}
-
-		// Build otelEnv — always needsFullSetup (the whole point of this flag).
-		wcOtelEnv := map[string]string{}
-		if ucMetrics != "" {
-			wcOtelEnv["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] = wcProxyURL + "/otel/v1/metrics"
-			wcOtelEnv["OTEL_EXPORTER_OTLP_METRICS_HEADERS"] = "content-type=application/x-protobuf"
-			wcOtelEnv["OTEL_METRICS_EXPORTER"] = "otlp"
-			wcOtelEnv["OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"] = "http/protobuf"
-			wcOtelEnv["OTEL_METRIC_EXPORT_INTERVAL"] = "10000"
-			wcOtelEnv["CLAUDE_OTEL_UC_METRICS_TABLE"] = ucMetrics
-		}
-		if ucLogs != "" {
-			wcOtelEnv["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = wcProxyURL + "/otel/v1/logs"
-			wcOtelEnv["OTEL_EXPORTER_OTLP_LOGS_HEADERS"] = "content-type=application/x-protobuf"
-			wcOtelEnv["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] = "http/protobuf"
-			wcOtelEnv["OTEL_LOGS_EXPORTER"] = "otlp"
-			wcOtelEnv["OTEL_LOGS_EXPORT_INTERVAL"] = "5000"
-			wcOtelEnv["CLAUDE_OTEL_UC_LOGS_TABLE"] = ucLogs
-		}
-		if ucTraces != "" {
-			wcOtelEnv["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"] = "1"
-			wcOtelEnv["OTEL_TRACES_EXPORTER"] = "otlp"
-			wcOtelEnv["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = wcProxyURL + "/otel/v1/traces"
-			wcOtelEnv["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"] = "http/protobuf"
-			wcOtelEnv["OTEL_TRACES_EXPORT_INTERVAL"] = "5000"
-			wcOtelEnv["CLAUDE_OTEL_UC_TRACES_TABLE"] = ucTraces
-		}
-		if ucMetrics != "" || ucLogs != "" || ucTraces != "" {
-			wcOtelEnv["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
-		}
-		for k, v := range databricksFullSetupEnv() {
-			wcOtelEnv[k] = v
-		}
-
-		// Resolve --with-websearch settings and persist to state so the
-		// daemon (and any subsequent wrapper invocation) picks them up.
-		// Websearch is a PROXY-side feature controlled by state, NOT by
-		// the settings.json env block — so no key is added to wcOtelEnv;
-		// the state file is the entire integration point. Mirrors the
-		// normal-startup persistence block. Reload state here so we pick
-		// up any OTEL writes from above.
-		wcWsState := loadState()
-		wcWithWebSearch := wcWsState.WithWebSearch
-		wcWsBackend := wcWsState.WebSearchBackend
-		wcWsBudget := wcWsState.WebSearchFetchBudget
-		if a.WithWebSearchSet {
-			wcWithWebSearch = a.WithWebSearch
-		}
-		if a.WebSearchBackendSet {
-			wcWsBackend = a.WebSearchBackend
-		}
-		if a.WebSearchFetchBudgetSet {
-			wcWsBudget = a.WebSearchFetchBudget
-		}
-		{
-			mutated := false
-			if a.WithWebSearchSet && wcWsState.WithWebSearch != wcWithWebSearch {
-				wcWsState.WithWebSearch = wcWithWebSearch
-				mutated = true
-			}
-			if a.WebSearchBackendSet && wcWsState.WebSearchBackend != wcWsBackend {
-				wcWsState.WebSearchBackend = wcWsBackend
-				mutated = true
-			}
-			if a.WebSearchFetchBudgetSet && wcWsState.WebSearchFetchBudget != wcWsBudget {
-				wcWsState.WebSearchFetchBudget = wcWsBudget
-				mutated = true
-			}
-			if mutated {
-				if err := saveState(wcWsState); err != nil {
-					log.Fatalf("databricks-claude: could not persist websearch state: %v", err)
-				}
-			}
-		}
-
-		if err := bootstrapSettings(a.Port, wcProfile, wcProxyURL, wcOtelEnv); err != nil {
-			log.Fatalf("databricks-claude: --write-claude-config: %v", err)
-		}
-		fmt.Fprintf(os.Stderr, "databricks-claude: wrote env block to ~/.claude/settings.json (profile=%s, base_url=%s, websearch=%t)\n", wcProfile, wcProxyURL, wcWithWebSearch)
-		os.Exit(0)
-	}
-
-	// --no-otel and --no-otel-{metrics,logs,traces}: clear persisted OTEL keys
-	// from settings.json. Per-signal flags clear only that signal; --no-otel
-	// is the nuclear option that clears every signal plus the telemetry toggle.
-	if a.NoOTEL || a.NoOTELMetrics || a.NoOTELLogs || a.NoOTELTraces {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			log.Fatalf("databricks-claude: cannot determine home dir: %v", err)
-		}
-		settingsPathForClear := filepath.Join(homeDir, ".claude", "settings.json")
-		if a.NoOTEL {
-			if err := clearOTELKeys(settingsPathForClear); err != nil {
-				log.Fatalf("databricks-claude: failed to clear OTEL keys: %v", err)
-			}
-			fmt.Fprintln(os.Stderr, "databricks-claude: OTEL keys cleared — OTEL disabled for future sessions")
-		} else {
-			if a.NoOTELMetrics {
-				if err := clearOTELKeysSubset(settingsPathForClear, otelMetricsKeys); err != nil {
-					log.Fatalf("databricks-claude: failed to clear OTEL metrics keys: %v", err)
-				}
-				fmt.Fprintln(os.Stderr, "databricks-claude: OTEL metrics keys cleared")
-			}
-			if a.NoOTELLogs {
-				if err := clearOTELKeysSubset(settingsPathForClear, otelLogsKeys); err != nil {
-					log.Fatalf("databricks-claude: failed to clear OTEL logs keys: %v", err)
-				}
-				fmt.Fprintln(os.Stderr, "databricks-claude: OTEL logs keys cleared")
-			}
-			if a.NoOTELTraces {
-				if err := clearOTELKeysSubset(settingsPathForClear, otelTracesKeys); err != nil {
-					log.Fatalf("databricks-claude: failed to clear OTEL traces keys: %v", err)
-				}
-				fmt.Fprintln(os.Stderr, "databricks-claude: OTEL traces keys cleared")
-			}
-		}
-		// Continue — flags only clear persisted state; other flags on the same
-		// invocation can still re-enable specific signals.
 	}
 
 	// --- Resolve config from settings.json ---
@@ -521,24 +301,9 @@ func main() {
 		ucTracesTable = tableState.OtelTracesTable
 	}
 
-	// --no-otel-{signal} disables the signal for this session. Zero out any
-	// table value that the state-file fallback above may have populated —
-	// the flag wins over persisted state (but the state file is left intact
-	// so the next --otel invocation can pick the tables back up).
-	if a.NoOTEL || a.NoOTELMetrics {
-		ucMetricsTable = ""
-	}
-	if a.NoOTEL || a.NoOTELLogs {
-		ucLogsTable = ""
-	}
-	if a.NoOTEL || a.NoOTELTraces {
-		ucTracesTable = ""
-	}
-
 	// --- Seed token cache ---
 	tp := NewTokenProvider(resolvedProfile, "")
-	initialToken, err := tp.Token(context.Background())
-	if err != nil {
+	if _, err := tp.Token(context.Background()); err != nil {
 		log.Fatalf("databricks-claude: failed to fetch initial token for profile %q: %v", resolvedProfile, err)
 	}
 
@@ -583,82 +348,26 @@ func main() {
 		otelUpstream = inferenceUpstream
 	}
 
-	// OTEL table resolution follows table-presence semantics: a signal's env
-	// vars are only emitted when its UC table is configured (flag, persisted
-	// settings.json, or — for metrics/logs — the legacy --otel default).
-	//
-	// Metrics table: --otel-metrics-table > persisted > --otel default. Without
-	// any of those, ucMetricsTable stays empty and metrics env vars are skipped.
-	if a.OTELMetricsTableSet {
-		ucMetricsTable = a.OTELMetricsTable
-	} else if ucMetricsTable == "" && a.OTEL {
-		ucMetricsTable = a.OTELMetricsTable
-	}
-
-	// Logs table: --otel-logs-table > persisted > derive-from-metrics (only
-	// when metrics is itself configured). Without any of those it stays empty.
-	if a.OTELLogsTableSet {
-		ucLogsTable = a.OTELLogsTable
-	} else if ucLogsTable == "" && ucMetricsTable != "" {
-		ucLogsTable = deriveLogsTable(ucMetricsTable)
-	}
-
-	// Traces table: --otel-traces-table > persisted. No default — traces are
-	// opt-in via --otel-traces / --otel-traces-table.
-	if a.OTELTracesTableSet {
-		ucTracesTable = a.OTELTracesTable
-	}
-	// If --otel-traces is passed but no table is configured (neither flag nor
-	// persisted), traces is silently skipped — see the env-injection block.
-	_ = a.OTELTraces
-
 	// --- Resolve port for downstream binding ---
 	port := resolvePort(a.Port, loadState())
 
-	// --- Print env and exit if requested ---
-	// This exit is intentionally before any state or settings.json writes so
-	// --print-env remains a read-only diagnostic (no side effects).
-	if a.PrintEnv {
-		otelActive := ucMetricsTable != "" || ucLogsTable != "" || ucTracesTable != ""
-		handlePrintEnv(resolvedProfile, databricksHost, inferenceUpstream, initialToken, a.Upstream, otelActive, ucMetricsTable, ucLogsTable, ucTracesTable)
-		os.Exit(0)
-	}
-
-	// Persist OTel table names to the state file so they survive --no-otel.
-	// We write when an explicit --otel-*-table flag was given, or when a table
-	// was found in settings.json but hasn't been migrated to state yet.
-	// Uses tableState (loaded above for fallback) directly to avoid a second
-	// loadState call; bootstrapSettings below will do its own fresh load.
+	// Migrate OTEL tables that exist in settings.json but not yet in the state
+	// file. The flag-driven mutation paths moved to `config otel enable` in
+	// #172, but the running proxy still needs to keep state in sync with
+	// whatever it reads from settings.json — so a settings.json-only OTEL
+	// config (from a pre-#172 install) gets migrated forward on first run.
 	{
-		metricsToSave := ""
-		logsToSave := ""
-		tracesToSave := ""
-		if a.OTELMetricsTableSet {
-			metricsToSave = ucMetricsTable
-		} else if metricsFromSettings != "" && tableState.OtelMetricsTable == "" {
-			metricsToSave = metricsFromSettings
-		}
-		if a.OTELLogsTableSet {
-			logsToSave = ucLogsTable
-		} else if logsFromSettings != "" && tableState.OtelLogsTable == "" {
-			logsToSave = logsFromSettings
-		}
-		if a.OTELTracesTableSet {
-			tracesToSave = ucTracesTable
-		} else if tracesFromSettings != "" && tableState.OtelTracesTable == "" {
-			tracesToSave = tracesFromSettings
-		}
 		mutated := false
-		if metricsToSave != "" && tableState.OtelMetricsTable != metricsToSave {
-			tableState.OtelMetricsTable = metricsToSave
+		if metricsFromSettings != "" && tableState.OtelMetricsTable == "" {
+			tableState.OtelMetricsTable = metricsFromSettings
 			mutated = true
 		}
-		if logsToSave != "" && tableState.OtelLogsTable != logsToSave {
-			tableState.OtelLogsTable = logsToSave
+		if logsFromSettings != "" && tableState.OtelLogsTable == "" {
+			tableState.OtelLogsTable = logsFromSettings
 			mutated = true
 		}
-		if tracesToSave != "" && tableState.OtelTracesTable != tracesToSave {
-			tableState.OtelTracesTable = tracesToSave
+		if tracesFromSettings != "" && tableState.OtelTracesTable == "" {
+			tableState.OtelTracesTable = tracesFromSettings
 			mutated = true
 		}
 		if mutated {
@@ -673,48 +382,20 @@ func main() {
 		log.Fatalf("databricks-claude: %v", err)
 	}
 
-	// --- Resolve --with-websearch (workaround) settings ---
-	// Resolution chain: flag (if set) > saved state > default. Persist any
-	// flag value back to state so users only opt in once. Mirrors the
-	// OTEL-table persistence pattern.
+	// --- Read --with-websearch (workaround) settings from state ---
+	// #172 moved websearch flag mutation behind `config websearch enable`.
+	// The running proxy still reads with_websearch / backend / fetch-budget
+	// from the state file every start so previously-enabled installs keep
+	// working without code changes.
 	wsState := loadState()
 	withWebSearch := wsState.WithWebSearch
 	wsBackend := wsState.WebSearchBackend
 	wsBudget := wsState.WebSearchFetchBudget
-	if a.WithWebSearchSet {
-		withWebSearch = a.WithWebSearch
-	}
-	if a.WebSearchBackendSet {
-		wsBackend = a.WebSearchBackend
-	}
-	if a.WebSearchFetchBudgetSet {
-		wsBudget = a.WebSearchFetchBudget
-	}
 	if wsBackend == "" {
 		wsBackend = "duckduckgo"
 	}
 	if wsBudget <= 0 {
 		wsBudget = 100 * 1024
-	}
-	{
-		mutated := false
-		if a.WithWebSearchSet && wsState.WithWebSearch != withWebSearch {
-			wsState.WithWebSearch = withWebSearch
-			mutated = true
-		}
-		if a.WebSearchBackendSet && wsState.WebSearchBackend != wsBackend {
-			wsState.WebSearchBackend = wsBackend
-			mutated = true
-		}
-		if a.WebSearchFetchBudgetSet && wsState.WebSearchFetchBudget != wsBudget {
-			wsState.WebSearchFetchBudget = wsBudget
-			mutated = true
-		}
-		if mutated {
-			if err := saveState(wsState); err != nil {
-				log.Printf("databricks-claude: warning: could not persist websearch state: %v", err)
-			}
-		}
 	}
 
 	// Build the websearch backend (if enabled) and print the workaround warning.
@@ -774,42 +455,20 @@ func main() {
 	}
 	handler := NewProxyServer(proxyConfig)
 
-	// --- Reference counting (before server start so lifecycle wrapper can use refcountPath) ---
-	// In headless mode, sessions manage the refcount via hooks (--headless-ensure
-	// acquires, --headless-release releases). The proxy itself does NOT self-acquire
-	// so the last session's release brings the count to 0 and triggers shutdown.
-	// In wrapper mode, the parent process acquires here and releases on exit.
+	// --- Reference counting ---
+	// Wrapper mode: the parent process acquires here and releases on exit.
+	// (Session-scoped standalone proxies that used to self-skip this acquire
+	// when --headless was set now live in `serve --session-mode`, which
+	// owns its own refcount management. See #174.)
 	refcountPath := refcount.PathForPort(".databricks-claude-sessions", port)
-	if !a.Headless {
-		if err := refcount.Acquire(refcountPath); err != nil {
-			log.Printf("databricks-claude: refcount acquire warning: %v", err)
-		}
-	}
-
-	// In headless mode, wrap handler with /shutdown endpoint and idle timeout.
-	// promoteCh is closed when this process wins the health-watcher election
-	// and takes over as the primary proxy owner; WrapWithLifecycle uses it to
-	// promote IsOwner so /shutdown correctly triggers shutdown after takeover.
-	var doneCh chan struct{}
-	var promoteCh chan struct{}
-	if a.Headless {
-		doneCh = make(chan struct{})
-		if !isOwner {
-			promoteCh = make(chan struct{})
-		}
-		handler = lifecycle.WrapWithLifecycle(lifecycle.Config{
-			Inner:        handler,
-			RefcountPath: refcountPath,
-			IsOwner:      isOwner,
-			PromoteCh:    promoteCh,
-			IdleTimeout:  a.IdleTimeout,
-			APIKey:       a.ProxyAPIKey,
-			DoneCh:       doneCh,
-			LogPrefix:    "databricks-claude",
-		})
+	if err := refcount.Acquire(refcountPath); err != nil {
+		log.Printf("databricks-claude: refcount acquire warning: %v", err)
 	}
 
 	// --- Start proxy if we own the port; otherwise watch for owner death ---
+	// promoteCh is no longer needed in wrapper mode (was only consumed by the
+	// lifecycle wrapper, which only ran in --headless). Wrapper mode does not
+	// register /shutdown — sessions exit by closing the child claude process.
 	if isOwner {
 		go func() {
 			srv := &http.Server{Handler: handler}
@@ -824,15 +483,7 @@ func main() {
 			}
 		}()
 	} else {
-		// Watch for owner death and take over the proxy if needed.
-		// onTakeover closes promoteCh so the lifecycle wrapper promotes this
-		// process to owner, enabling /shutdown to trigger a clean shutdown.
-		onTakeover := func() {
-			if promoteCh != nil {
-				close(promoteCh)
-			}
-		}
-		go health.WatchProxy(port, handler, a.TLSCert, a.TLSKey, "databricks-claude", onTakeover)
+		go health.WatchProxy(port, handler, a.TLSCert, a.TLSKey, "databricks-claude", func() {})
 	}
 
 	// --- Write config once (idempotent) ---
@@ -884,21 +535,12 @@ func main() {
 	}
 
 	if err := bootstrapSettings(a.Port, resolvedProfile, proxyURL, otelEnv); err != nil {
-		if a.Headless {
-			fmt.Fprintf(os.Stderr, "databricks-claude: warning: config write failed: %v\n", err)
-		} else {
-			log.Fatalf("databricks-claude: %v", err)
-		}
+		log.Fatalf("databricks-claude: %v", err)
 	}
 
 	// --- Log startup info ---
 	log.Printf("databricks-claude: proxy on %s (owner=%v), profile=%s, upstream=%s",
 		proxyURL, isOwner, resolvedProfile, inferenceUpstream)
-
-	if a.Headless {
-		runHeadless(proxyURL, ln, isOwner, refcountPath, doneCh)
-		return
-	}
 
 	// --- Synchronous update check (before child to avoid stderr interleaving) ---
 	if !a.NoUpdateCheck && os.Getenv("DATABRICKS_NO_UPDATE_CHECK") != "1" {
@@ -925,31 +567,6 @@ func main() {
 	os.Exit(exitCode)
 }
 
-// runHeadless runs the proxy without launching a claude child process.
-// It prints the proxy URL to stdout, then blocks until SIGINT/SIGTERM
-// or until doneCh is closed (by /shutdown or idle timeout).
-// The watchProxy goroutine (for non-owner sessions) is already started
-// before this function is called.
-func runHeadless(proxyURL string, ln net.Listener, isOwner bool, refcountPath string, doneCh chan struct{}) {
-	fmt.Printf("PROXY_URL=%s\n", proxyURL)
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case <-sigCh:
-		signal.Stop(sigCh)
-	case <-doneCh:
-		// Triggered by /shutdown or idle timeout.
-	}
-
-	// Release refcount. If /shutdown already released, Release floors at 0.
-	n, _ := refcount.Release(refcountPath)
-	if n == 0 && isOwner {
-		ln.Close()
-	}
-}
-
 // envBlock returns the "env" sub-map from a settings document, or an empty map.
 func envBlock(doc map[string]interface{}) map[string]interface{} {
 	if env, ok := doc["env"]; ok {
@@ -961,17 +578,27 @@ func envBlock(doc map[string]interface{}) map[string]interface{} {
 }
 
 // parseArgs separates databricks-claude flags from claude flags.
-// databricks-claude owns: --profile, --verbose/-v, --log-file, --version,
-// --otel, --otel-metrics-table, --otel-logs-table, --otel-traces,
-// --otel-traces-table, --no-otel, --no-otel-metrics, --no-otel-logs,
-// --no-otel-traces, --proxy-api-key, --tls-cert, --tls-key.
+// databricks-claude owns: --profile, --port, --verbose/-v, --version, --help,
+// --upstream, --log-file, --proxy-api-key, --tls-cert, --tls-key,
+// --no-update-check.
 // Everything else (including unknown flags like --debug) passes through to claude.
 // An explicit "--" separator is supported but not required.
+//
+// #172 removed the 14 "persistent config editor" flags — they live behind
+// the `config` subcommand tree now (config otel enable|disable, config
+// websearch enable|disable, config write, config show). Old flags are
+// removed, NOT aliased: `databricks-claude --otel` now passes `--otel`
+// through to claude as an unknown flag.
+//
+// #173 removed the 4 hooks-lifecycle flags (--install-hooks,
+// --uninstall-hooks, --headless-ensure, --headless-release) — they live
+// behind the `hooks` subcommand tree now (hooks install / uninstall /
+// session-start / session-end). Same "removed, not aliased" semantics.
+//
+// #174 removed --headless and --idle-timeout — they live behind
+// `serve --session-mode` now. Same "removed, not aliased" semantics.
 func parseArgs(args []string) (*Args, error) {
-	a := &Args{
-		OTELMetricsTable: "main.claude_telemetry.claude_otel_metrics", // default
-		IdleTimeout:      30 * time.Minute,                            // default
-	}
+	a := &Args{}
 
 	// knownFlags is defined at package level in completion_flags.go,
 	// derived from flagDefs so completions and parsing stay in sync.
@@ -1017,24 +644,6 @@ func parseArgs(args []string) (*Args, error) {
 						i++
 						a.Profile = args[i]
 					}
-				case "--otel-metrics-table":
-					if value != "" {
-						a.OTELMetricsTable = value
-						a.OTELMetricsTableSet = true
-					} else if i+1 < len(args) {
-						i++
-						a.OTELMetricsTable = args[i]
-						a.OTELMetricsTableSet = true
-					}
-				case "--otel-logs-table":
-					if value != "" {
-						a.OTELLogsTable = value
-						a.OTELLogsTableSet = true
-					} else if i+1 < len(args) {
-						i++
-						a.OTELLogsTable = args[i]
-						a.OTELLogsTableSet = true
-					}
 				case "--upstream":
 					if value != "" {
 						a.Upstream = value
@@ -1055,29 +664,6 @@ func parseArgs(args []string) (*Args, error) {
 					a.Version = true
 				case "--help":
 					a.ShowHelp = true
-				case "--print-env":
-					a.PrintEnv = true
-				case "--otel":
-					a.OTEL = true
-				case "--otel-traces":
-					a.OTELTraces = true
-				case "--otel-traces-table":
-					if value != "" {
-						a.OTELTracesTable = value
-						a.OTELTracesTableSet = true
-					} else if i+1 < len(args) {
-						i++
-						a.OTELTracesTable = args[i]
-						a.OTELTracesTableSet = true
-					}
-				case "--no-otel":
-					a.NoOTEL = true
-				case "--no-otel-metrics":
-					a.NoOTELMetrics = true
-				case "--no-otel-logs":
-					a.NoOTELLogs = true
-				case "--no-otel-traces":
-					a.NoOTELTraces = true
 				case "--proxy-api-key":
 					if value != "" {
 						a.ProxyAPIKey = value
@@ -1106,63 +692,16 @@ func parseArgs(args []string) (*Args, error) {
 						i++
 						a.Port, _ = strconv.Atoi(args[i])
 					}
-				case "--headless":
-					a.Headless = true
-				case "--write-claude-config":
-					a.WriteClaudeConfig = true
-				case "--install-hooks":
-					a.InstallHooks = true
-				case "--uninstall-hooks":
-					a.UninstallHooks = true
-				case "--headless-ensure":
-					a.HeadlessEnsure = true
-				case "--headless-release":
-					a.HeadlessRelease = true
 				case "--no-update-check":
 					a.NoUpdateCheck = true
-				case "--with-websearch":
-					a.WithWebSearch = true
-					a.WithWebSearchSet = true
-					// Allow optional explicit value: --with-websearch=true|false
-					if value != "" {
-						a.WithWebSearch = (value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes"))
-					}
-				case "--websearch-backend":
-					if value != "" {
-						a.WebSearchBackend = value
-						a.WebSearchBackendSet = true
-					} else if i+1 < len(args) {
-						i++
-						a.WebSearchBackend = args[i]
-						a.WebSearchBackendSet = true
-					}
-				case "--websearch-fetch-budget":
-					raw := value
-					if raw == "" && i+1 < len(args) {
-						i++
-						raw = args[i]
-					}
-					if raw != "" {
-						if n, err := strconv.Atoi(raw); err == nil {
-							a.WebSearchFetchBudget = n
-							a.WebSearchFetchBudgetSet = true
-						} else {
-							return nil, fmt.Errorf("--websearch-fetch-budget: %q is not an integer", raw)
-						}
-					}
-				case "--idle-timeout":
-					raw := value
-					if raw == "" && i+1 < len(args) {
-						i++
-						raw = args[i]
-					}
-					if raw != "" {
-						if d, err := time.ParseDuration(raw); err == nil {
-							a.IdleTimeout = d
-						} else {
-							return nil, fmt.Errorf("--idle-timeout: %q is not a valid duration (use e.g. 30s, 5m, 1h)", raw)
-						}
-					}
+				default:
+					// name is in knownFlags (derived from the rootCommand
+					// tree) but no case above handles it. This can only
+					// happen if commands.go declares a flag parseArgs was
+					// never taught to parse — fail loudly instead of
+					// silently swallowing it. Guards the "every tree flag
+					// is parsed" half of #170's parity contract.
+					return nil, fmt.Errorf("internal: %s is a known flag but parseArgs has no case for it (drift between commands.go and parseArgs)", name)
 				}
 				i++
 				continue
@@ -1176,99 +715,17 @@ func parseArgs(args []string) (*Args, error) {
 	return a, nil
 }
 
-// handleHelp prints the databricks-claude help message. Only the wrapper's
-// own flags and subcommands are documented here; claude's CLI help is
-// reachable via the `--` passthrough escape hatch (databricks-claude -- --help).
+// handleHelp prints the databricks-claude help message by rendering the
+// root command-tree node from internal/cmd. The actual help body lives in
+// commands.go (rootHelpTemplate, attached as rootCommand.Long); this
+// function is just a thin wrapper around cmd.Render that injects the
+// build-time Version. Only the wrapper's own flags and subcommands are
+// documented; claude's CLI help is reachable via the `--` passthrough
+// escape hatch (databricks-claude -- --help).
 func handleHelp() {
-	fmt.Printf(`databricks-claude v%s — Databricks AI Gateway proxy for Claude Code
-
-Transparently proxies the Claude Code CLI with Databricks AI Gateway authentication
-injected via environment variables.
-
-Usage:
-  databricks-claude [databricks-claude flags] [claude flags] [claude args]
-
-Databricks-Claude Flags:
-  --profile string      Databricks config profile (saved to ~/.claude/.databricks-claude.json)
-  --upstream string     Override the AI Gateway URL (default: auto-discovered)
-  --print-env           Print resolved configuration and exit (token redacted)
-  --verbose, -v         Enable debug logging to stderr
-  --log-file string     Write debug logs to a file (combinable with --verbose)
-  --otel                       Enable OpenTelemetry metrics + logs export
-  --otel-metrics-table string  Unity Catalog table for OTEL metrics
-  --otel-logs-table string     Unity Catalog table for OTEL logs (derived from metrics table if omitted)
-  --otel-traces                Enable OpenTelemetry traces export (Claude Code beta;
-                               requires --otel-traces-table; can be used standalone)
-  --otel-traces-table string   Unity Catalog table for OTEL traces (cat.schema.table)
-  --no-otel                    Clear persisted OTEL keys and disable OTEL for future sessions
-  --no-otel-metrics            Clear persisted OTEL metrics keys (other signals untouched)
-  --no-otel-logs               Clear persisted OTEL logs keys (other signals untouched)
-  --no-otel-traces             Clear persisted OTEL traces keys (other signals untouched)
-  --proxy-api-key string       Require Bearer token auth on all proxy requests
-  --tls-cert string            Path to TLS certificate file (requires --tls-key)
-  --tls-key string             Path to TLS private key file (requires --tls-cert)
-  --port int                   Fixed proxy port (default: 49153, saved to state)
-  --headless                   Start proxy without launching claude (for IDE extensions)
-  --write-claude-config        Write first-run settings.json env block (proxy URL, model
-                               routing, custom headers) and exit — no proxy startup, no
-                               port binding, no child process. Designed for MDM / fleet
-                               init scripts and as a cleaner alternative to the
-                               '--headless then Ctrl+C' workaround. Idempotent.
-                               Accepts --profile, --port, and OTEL table flags.
-  --headless-ensure            Start proxy if not running (called by SessionStart hook)
-  --headless-release           Decrement proxy refcount (called by Stop hook)
-  --idle-timeout duration      Idle timeout for headless mode (default 30m, 0 disables; use e.g. 30s, 5m, 1h)
-  --install-hooks              Install SessionStart/SessionEnd hooks AND perform first-run
-                               env setup (idempotent). Accepts --profile and --port to
-                               persist them; no prior databricks-claude invocation needed.
-  --uninstall-hooks            Remove databricks-claude hooks from ~/.claude/settings.json
-  --no-update-check            Skip the automatic update check on startup
-  --with-websearch             Enable local fulfillment of Anthropic web_search/web_fetch
-                               tools (workaround until Databricks FMAPI ships native
-                               support; saved to state). Default: disabled.
-  --websearch-backend string   Search backend when --with-websearch is enabled.
-                               Values: duckduckgo (default, zero config), none
-  --websearch-fetch-budget int Max bytes returned per web_fetch call (default 102400)
-  --version                    Print version and exit
-  --help, -h                   Show this help message
-
-Subcommands:
-  completion <shell>           Generate shell completions (bash, zsh, fish)
-  update                       Check for a newer release and print upgrade instructions
-  desktop <action>             Claude Desktop integration. Run 'databricks-claude desktop'
-                               for actions (generate-config, credential-helper) and flags.
-  setup [flags]                Idempotent auth bootstrap. Persists the profile to state and
-                               runs 'databricks auth login' when not authenticated. Designed
-                               for fleet init scripts and per-user login agents.
-                               Run 'databricks-claude setup --help' for flags.
-  serve [install|uninstall|status|flags]
-                               Long-lived daemon serving Claude Code and Claude
-                               Desktop with persistent Databricks OAuth. Owns
-                               OAuth refresh; exposes inference + OTLP on
-                               127.0.0.1. No refcount, no /shutdown, append-only
-                               logging. A third deployment mode alongside the
-                               per-session CLI wrapper and SessionStart hooks.
-                               Sub-subcommands register the daemon as a per-user
-                               OS service (LaunchAgent/schtasks/systemd --user).
-                               Run 'databricks-claude serve --help' for flags.
-                               Run 'databricks-claude serve install --help' etc.
-
-Example Unity Catalog table setup (run in a Databricks SQL warehouse):
-
-  CREATE TABLE main.claude_telemetry.claude_otel_metrics (
-    ... -- see https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta
-  ) USING DELTA TBLPROPERTIES ('otel.schemaVersion' = 'v1');
-
-  CREATE TABLE main.claude_telemetry.claude_otel_logs (
-    ... -- see https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta
-  ) USING DELTA TBLPROPERTIES ('otel.schemaVersion' = 'v1');
-
-Passthrough to claude:
-  Anything after a "--" separator is forwarded to the claude CLI unchanged.
-  Examples:
-    databricks-claude -- --help                # show claude's own help
-    databricks-claude -- --model opus -p "hi"  # run claude with extra flags
-`, Version)
+	if err := cmd.Render(os.Stdout, rootCommand, map[string]string{"Version": Version}); err != nil {
+		fmt.Fprintf(os.Stderr, "databricks-claude: failed to render help: %v\n", err)
+	}
 }
 
 // databricksFullSetupEnv returns the Databricks-specific env keys written

@@ -162,3 +162,52 @@ func TestBuildArgs_WithTLSCertAndKey(t *testing.T) {
 		t.Errorf("expected %v, got %v", expected, args)
 	}
 }
+
+// TestBuildArgs_EnsureCommandOverride verifies that callers providing an
+// EnsureCommand prefix get that prefix verbatim instead of the default
+// "--headless". This is the wiring point for issue #174 — databricks-claude
+// passes []string{"serve", "--session-mode"} so the detached child reaches
+// the consolidated entrypoint after the root --headless flag was removed.
+func TestBuildArgs_EnsureCommandOverride(t *testing.T) {
+	args := buildArgs(Config{
+		Port:          49153,
+		EnsureCommand: []string{"serve", "--session-mode"},
+	})
+	expected := []string{"serve", "--session-mode", "--port=49153"}
+	if !reflect.DeepEqual(args, expected) {
+		t.Errorf("expected %v, got %v", expected, args)
+	}
+}
+
+// TestBuildArgs_EnsureCommandWithTLS exercises the override + TLS together
+// to lock the field-ordering: command prefix → port → TLS flags. A future
+// refactor that interleaves them differently would break the spawned child's
+// flag-parser ordering.
+func TestBuildArgs_EnsureCommandWithTLS(t *testing.T) {
+	args := buildArgs(Config{
+		Port:          49153,
+		EnsureCommand: []string{"serve", "--session-mode"},
+		TLSCert:       "/c.pem",
+		TLSKey:        "/k.pem",
+	})
+	expected := []string{"serve", "--session-mode", "--port=49153", "--tls-cert=/c.pem", "--tls-key=/k.pem"}
+	if !reflect.DeepEqual(args, expected) {
+		t.Errorf("expected %v, got %v", expected, args)
+	}
+}
+
+// TestBuildArgs_EmptyEnsureCommandUsesLegacyDefault is the regression net
+// for siblings (databricks-codex, databricks-opencode): an unset
+// EnsureCommand MUST emit the legacy "--headless" prefix so their builds
+// don't break when this field is added. Treats the additive change as
+// backward-compatible by construction.
+func TestBuildArgs_EmptyEnsureCommandUsesLegacyDefault(t *testing.T) {
+	args := buildArgs(Config{
+		Port:          8080,
+		EnsureCommand: nil, // explicit nil for clarity
+	})
+	expected := []string{"--headless", "--port=8080"}
+	if !reflect.DeepEqual(args, expected) {
+		t.Errorf("legacy default broken (siblings affected): expected %v, got %v", expected, args)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/IceRhymers/databricks-claude/pkg/proxy"
 )
@@ -551,7 +552,7 @@ func TestBuildServeProxyConfig_WebSearchDisabled(t *testing.T) {
 		otelUpstream:      "https://example.com/api/2.0/otel",
 		profile:           "test",
 	}
-	cfg := buildServeProxyConfig(st, r)
+	cfg := buildServeProxyConfig(st, r, serveModeDaemon)
 	if cfg.WebSearch.Enabled {
 		t.Error("WebSearch.Enabled: got true, want false")
 	}
@@ -578,14 +579,14 @@ func TestBuildServeProxyConfig_WebSearchEnabledDefaults(t *testing.T) {
 	}
 
 	out := captureStderr(t, func() {
-		_ = buildServeProxyConfig(st, r)
+		_ = buildServeProxyConfig(st, r, serveModeDaemon)
 	})
 	if !strings.Contains(out, "--with-websearch is a workaround") {
 		t.Errorf("expected workaround banner on stderr, got: %q", out)
 	}
 
 	var got *proxy.Config
-	_ = captureStderr(t, func() { got = buildServeProxyConfig(st, r) })
+	_ = captureStderr(t, func() { got = buildServeProxyConfig(st, r, serveModeDaemon) })
 	if !got.WebSearch.Enabled {
 		t.Error("WebSearch.Enabled: got false, want true")
 	}
@@ -613,7 +614,7 @@ func TestBuildServeProxyConfig_WebSearchEnabledExplicitBudget(t *testing.T) {
 		otelUpstream:      "https://example.com/api/2.0/otel",
 	}
 	_ = captureStderr(t, func() {
-		c := buildServeProxyConfig(st, r)
+		c := buildServeProxyConfig(st, r, serveModeDaemon)
 		if !c.WebSearch.Enabled {
 			t.Error("WebSearch.Enabled: got false, want true")
 		}
@@ -640,7 +641,7 @@ func TestBuildServeProxyConfig_WebSearchEnabledBogusBackend(t *testing.T) {
 	defer log.SetOutput(origOut)
 
 	stderr := captureStderr(t, func() {
-		c := buildServeProxyConfig(st, r)
+		c := buildServeProxyConfig(st, r, serveModeDaemon)
 		// Fail-soft: bad backend disables websearch but daemon stays up.
 		if c.WebSearch.Enabled {
 			t.Error("WebSearch.Enabled: got true, want false (fail-soft on bogus backend)")
@@ -660,5 +661,298 @@ func TestBuildServeProxyConfig_WebSearchEnabledBogusBackend(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "websearch backend build failed") {
 		t.Errorf("log.Printf missing fail-soft error: %q", logBuf.String())
+	}
+}
+
+// --- #174 mode-dispatch tests ---
+
+// TestDetermineServeMode is the load-bearing invariant test: bare `serve`
+// (no mode flag, no sub-subcommand) AND `serve --session-mode --daemon`
+// (both modes set) MUST be hard errors. This is the headline mitigation
+// against the silent-degradation hazard at the hooks spawn site — a typo
+// dropping --session-mode in pkg/headless.buildArgs would otherwise launch
+// the daemon (wrong lifecycle, no /shutdown, broken hooks session-end).
+func TestDetermineServeMode(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		want     serveMode
+		wantErr  bool
+		errPiece string
+	}{
+		{"session only", []string{"--session-mode"}, serveModeSession, false, ""},
+		{"session via equals", []string{"--session-mode=true"}, serveModeSession, false, ""},
+		{"daemon only", []string{"--daemon"}, serveModeDaemon, false, ""},
+		{"daemon via equals", []string{"--daemon=true"}, serveModeDaemon, false, ""},
+		{"neither — must be hard error", []string{"--port", "49153"}, serveModeUnset, true, "must specify"},
+		{"both — must be hard error", []string{"--session-mode", "--daemon"}, serveModeUnset, true, "mutually exclusive"},
+		{"help long path returns unset+nil", []string{"--help"}, serveModeUnset, false, ""},
+		{"help short path returns unset+nil", []string{"-h"}, serveModeUnset, false, ""},
+		{"help wins over missing mode", []string{"--port", "49153", "--help"}, serveModeUnset, false, ""},
+		{"session + other flags", []string{"--session-mode", "--port", "49153", "--idle-timeout", "5m"}, serveModeSession, false, ""},
+		{"daemon + otel tables", []string{"--daemon", "--otel-metrics-table", "cat.s.m"}, serveModeDaemon, false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := determineServeMode(tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("determineServeMode(%v): want error, got nil", tc.args)
+					return
+				}
+				if tc.errPiece != "" && !strings.Contains(err.Error(), tc.errPiece) {
+					t.Errorf("determineServeMode(%v): error %q does not contain %q", tc.args, err, tc.errPiece)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("determineServeMode(%v): unexpected error %v", tc.args, err)
+				return
+			}
+			if got != tc.want {
+				t.Errorf("determineServeMode(%v): got mode %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestServe_BareInvocation_HardError builds the binary and runs `serve` with
+// no mode flag and no sub-subcommand. It MUST exit with code 2 and emit the
+// "must specify" error to stderr. This is the user-facing manifestation of
+// the required-explicit-mode invariant — the integration assertion behind
+// TestDetermineServeMode.
+func TestServe_BareInvocation_HardError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess build in -short mode")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "databricks-claude")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build binary: %v\n%s", err, out)
+	}
+
+	cmd := exec.Command(bin, "serve")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		t.Fatalf("expected non-zero exit, got success\nstdout=%q\nstderr=%q", stdout.String(), stderr.String())
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected ExitError, got %T: %v", err, err)
+	}
+	if got := exitErr.ExitCode(); got != 2 {
+		t.Errorf("expected exit code 2 for bare 'serve' (#174 invariant), got %d\nstderr=%q", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "must specify") {
+		t.Errorf("stderr does not mention 'must specify' — error message regressed:\nstderr=%q", stderr.String())
+	}
+}
+
+// --- #174 buildServeProxyConfig matrix ---
+//
+// Mode × every field. Locks the per-mode wiring so a future refactor that
+// drops a field on either branch fails here loudly. Includes WebSearch as a
+// regression net for #163.
+
+func TestBuildServeProxyConfig_Matrix(t *testing.T) {
+	st := persistentState{}
+	r := serveResolved{
+		profile:           "matrix-test",
+		inferenceUpstream: "https://example.com/ai-gateway/anthropic",
+		otelUpstream:      "https://example.com/api/2.0/otel",
+		metricsTable:      "cat.s.m",
+		logsTable:         "cat.s.l",
+		tracesTable:       "cat.s.t",
+		verbose:           true,
+		apiKey:            "session-only-key",
+		tlsCert:           "/cert.pem",
+		tlsKey:            "/key.pem",
+	}
+
+	t.Run("session_mode", func(t *testing.T) {
+		cfg := buildServeProxyConfig(st, r, serveModeSession)
+		if cfg.Daemon {
+			t.Error("session mode: cfg.Daemon = true, want false (lifecycle wrap registers /shutdown)")
+		}
+		if cfg.APIKey != "session-only-key" {
+			t.Errorf("session mode: cfg.APIKey = %q, want %q (session mode wires APIKey)", cfg.APIKey, "session-only-key")
+		}
+		if cfg.TLSCertFile != "/cert.pem" {
+			t.Errorf("session mode: cfg.TLSCertFile = %q, want /cert.pem", cfg.TLSCertFile)
+		}
+		if cfg.TLSKeyFile != "/key.pem" {
+			t.Errorf("session mode: cfg.TLSKeyFile = %q, want /key.pem", cfg.TLSKeyFile)
+		}
+		if cfg.Profile != "matrix-test" {
+			t.Errorf("session mode: cfg.Profile = %q, want matrix-test", cfg.Profile)
+		}
+		if cfg.InferenceUpstream != r.inferenceUpstream {
+			t.Errorf("session mode: cfg.InferenceUpstream = %q, want %q", cfg.InferenceUpstream, r.inferenceUpstream)
+		}
+		if cfg.OTELUpstream != r.otelUpstream {
+			t.Errorf("session mode: cfg.OTELUpstream = %q, want %q", cfg.OTELUpstream, r.otelUpstream)
+		}
+		if cfg.UCMetricsTable != "cat.s.m" || cfg.UCLogsTable != "cat.s.l" || cfg.UCTracesTable != "cat.s.t" {
+			t.Errorf("session mode: UC tables wired wrong: metrics=%q logs=%q traces=%q", cfg.UCMetricsTable, cfg.UCLogsTable, cfg.UCTracesTable)
+		}
+		if !cfg.Verbose {
+			t.Error("session mode: cfg.Verbose = false, want true")
+		}
+		if cfg.ToolName != "databricks-claude" {
+			t.Errorf("session mode: cfg.ToolName = %q, want databricks-claude", cfg.ToolName)
+		}
+		// WebSearch field must be wired — regression net from #163.
+		if cfg.WebSearch.Enabled {
+			t.Error("session mode: cfg.WebSearch.Enabled = true with no state, want false")
+		}
+	})
+
+	t.Run("daemon_mode", func(t *testing.T) {
+		cfg := buildServeProxyConfig(st, r, serveModeDaemon)
+		if !cfg.Daemon {
+			t.Error("daemon mode: cfg.Daemon = false, want true")
+		}
+		// Daemon mode does NOT wire APIKey / TLS — the help template gates
+		// those flags onto --session-mode and the daemon code path has
+		// never accepted them.
+		if cfg.APIKey != "" {
+			t.Errorf("daemon mode: cfg.APIKey = %q, want empty (daemon does not accept --proxy-api-key)", cfg.APIKey)
+		}
+		if cfg.TLSCertFile != "" {
+			t.Errorf("daemon mode: cfg.TLSCertFile = %q, want empty (daemon does not accept --tls-cert)", cfg.TLSCertFile)
+		}
+		if cfg.TLSKeyFile != "" {
+			t.Errorf("daemon mode: cfg.TLSKeyFile = %q, want empty", cfg.TLSKeyFile)
+		}
+		if cfg.Profile != "matrix-test" {
+			t.Errorf("daemon mode: cfg.Profile = %q, want matrix-test", cfg.Profile)
+		}
+		if cfg.InferenceUpstream != r.inferenceUpstream {
+			t.Errorf("daemon mode: cfg.InferenceUpstream = %q, want %q", cfg.InferenceUpstream, r.inferenceUpstream)
+		}
+		if cfg.UCMetricsTable != "cat.s.m" || cfg.UCLogsTable != "cat.s.l" || cfg.UCTracesTable != "cat.s.t" {
+			t.Errorf("daemon mode: UC tables wired wrong: metrics=%q logs=%q traces=%q", cfg.UCMetricsTable, cfg.UCLogsTable, cfg.UCTracesTable)
+		}
+		if !cfg.Verbose {
+			t.Error("daemon mode: cfg.Verbose = false, want true")
+		}
+		if cfg.WebSearch.Enabled {
+			t.Error("daemon mode: cfg.WebSearch.Enabled = true with no state, want false")
+		}
+	})
+
+	// Bidirectional WebSearch positive case. The matrix above asserts
+	// Enabled==false with empty state for BOTH modes — that branch alone
+	// is tautological (deleting the factory's `Enabled: <wired>` line
+	// still yields the zero value `false`). This sub-test populates state
+	// with WithWebSearch=true and asserts the factory propagates it to
+	// BOTH lifecycle policies. If a future refactor drops the WebSearch
+	// wiring for one mode, this fails loudly — the regression net the
+	// review for #180 flagged was missing.
+	t.Run("websearch_enabled_both_modes", func(t *testing.T) {
+		stOn := persistentState{
+			WithWebSearch:        true,
+			WebSearchBackend:     "duckduckgo",
+			WebSearchFetchBudget: 7 * 1024,
+		}
+		for _, mode := range []serveMode{serveModeSession, serveModeDaemon} {
+			name := "session"
+			if mode == serveModeDaemon {
+				name = "daemon"
+			}
+			cfg := buildServeProxyConfig(stOn, r, mode)
+			if !cfg.WebSearch.Enabled {
+				t.Errorf("%s mode: cfg.WebSearch.Enabled = false with state.WithWebSearch=true, want true (factory dropped the wiring for this mode)", name)
+			}
+			if cfg.WebSearch.Backend == nil {
+				t.Errorf("%s mode: cfg.WebSearch.Backend = nil, want a concrete backend impl", name)
+			}
+			if cfg.WebSearch.FetchBudget != 7*1024 {
+				t.Errorf("%s mode: cfg.WebSearch.FetchBudget = %d, want %d", name, cfg.WebSearch.FetchBudget, 7*1024)
+			}
+		}
+	})
+}
+
+// TestParseServeFlags_SessionMode verifies that the --session-mode boolean
+// flag and the new session-only flags (--idle-timeout, --proxy-api-key,
+// --tls-cert, --tls-key, --upstream) parse correctly through parseServeFlags.
+func TestParseServeFlags_SessionMode(t *testing.T) {
+	f := parseServeFlags([]string{
+		"--session-mode",
+		"--idle-timeout", "5m",
+		"--proxy-api-key", "key123",
+		"--tls-cert", "/c.pem",
+		"--tls-key", "/k.pem",
+		"--upstream", "https://override.example.com",
+	})
+	if !f.sessionMode {
+		t.Error("sessionMode: got false, want true")
+	}
+	if f.idleTimeout != 5*time.Minute {
+		t.Errorf("idleTimeout: got %v, want 5m", f.idleTimeout)
+	}
+	if f.apiKey != "key123" {
+		t.Errorf("apiKey: got %q, want key123", f.apiKey)
+	}
+	if f.tlsCert != "/c.pem" {
+		t.Errorf("tlsCert: got %q, want /c.pem", f.tlsCert)
+	}
+	if f.tlsKey != "/k.pem" {
+		t.Errorf("tlsKey: got %q, want /k.pem", f.tlsKey)
+	}
+	if f.upstream != "https://override.example.com" {
+		t.Errorf("upstream: got %q, want https://override.example.com", f.upstream)
+	}
+}
+
+// TestParseServeFlags_DaemonFlag verifies the --daemon boolean.
+func TestParseServeFlags_DaemonFlag(t *testing.T) {
+	f := parseServeFlags([]string{"--daemon"})
+	if !f.daemon {
+		t.Error("daemon: got false, want true")
+	}
+	if f.sessionMode {
+		t.Error("sessionMode: got true, want false")
+	}
+}
+
+// TestParseServeFlags_IdleTimeoutDefault verifies the default 30m.
+func TestParseServeFlags_IdleTimeoutDefault(t *testing.T) {
+	f := parseServeFlags([]string{"--session-mode"})
+	if f.idleTimeout != 30*time.Minute {
+		t.Errorf("default idleTimeout: got %v, want 30m", f.idleTimeout)
+	}
+	if f.idleTimeoutSet {
+		t.Error("idleTimeoutSet: got true, want false (default not user-supplied)")
+	}
+}
+
+// TestServe_SpawnInvocation_TargetsSessionMode is the load-bearing
+// post-#174 contract: the spawn invocation that pkg/headless.buildArgs
+// emits MUST target `serve --session-mode`, NOT the deleted --headless
+// root flag. headlessEnsure (in hooks.go) is the only databricks-claude
+// site that calls into pkg/headless, so we assert by replicating its
+// EnsureCommand wiring directly.
+func TestServe_SpawnInvocation_TargetsSessionMode(t *testing.T) {
+	// Mirror what headlessEnsure passes — keep this expectation in lockstep
+	// with hooks.go.
+	want := []string{"serve", "--session-mode"}
+	// Sanity grep: hooks.go's headlessEnsure body must reference exactly
+	// this prefix. If a future refactor moves the wiring elsewhere, this
+	// test serves as a "look here" trail rather than missing the change.
+	src, err := os.ReadFile("hooks.go")
+	if err != nil {
+		t.Fatalf("read hooks.go: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, `EnsureCommand: []string{"serve", "--session-mode"}`) {
+		t.Errorf("hooks.go's headlessEnsure no longer wires EnsureCommand to %v — pkg/headless.buildArgs will spawn the wrong child", want)
 	}
 }

@@ -10,18 +10,36 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
+	"time"
 
+	"github.com/IceRhymers/databricks-claude/internal/cmd"
 	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
 	"github.com/IceRhymers/databricks-claude/pkg/mdmprofile"
 	"github.com/IceRhymers/databricks-claude/pkg/proxy"
 	"github.com/IceRhymers/databricks-claude/pkg/websearch"
 )
 
-// serveResolved bundles the inputs needed to build the daemon's proxy.Config.
-// File-private — lives in serve.go so buildServeProxyConfig is testable in
-// isolation without re-invoking the full runServe resolution chain.
+// serveMode discriminates the two lifecycle policies that share the `serve`
+// command word. Bare `serve` (no mode flag, no sub-subcommand) is a hard
+// error — see determineServeMode.
+type serveMode int
+
+const (
+	serveModeUnset serveMode = iota
+	serveModeSession
+	serveModeDaemon
+)
+
+// serveResolved bundles the inputs needed to build a proxy.Config for either
+// lifecycle policy. File-private — lives in serve.go so buildServeProxyConfig
+// is testable in isolation without re-invoking the full runServe resolution
+// chain.
+//
+// The session-mode-only fields (apiKey, tlsCert, tlsKey) are set by
+// runServeSession and ignored by buildServeProxyConfig in daemon mode. They
+// land on the resulting proxy.Config because the proxy handler needs APIKey
+// for /shutdown auth gating; TLS cert/key paths are passed to http.Server.
 type serveResolved struct {
 	profile           string
 	inferenceUpstream string
@@ -31,19 +49,31 @@ type serveResolved struct {
 	tracesTable       string
 	tp                proxy.TokenSource
 	verbose           bool
+
+	// Session-mode-only fields. Empty in daemon mode.
+	apiKey  string
+	tlsCert string
+	tlsKey  string
 }
 
-// buildServeProxyConfig constructs the daemon's *proxy.Config from persistent
-// state and resolved runServe inputs. Extracted so the WebSearch wiring is
-// covered by serve_test.go assertions and so a future refactor that drops
-// the WebSearch field would fail those tests instead of silently regressing
-// the workaround.
+// buildServeProxyConfig constructs a *proxy.Config for either lifecycle
+// policy from persistent state and resolved runServe inputs. AC #7
+// (#174): both modes share one tested factory so dropping a field cannot
+// silently regress either path. The mode parameter flips:
+//   - cfg.Daemon (true for --daemon, false for --session-mode → /health
+//     reports daemon:true vs daemon:false; daemon mode rejects /shutdown
+//     with 404 directly, while session mode lets the lifecycle wrapper
+//     register /shutdown).
+//   - APIKey / TLS fields wire only in session mode (the daemon path has
+//     never accepted them; gating those flags onto --session-mode is
+//     intentional per the help template).
 //
 // Fail-soft on a bad WebSearchBackend value: emits a dual stderr+log error
 // (so it lands in the LaunchAgent stderr log AND any --log-file) and
-// disables websearch for this daemon run. The daemon's primary duty is OAuth
+// disables websearch for this run. The daemon's primary duty is OAuth
 // refresh; a malformed state value must not crash-loop launchd/systemd.
-func buildServeProxyConfig(st persistentState, r serveResolved) *proxy.Config {
+// Session mode keeps the same fail-soft behaviour for symmetry.
+func buildServeProxyConfig(st persistentState, r serveResolved, mode serveMode) *proxy.Config {
 	withWebSearch := st.WithWebSearch
 	wsBackend := st.WebSearchBackend
 	wsBudget := st.WebSearchFetchBudget
@@ -57,10 +87,10 @@ func buildServeProxyConfig(st persistentState, r serveResolved) *proxy.Config {
 	var wsBackendImpl websearch.Backend
 	var wsRobots websearch.RobotsChecker
 	if withWebSearch {
-		// Unconditional stderr write — matches main.go:724-729 wrapper banner.
-		// serve.go redirects os.Stdout to os.Stderr (see runServe) so this
-		// always lands in the LaunchAgent / systemd stderr log regardless
-		// of --verbose / --log-file gating.
+		// Unconditional stderr write — matches main.go wrapper banner.
+		// In daemon mode, serve.go redirects os.Stdout to os.Stderr (see
+		// runServe) so this always lands in the LaunchAgent / systemd
+		// stderr log regardless of --verbose / --log-file gating.
 		fmt.Fprintln(os.Stderr, "databricks-claude: --with-websearch is a workaround. Anthropic's native")
 		fmt.Fprintln(os.Stderr, "  web_search and web_fetch tools are not yet supported by Databricks FMAPI.")
 		fmt.Fprintf(os.Stderr, "  This proxy fulfills them locally via backend=%q (per-fetch budget=%d bytes).\n", wsBackend, wsBudget)
@@ -70,11 +100,6 @@ func buildServeProxyConfig(st persistentState, r serveResolved) *proxy.Config {
 
 		b, err := buildWebSearchBackend(wsBackend)
 		if err != nil {
-			// Fail-soft. Dual signal: stderr direct write (always visible
-			// in the LaunchAgent log via the os.Stdout=os.Stderr redirect)
-			// AND log.Printf (lands in --log-file when set). Daemon does
-			// NOT log.Fatalf — that would crash-loop under launchd/systemd
-			// and bring down OAuth refresh, which is the daemon's main job.
 			msg := fmt.Sprintf("databricks-claude: serve: websearch backend build failed: %v — websearch DISABLED for this daemon run", err)
 			fmt.Fprintln(os.Stderr, msg)
 			log.Printf("%s", msg)
@@ -85,7 +110,7 @@ func buildServeProxyConfig(st persistentState, r serveResolved) *proxy.Config {
 		}
 	}
 
-	return &proxy.Config{
+	cfg := &proxy.Config{
 		InferenceUpstream: r.inferenceUpstream,
 		OTELUpstream:      r.otelUpstream,
 		UCMetricsTable:    r.metricsTable,
@@ -95,7 +120,6 @@ func buildServeProxyConfig(st persistentState, r serveResolved) *proxy.Config {
 		Verbose:           r.verbose,
 		ToolName:          "databricks-claude",
 		Version:           Version,
-		Daemon:            true,
 		Profile:           r.profile,
 		WebSearch: proxy.WebSearchSettings{
 			Enabled:     withWebSearch,
@@ -104,11 +128,28 @@ func buildServeProxyConfig(st persistentState, r serveResolved) *proxy.Config {
 			FetchBudget: wsBudget,
 		},
 	}
+
+	switch mode {
+	case serveModeDaemon:
+		cfg.Daemon = true
+		// Daemon does not expose APIKey / TLS knobs (matches pre-#174
+		// `serve` daemon behaviour). Mode-flag help gates --proxy-api-key,
+		// --tls-cert, --tls-key onto --session-mode.
+	case serveModeSession:
+		cfg.Daemon = false
+		cfg.APIKey = r.apiKey
+		cfg.TLSCertFile = r.tlsCert
+		cfg.TLSKeyFile = r.tlsKey
+	}
+	return cfg
 }
 
 const mdmDomain = "com.icerhymers.databricks-claude"
 
-// serveFlags holds parsed flags from the serve subcommand arg list.
+// serveFlags holds parsed flags from the serve subcommand arg list. Includes
+// session-mode-only fields (idleTimeout, apiKey, tlsCert, tlsKey, upstream)
+// that are populated for both modes but only consumed by runServeSession —
+// daemon mode (#174) ignores them by design.
 type serveFlags struct {
 	port            int
 	logFile         string
@@ -120,56 +161,112 @@ type serveFlags struct {
 	metricsTableSet bool
 	logsTableSet    bool
 	tracesTableSet  bool
+
+	sessionMode bool
+	daemon      bool
+
+	// Session-mode-only fields. Daemon mode ignores these.
+	idleTimeout    time.Duration
+	idleTimeoutSet bool
+	apiKey         string
+	tlsCert        string
+	tlsKey         string
+	upstream       string
 }
 
-// parseServeFlags parses the args slice for serve-specific flags.
+// parseServeFlags maps serveCommand.Parse(args) into the typed serveFlags
+// struct that downstream resolution code consumes. The flag set is the single
+// source of truth declared on serveCommand in commands.go (#171); this
+// function is a pure projection. Tolerance for unknown flags is preserved by
+// cmd.Parse (it routes unknowns to Positional, which we discard here — same
+// behaviour as the pre-#171 hand-rolled scanner).
+//
+// --idle-timeout is parsed via time.ParseDuration; an invalid value falls
+// back to the default 30m and logs a warning. (Hard-erroring would crash-
+// loop a daemon misconfiguration that wandered onto the wrong mode flag.)
 func parseServeFlags(args []string) serveFlags {
+	r, _ := serveCommand.Parse(args)
 	var f serveFlags
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		next := func() string {
-			if i+1 < len(args) {
-				i++
-				return args[i]
-			}
-			return ""
-		}
-		switch {
-		case arg == "--port":
-			f.port, _ = strconv.Atoi(next())
-		case strings.HasPrefix(arg, "--port="):
-			f.port, _ = strconv.Atoi(strings.TrimPrefix(arg, "--port="))
-		case arg == "--log-file":
-			f.logFile = next()
-		case strings.HasPrefix(arg, "--log-file="):
-			f.logFile = strings.TrimPrefix(arg, "--log-file=")
-		case arg == "--verbose" || arg == "-v":
-			f.verbose = true
-		case arg == "--profile":
-			f.profile = next()
-		case strings.HasPrefix(arg, "--profile="):
-			f.profile = strings.TrimPrefix(arg, "--profile=")
-		case arg == "--otel-metrics-table":
-			f.metricsTable = next()
-			f.metricsTableSet = true
-		case strings.HasPrefix(arg, "--otel-metrics-table="):
-			f.metricsTable = strings.TrimPrefix(arg, "--otel-metrics-table=")
-			f.metricsTableSet = true
-		case arg == "--otel-logs-table":
-			f.logsTable = next()
-			f.logsTableSet = true
-		case strings.HasPrefix(arg, "--otel-logs-table="):
-			f.logsTable = strings.TrimPrefix(arg, "--otel-logs-table=")
-			f.logsTableSet = true
-		case arg == "--otel-traces-table":
-			f.tracesTable = next()
-			f.tracesTableSet = true
-		case strings.HasPrefix(arg, "--otel-traces-table="):
-			f.tracesTable = strings.TrimPrefix(arg, "--otel-traces-table=")
-			f.tracesTableSet = true
+	if v, ok := r.Strings["port"]; ok {
+		f.port, _ = strconv.Atoi(v)
+	}
+	f.logFile = r.Strings["log-file"]
+	f.verbose = r.Bools["verbose"]
+	f.profile = r.Strings["profile"]
+	f.metricsTable = r.Strings["otel-metrics-table"]
+	f.metricsTableSet = r.Set["otel-metrics-table"]
+	f.logsTable = r.Strings["otel-logs-table"]
+	f.logsTableSet = r.Set["otel-logs-table"]
+	f.tracesTable = r.Strings["otel-traces-table"]
+	f.tracesTableSet = r.Set["otel-traces-table"]
+
+	f.sessionMode = r.Bools["session-mode"]
+	f.daemon = r.Bools["daemon"]
+
+	// --idle-timeout: parse the user-supplied duration; default 30m.
+	f.idleTimeout = 30 * time.Minute
+	if v, ok := r.Strings["idle-timeout"]; ok && v != "" {
+		f.idleTimeoutSet = true
+		if d, err := time.ParseDuration(v); err == nil {
+			f.idleTimeout = d
+		} else {
+			log.Printf("databricks-claude: serve: invalid --idle-timeout %q (%v) — using default 30m", v, err)
 		}
 	}
+	f.apiKey = r.Strings["proxy-api-key"]
+	f.tlsCert = r.Strings["tls-cert"]
+	f.tlsKey = r.Strings["tls-key"]
+	f.upstream = r.Strings["upstream"]
 	return f
+}
+
+// determineServeMode peeks at args for --session-mode / --daemon to pick
+// the dispatcher branch BEFORE the daemon-only stdout redirect runs. AC #4
+// (#174): bare `serve` (no mode flag, no sub-subcommand) is a hard error;
+// --session-mode and --daemon together is also a hard error. The
+// required-explicit-mode invariant is the headline mitigation against the
+// silent-degradation hazard at the hooks spawn site (a typo dropping
+// --session-mode in pkg/headless.buildArgs would otherwise launch the
+// daemon — wrong lifecycle, no /shutdown, broken hooks session-end).
+func determineServeMode(args []string) (serveMode, error) {
+	var session, daemon, helpRequested bool
+	for _, a := range args {
+		switch a {
+		case "--session-mode", "--session-mode=true":
+			session = true
+		case "--session-mode=false", "--session-mode=0", "--session-mode=no":
+			// Explicit false: treat as unset. determineServeMode won't see
+			// it as "set" — preserves the legacy `--flag=false` semantics
+			// wired through cmd.Parse's isFalsy.
+		case "--daemon", "--daemon=true":
+			daemon = true
+		case "--daemon=false", "--daemon=0", "--daemon=no":
+		case "--help", "-h":
+			helpRequested = true
+		}
+	}
+	if helpRequested {
+		// Let the normal --help short-circuit run.
+		return serveModeUnset, nil
+	}
+	if session && daemon {
+		return serveModeUnset, fmt.Errorf("--session-mode and --daemon are mutually exclusive")
+	}
+	if !session && !daemon {
+		return serveModeUnset, fmt.Errorf("must specify --session-mode or --daemon (or use 'serve install|uninstall|status')")
+	}
+	if session {
+		return serveModeSession, nil
+	}
+	return serveModeDaemon, nil
+}
+
+// serveHelpRequested returns true when args contain --help or -h for the
+// `serve` (NOT serve install/uninstall/status) command itself. Driven off
+// the tree so its known-flag set stays consistent with completion + help.
+func serveHelpRequested(args []string) bool {
+	r, _ := serveCommand.Parse(args)
+	return r.Bools["help"]
 }
 
 // resolveTableFromChain resolves one OTEL table following flag → state → MDM → empty.
@@ -241,14 +338,31 @@ func runServe(args []string) {
 		}
 	}
 
-	// Belt-and-suspenders: redirect stdout to stderr so any transitive SDK call
-	// that writes to stdout doesn't corrupt the LaunchAgent stdout log.
-	os.Stdout = os.Stderr
-
-	if hasFlag(args, "--help") || hasFlag(args, "-h") {
-		printServeHelp()
+	// Help short-circuit BEFORE mode dispatch so `serve --help` (with no mode
+	// flag) renders help instead of erroring out via determineServeMode.
+	if serveHelpRequested(args) {
+		_ = cmd.Render(os.Stderr, serveCommand, nil)
 		os.Exit(0)
 	}
+
+	// Mode dispatch (#174). Bare `serve` (no mode flag, no sub-subcommand) is
+	// a hard error per the required-explicit-mode invariant.
+	mode, err := determineServeMode(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "databricks-claude: serve: %v\n", err)
+		os.Exit(2)
+	}
+	if mode == serveModeSession {
+		runServeSession(args)
+		return
+	}
+	// mode == serveModeDaemon: fall through to the daemon body below.
+
+	// Belt-and-suspenders: redirect stdout to stderr so any transitive SDK call
+	// that writes to stdout doesn't corrupt the LaunchAgent stdout log. Done
+	// AFTER session-mode dispatch so session mode keeps a real stdout (it
+	// prints PROXY_URL=... for IDE-extension consumption).
+	os.Stdout = os.Stderr
 
 	f := parseServeFlags(args)
 
@@ -372,7 +486,7 @@ func runServe(args []string) {
 		tp:                tp,
 		verbose:           f.verbose,
 	}
-	cfg := buildServeProxyConfig(st, r)
+	cfg := buildServeProxyConfig(st, r, serveModeDaemon)
 	h, err := proxy.NewServer(cfg)
 	if err != nil {
 		ln.Close()
@@ -408,105 +522,9 @@ func runServe(args []string) {
 	ln.Close()
 }
 
-// printServeHelp prints usage for the `serve` subcommand to stderr.
-func printServeHelp() {
-	fmt.Fprint(os.Stderr, `Usage: databricks-claude serve [flags]
-       databricks-claude serve <install|uninstall|status> [flags]
-
-Long-lived daemon that serves Claude Code and Claude Desktop with persistent
-Databricks OAuth. A third deployment mode alongside the per-session CLI wrapper
-(databricks-claude claude ...) and SessionStart hooks — useful when you want a
-single OAuth-refreshing proxy that survives across sessions.
-
-Owns Databricks OAuth refresh and exposes inference + OTLP on 127.0.0.1.
-Distinguished from --headless mode by: no session refcount, no /shutdown
-route, append-only logging, and daemon:true in /health so hooks can detect
-and no-op.
-
-Designed for LaunchAgent or systemd service deployment, where a plist or
-unit file invokes 'databricks-claude serve' once and keeps it running.
-Configure your client to point at the daemon:
-  Claude Desktop: via MDM, set gatewayBaseUrl: http://127.0.0.1:<port>.
-  Claude Code:    edit ~/.claude/settings.json once to set
-                  ANTHROPIC_BASE_URL=http://127.0.0.1:<port> in the env block.
-The daemon does NOT mutate settings.json itself — it stays outside the
-per-tool lifecycle by design.
-
-Sub-subcommands (OS service management):
-  install    Register and start the daemon as a per-user OS service.
-             Uses: launchctl (macOS), schtasks (Windows), systemctl --user (Linux).
-             Run 'databricks-claude serve install --help' for flags.
-  uninstall  Stop and remove the daemon OS service registration.
-             Run 'databricks-claude serve uninstall --help' for flags.
-  status     Report Registered / Running / Healthy in one shot.
-             Run 'databricks-claude serve status --help' for flags.
-
-Flags (for the daemon itself, not sub-subcommands):
-  --port int                   Proxy listen port (default: 49153). The daemon
-                               binds this port exclusively — MDM-baked
-                               gatewayBaseUrl is a fixed URL and cannot follow
-                               a fallback port.
-  --profile string             Databricks config profile (default: saved
-                               state > MDM databricksProfile key > "DEFAULT")
-  --log-file string            Append to this file instead of discarding logs.
-                               Safe for log rotation (O_APPEND). Restarts
-                               preserve prior content (not O_TRUNC).
-  --verbose, -v                Also write debug logs to stderr (combinable
-                               with --log-file)
-  --otel-metrics-table string  Unity Catalog table for OTEL metrics
-                               (cat.schema.table). Resolution: flag > saved
-                               state > MDM otelMetricsTable key > empty.
-                               Empty = no X-Databricks-UC-Table-Name header;
-                               Databricks ingest rejects the request (visible,
-                               actionable failure — not silent).
-  --otel-logs-table string     Unity Catalog table for OTEL logs (same chain)
-  --otel-traces-table string   Unity Catalog table for OTEL traces (same chain)
-  --help, -h                   Show this help message
-
-MDM keys (domain: com.icerhymers.databricks-claude):
-  databricksProfile   Databricks CLI profile name
-  otelMetricsTable    UC table for OTEL metrics
-  otelLogsTable       UC table for OTEL logs
-  otelTracesTable     UC table for OTEL traces
-
-Note: --otel / --no-otel* flags are NOT supported for serve. Those flags
-mutate ~/.claude/settings.json to configure Claude Code's OTLP emission.
-In daemon mode, Claude Desktop reads OTLP config from MDM, not from any
-wrapper-mutated file. Omit otlpEndpoint from the MDM profile to disable OTLP.
-
-Endpoints:
-  GET /health   Returns {"tool":"databricks-claude","daemon":true,"version":"...",
-                         "profile":"...","token_valid_until":"..."}
-  POST /shutdown  Not registered — returns 404. Stop the daemon via SIGTERM
-                  (e.g. launchctl stop or systemctl stop).
-
-Examples:
-  # Minimal daemon on default port:
-  databricks-claude serve
-
-  # Register as an OS service and start:
-  databricks-claude serve install
-  databricks-claude serve install --profile databricks-ai-inference --port 49153
-
-  # Check service status:
-  databricks-claude serve status
-
-  # Remove OS service registration:
-  databricks-claude serve uninstall
-
-  # With explicit profile, port, and log file:
-  databricks-claude serve \
-    --profile databricks-ai-inference \
-    --port 49153 \
-    --log-file /var/log/databricks-claude/daemon.log
-
-  # With OTEL table routing:
-  databricks-claude serve \
-    --otel-metrics-table main.claude_telemetry.claude_otel_metrics \
-    --otel-logs-table main.claude_telemetry.claude_otel_logs
-
-Exit codes:
-  0   Clean shutdown on SIGINT/SIGTERM
-  1   Startup failure (auth, port collision, host discovery)
-`)
-}
+// Help for `serve`, `serve install`, `serve uninstall`, `serve status` is
+// rendered via cmd.Render against the corresponding tree node (see
+// serveCommand and its Subcommands in commands.go). The seven hand-rolled
+// printXxxHelp functions that previously lived here, in serve_install.go,
+// in setup.go, and in desktop_config.go were deleted in #171; the tree is
+// now the single source of truth for both flag-parsing AND help text.
