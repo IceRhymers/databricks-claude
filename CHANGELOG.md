@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/IceRhymers/databricks-claude/compare/v1.0.1...v1.0.2) (2026-05-18)
+
+
+### Bug Fixes
+
+* **completion:** declare desktop action keywords as subcommands ([c33068a](https://github.com/IceRhymers/databricks-claude/commit/c33068ac5c5d656b68642f247572308a607c07ca))
+
 ## [1.0.1](https://github.com/IceRhymers/databricks-claude/compare/v1.0.0...v1.0.1) (2026-05-18)
 
 
