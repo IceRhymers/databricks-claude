@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/IceRhymers/databricks-claude/compare/v1.1.0...v1.2.0) (2026-06-03)
+
+
+### Features
+
+* **proxy:** rewrite mismatched item_ids in Responses API SSE streams ([250dba4](https://github.com/IceRhymers/databricks-claude/commit/250dba4977d351a6863f76b936d8687345d299c6)), closes [#191](https://github.com/IceRhymers/databricks-claude/issues/191)
+
 ## [1.1.0](https://github.com/IceRhymers/databricks-claude/compare/v1.0.2...v1.1.0) (2026-05-23)
 
 
