@@ -107,7 +107,17 @@ func catalogOf(fqn string) string {
 func ListServices(ctx context.Context, client *http.Client, host, token string) ([]Service, error) {
 	var services []Service
 	pageToken := ""
-	for {
+	// seen guards against a misbehaving/compromised gateway that returns the
+	// same non-empty next_page_token forever, which would otherwise loop
+	// unboundedly and grow services until OOM. maxPages is a belt-and-suspenders
+	// hard cap (model-services lists are small; 1000 pages is far past any real
+	// metastore).
+	seen := map[string]bool{}
+	const maxPages = 1000
+	for pages := 0; ; pages++ {
+		if pages >= maxPages {
+			return nil, fmt.Errorf("model-services: pagination exceeded %d pages; aborting", maxPages)
+		}
 		url := fmt.Sprintf("%s%s?page_size=%d", strings.TrimRight(host, "/"), modelServicesPath, listPageSize)
 		if pageToken != "" {
 			// pageToken is echoed from the gateway response — escape it so a
@@ -130,6 +140,10 @@ func ListServices(ctx context.Context, client *http.Client, host, token string) 
 		if resp.NextPageToken == "" {
 			break
 		}
+		if seen[resp.NextPageToken] {
+			return nil, fmt.Errorf("model-services: gateway repeated page_token %q; aborting to avoid an infinite loop", resp.NextPageToken)
+		}
+		seen[resp.NextPageToken] = true
 		pageToken = resp.NextPageToken
 	}
 	return services, nil

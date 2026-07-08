@@ -64,6 +64,10 @@ func TestParseDestination(t *testing.T) {
 		{"missing-minor", "system.ai.databricks-claude-opus-4", "", 0, 0, false},
 		{"garbage-suffix", "system.ai.databricks-claude-opusX", "", 0, 0, false},
 		{"unknown-family", "system.ai.databricks-claude-turbo-4-8", "", 0, 0, false},
+		// "claude-" must begin a name segment: an unrelated substring like
+		// "notclaude-opus-2025-01" must NOT classify as opus 2025.1 (which would
+		// otherwise dominate the version sort and mis-route the family).
+		{"not-a-segment-boundary", "myorg.custom.notclaude-opus-2025-01", "", 0, 0, false},
 		{"empty", "", "", 0, 0, false},
 	}
 	for _, c := range cases {
@@ -290,6 +294,31 @@ func TestListServicesPagination(t *testing.T) {
 	}
 	if atomic.LoadInt32(&page) != 2 {
 		t.Fatalf("expected 2 page fetches, got %d", page)
+	}
+}
+
+// TestListServicesRepeatedPageTokenAborts verifies the pagination loop refuses
+// a gateway that returns the same non-empty next_page_token forever, instead of
+// looping unboundedly until OOM.
+func TestListServicesRepeatedPageTokenAborts(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		// Always return the same non-empty token — a never-terminating stream.
+		writeList(t, w, []wireService{
+			wsvc("workspace.default.opus", messages, "system.ai.databricks-claude-opus-4-8"),
+		}, "loop")
+	}))
+	defer srv.Close()
+
+	_, err := ListServices(context.Background(), srv.Client(), srv.URL, "tok")
+	if err == nil || !strings.Contains(err.Error(), "repeated page_token") {
+		t.Fatalf("expected repeated page_token error, got %v", err)
+	}
+	// Must abort quickly (page 1 returns "loop", page 2 repeats it -> abort),
+	// not spin thousands of times.
+	if h := atomic.LoadInt32(&hits); h > 3 {
+		t.Fatalf("expected abort within a few requests, got %d", h)
 	}
 }
 

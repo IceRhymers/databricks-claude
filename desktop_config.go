@@ -127,9 +127,17 @@ const inferenceModelsJSON = `[{"name":"databricks-claude-opus-4-7","supports1m":
 func resolveInferenceModelsJSON(profile string) string {
 	models, err := discoverInferenceModels(profile)
 	if err == nil && len(models) > 0 {
+		// The generated artifact reflects THIS machine's Unity Catalog grants. A
+		// narrow-grant machine would otherwise silently bake a short picker into
+		// a fleet-wide MDM profile, so make the provenance loud.
+		fmt.Fprintf(os.Stderr, "databricks-claude: model-picker: baking %d discovered model-service(s) into the artifact — this reflects THIS machine's Unity Catalog grants; verify all expected families are present before distributing to a fleet\n", len(models))
 		return formatInferenceModels(models)
 	}
-	fmt.Fprintf(os.Stderr, "databricks-claude: model-picker discovery unavailable (%v); using built-in model list\n", err)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "databricks-claude: model-picker discovery unavailable (%v); using built-in model list\n", err)
+	} else {
+		fmt.Fprintln(os.Stderr, "databricks-claude: model-picker discovery found no anthropic-capable model-services; using built-in model list")
+	}
 	return inferenceModelsJSON
 }
 

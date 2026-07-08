@@ -14,9 +14,12 @@ const anthropicMessagesAPIType = "anthropic/v1/messages"
 // wire FQN sent to the gateway.
 const oneMSuffix = "[1m]"
 
-// destPattern matches the claude-(opus|sonnet|haiku)-major-minor shape anywhere
-// within a routing destination FQN.
-var destPattern = regexp.MustCompile(`claude-(opus|sonnet|haiku)-(\d+)-(\d+)`)
+// destPattern matches the claude-(opus|sonnet|haiku)-major-minor shape within a
+// routing destination FQN. The leading (?:^|[./_-]) boundary ensures "claude-"
+// begins a name segment, so an unrelated substring like
+// "notclaude-opus-2025-01" is NOT misclassified as opus at version 2025 (which
+// would otherwise dominate the numeric version sort and mis-route the family).
+var destPattern = regexp.MustCompile(`(?:^|[./_-])claude-(opus|sonnet|haiku)-(\d+)-(\d+)`)
 
 // families is the fixed set of Claude families, in resolution order.
 var families = []string{"opus", "sonnet", "haiku"}
@@ -196,8 +199,11 @@ func better(bestSystem bool, bestMajor, bestMinor int, candSystem bool, candMajo
 	return candMajor > bestMajor || (candMajor == bestMajor && candMinor > bestMinor)
 }
 
-// pinCommandFor returns a copy-pasteable remediation hint for an unresolved
-// family.
+// pinCommandFor returns an actionable remediation hint for an unresolved
+// family. A family is unresolved because the caller has no EXECUTE grant on a
+// matching model-service, so the real fix is to grant access and re-run
+// discovery via doctor. (There is deliberately no `config model` pin setter
+// yet — do not point users at a command that does not exist.)
 func pinCommandFor(family string) string {
-	return "databricks-claude config model " + family + " <catalog.schema.service>"
+	return "grant EXECUTE on a " + family + " model-service, then run: databricks-claude doctor --fix"
 }

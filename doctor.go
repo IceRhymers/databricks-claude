@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/IceRhymers/databricks-claude/internal/cmd"
@@ -117,15 +116,13 @@ func runDoctor(args []string) {
 		log.Fatalf("databricks-claude: doctor: model discovery failed: %v", derr)
 	}
 
-	// Read the current settings.json env pins.
-	home, _ := os.UserHomeDir()
-	doc, _ := readSettingsJSON(filepath.Join(home, ".claude", "settings.json"))
-	env := envBlock(doc)
-	current := ModelRouting{
-		Opus:   envString(env, "ANTHROPIC_DEFAULT_OPUS_MODEL"),
-		Sonnet: envString(env, "ANTHROPIC_DEFAULT_SONNET_MODEL"),
-		Haiku:  envString(env, "ANTHROPIC_DEFAULT_HAIKU_MODEL"),
-	}
+	// "Current" is what the launch path will actually emit: the wrapper
+	// regenerates settings.json's model keys from persistentState.Models via
+	// launchModelRouting on every launch (main.go / serve_session.go), so
+	// state.Models — not the possibly-stale settings.json — is the source of
+	// truth to diff against. Diffing settings.json directly could report "ok"
+	// while the wrapper launches a different model on the next run.
+	current := launchModelRouting(saved)
 	discovered := ModelRouting{Opus: ms.Opus.FQN, Sonnet: ms.Sonnet.FQN, Haiku: ms.Haiku.FQN}
 
 	deltas := diffModelRouting(current, discovered, unresolved)
@@ -160,6 +157,15 @@ func runDoctor(args []string) {
 			}
 		}
 
+		// Guard against persisting a non-nil-but-empty ModelRouting: that would
+		// violate the "nil == never discovered" contract in state.go and write a
+		// settings.json with no model keys. Mirrors config write's zero-resolved
+		// hard-fail. (Resolved families or preserved current pins keep routing
+		// non-empty, so this only fires on a truly empty result.)
+		if routing.Opus == "" && routing.Sonnet == "" && routing.Haiku == "" {
+			log.Fatalf("databricks-claude: doctor: --fix: nothing to apply — discovery resolved no models and there are no current pins to preserve. Grant EXECUTE on a model-service, then re-run.")
+		}
+
 		// Load-then-mutate so the whole-struct save preserves every other
 		// persisted field.
 		saved = loadState()
@@ -182,13 +188,4 @@ func runDoctor(args []string) {
 		os.Exit(1)
 	}
 	fmt.Fprintln(os.Stderr, "settings.json models are up to date.")
-}
-
-// envString coerces env[key] to a string, returning "" when absent or when the
-// value is not a JSON string.
-func envString(env map[string]interface{}, key string) string {
-	if v, ok := env[key].(string); ok {
-		return v
-	}
-	return ""
 }
