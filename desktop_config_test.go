@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/IceRhymers/databricks-claude/pkg/modeldiscovery"
 )
 
 // goldenDir is the directory storing helper-mode golden artifacts.
@@ -56,7 +58,7 @@ func TestNewUUID_FormatAndUniqueness(t *testing.T) {
 func TestBuildMobileconfig_ContainsRequiredKeys(t *testing.T) {
 	gateway := "https://adb-abc-123.azuredatabricks.net/ai-gateway/anthropic"
 	helper := "/usr/local/bin/databricks-claude"
-	out, err := buildMobileconfig(helperModeKeys(gateway, helper), "myws", "", 0)
+	out, err := buildMobileconfig(helperModeKeys(gateway, helper), "myws", "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildMobileconfig: %v", err)
 	}
@@ -92,7 +94,7 @@ func TestBuildMobileconfig_ContainsRequiredKeys(t *testing.T) {
 }
 
 func TestBuildMobileconfig_SecondPayload(t *testing.T) {
-	out, err := buildMobileconfig(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "fleet-profile", "", 0)
+	out, err := buildMobileconfig(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "fleet-profile", "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildMobileconfig: %v", err)
 	}
@@ -111,7 +113,7 @@ func TestBuildMobileconfig_EscapesSpecialChars(t *testing.T) {
 	// Gateway URL with an ampersand should be plist-escaped.
 	gateway := "https://example.com/anthropic?a=1&b=2"
 	helper := "/Applications/Foo & Bar/databricks-claude"
-	out, err := buildMobileconfig(helperModeKeys(gateway, helper), "DEFAULT", "", 0)
+	out, err := buildMobileconfig(helperModeKeys(gateway, helper), "DEFAULT", "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildMobileconfig: %v", err)
 	}
@@ -127,7 +129,7 @@ func TestBuildMobileconfig_EscapesSpecialChars(t *testing.T) {
 }
 
 func TestBuildMobileconfig_UniqueUUIDs(t *testing.T) {
-	out, err := buildMobileconfig(helperModeKeys("https://x", "/bin/x"), "DEFAULT", "", 0)
+	out, err := buildMobileconfig(helperModeKeys("https://x", "/bin/x"), "DEFAULT", "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildMobileconfig: %v", err)
 	}
@@ -149,7 +151,7 @@ func TestBuildMobileconfig_UniqueUUIDs(t *testing.T) {
 func TestBuildRegFile_ContainsRequiredKeys(t *testing.T) {
 	gateway := "https://adb-abc-123.azuredatabricks.net/ai-gateway/anthropic"
 	helper := `C:\Program Files\databricks-claude\databricks-claude.exe`
-	out := buildRegFile(helperModeKeys(gateway, helper), "fleet-ws", "", 0)
+	out := buildRegFile(helperModeKeys(gateway, helper), "fleet-ws", "", 0, inferenceModelsJSON)
 
 	for _, want := range []string{
 		`Windows Registry Editor Version 5.00`,
@@ -471,7 +473,7 @@ const devTestProfile = "test-profile"
 
 func decodeDevJSON(t *testing.T) map[string]any {
 	t.Helper()
-	out, err := buildDevModeJSON(helperModeKeys(devTestGateway, devTestHelper), devTestProfile, "", 0)
+	out, err := buildDevModeJSON(helperModeKeys(devTestGateway, devTestHelper), devTestProfile, "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildDevModeJSON: %v", err)
 	}
@@ -526,7 +528,7 @@ func TestBuildDevModeJSON_ContainsRequiredKeys(t *testing.T) {
 }
 
 func TestBuildDevModeJSON_ValidJSONAndTrailingNewline(t *testing.T) {
-	out, err := buildDevModeJSON(helperModeKeys(devTestGateway, devTestHelper), devTestProfile, "", 0)
+	out, err := buildDevModeJSON(helperModeKeys(devTestGateway, devTestHelper), devTestProfile, "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildDevModeJSON: %v", err)
 	}
@@ -540,7 +542,7 @@ func TestBuildDevModeJSON_ValidJSONAndTrailingNewline(t *testing.T) {
 }
 
 func TestBuildDevModeJSON_NoInferenceGatewayApiKey(t *testing.T) {
-	out, err := buildDevModeJSON(helperModeKeys(devTestGateway, devTestHelper), devTestProfile, "", 0)
+	out, err := buildDevModeJSON(helperModeKeys(devTestGateway, devTestHelper), devTestProfile, "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildDevModeJSON: %v", err)
 	}
@@ -589,7 +591,7 @@ func TestBuildDevModeJSON_TtlIs55(t *testing.T) {
 func TestBuildDevModeJSON_PreservesPaths(t *testing.T) {
 	gateway := "https://example.com/anthropic?a=1&b=2"
 	helper := "/Applications/Foo Bar/databricks-claude-credential-helper"
-	out, err := buildDevModeJSON(helperModeKeys(gateway, helper), "my-profile", "", 0)
+	out, err := buildDevModeJSON(helperModeKeys(gateway, helper), "my-profile", "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildDevModeJSON: %v", err)
 	}
@@ -613,7 +615,7 @@ func TestInferenceModelsConsistencyAcrossArtifacts(t *testing.T) {
 	helper := "/path/to/helper"
 
 	// JSON: models array elements should byte-equal the constant elements.
-	devOut, err := buildDevModeJSON(helperModeKeys(gateway, helper), "DEFAULT", "", 0)
+	devOut, err := buildDevModeJSON(helperModeKeys(gateway, helper), "DEFAULT", "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildDevModeJSON: %v", err)
 	}
@@ -647,7 +649,7 @@ func TestInferenceModelsConsistencyAcrossArtifacts(t *testing.T) {
 
 	// Mobileconfig: extract the <string>...</string> body for inferenceModels
 	// and reverse plistEscape; should equal inferenceModelsJSON verbatim.
-	mc, err := buildMobileconfig(helperModeKeys(gateway, helper), "DEFAULT", "", 0)
+	mc, err := buildMobileconfig(helperModeKeys(gateway, helper), "DEFAULT", "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildMobileconfig: %v", err)
 	}
@@ -658,7 +660,7 @@ func TestInferenceModelsConsistencyAcrossArtifacts(t *testing.T) {
 	}
 
 	// Reg: extract the inferenceModels="..." value and reverse regEscape.
-	reg := buildRegFile(helperModeKeys(gateway, helper), "DEFAULT", "", 0)
+	reg := buildRegFile(helperModeKeys(gateway, helper), "DEFAULT", "", 0, inferenceModelsJSON)
 	regModels := extractRegModels(t, reg)
 	regUnescaped := unescapeReg(regModels)
 	if regUnescaped != inferenceModelsJSON {
@@ -787,7 +789,7 @@ func TestWriteFileAtomic_RenamesFromTempInSameDir(t *testing.T) {
 func TestWriteDesktopConfigByPath_JsonExtension(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "out.json")
-	if err := writeDesktopConfigByPath(target, helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "DEFAULT", "", 0); err != nil {
+	if err := writeDesktopConfigByPath(target, helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "DEFAULT", "", 0, inferenceModelsJSON); err != nil {
 		t.Fatalf("writeDesktopConfigByPath: %v", err)
 	}
 	raw, err := os.ReadFile(target)
@@ -826,7 +828,7 @@ func TestGuardDevJSONOutputPath_Empty(t *testing.T) {
 func TestGuardDevJSONOutputPath_OurOwnConfig(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "ours.json")
-	body, err := buildDevModeJSON(helperModeKeys("https://x", "/bin/h"), "DEFAULT", "", 0)
+	body, err := buildDevModeJSON(helperModeKeys("https://x", "/bin/h"), "DEFAULT", "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildDevModeJSON: %v", err)
 	}
@@ -874,7 +876,7 @@ func TestGuardDevJSONOutputPath_NotJSON(t *testing.T) {
 const testCliPath = "/opt/databricks/bin/databricks"
 
 func TestBuildMobileconfig_CliPath_Present(t *testing.T) {
-	out, err := buildMobileconfig(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", testCliPath, 0)
+	out, err := buildMobileconfig(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", testCliPath, 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildMobileconfig: %v", err)
 	}
@@ -887,7 +889,7 @@ func TestBuildMobileconfig_CliPath_Present(t *testing.T) {
 }
 
 func TestBuildMobileconfig_CliPath_Absent(t *testing.T) {
-	out, err := buildMobileconfig(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", "", 0)
+	out, err := buildMobileconfig(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildMobileconfig: %v", err)
 	}
@@ -898,7 +900,7 @@ func TestBuildMobileconfig_CliPath_Absent(t *testing.T) {
 
 func TestBuildMobileconfig_CliPath_Escaped(t *testing.T) {
 	cliPath := "/opt/foo & bar/databricks"
-	out, err := buildMobileconfig(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", cliPath, 0)
+	out, err := buildMobileconfig(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", cliPath, 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildMobileconfig: %v", err)
 	}
@@ -911,14 +913,14 @@ func TestBuildMobileconfig_CliPath_Escaped(t *testing.T) {
 }
 
 func TestBuildRegFile_CliPath_Present(t *testing.T) {
-	out := buildRegFile(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", testCliPath, 0)
+	out := buildRegFile(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", testCliPath, 0, inferenceModelsJSON)
 	if !strings.Contains(out, `"databricksCliPath"="`+testCliPath+`"`) {
 		t.Errorf(".reg with cliPath must contain %q", `"databricksCliPath"="`+testCliPath+`"`)
 	}
 }
 
 func TestBuildRegFile_CliPath_Absent(t *testing.T) {
-	out := buildRegFile(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", "", 0)
+	out := buildRegFile(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", "", 0, inferenceModelsJSON)
 	if strings.Contains(out, "databricksCliPath") {
 		t.Error(".reg without cliPath must NOT contain databricksCliPath")
 	}
@@ -926,14 +928,14 @@ func TestBuildRegFile_CliPath_Absent(t *testing.T) {
 
 func TestBuildRegFile_CliPath_Escaped(t *testing.T) {
 	cliPath := `C:\Program Files\Databricks\databricks.exe`
-	out := buildRegFile(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", cliPath, 0)
+	out := buildRegFile(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", cliPath, 0, inferenceModelsJSON)
 	if !strings.Contains(out, `"databricksCliPath"="C:\\Program Files\\Databricks\\databricks.exe"`) {
 		t.Errorf(".reg cliPath backslashes not escaped; got:\n%s", out)
 	}
 }
 
 func TestBuildDevModeJSON_CliPath_Present(t *testing.T) {
-	out, err := buildDevModeJSON(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", testCliPath, 0)
+	out, err := buildDevModeJSON(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", testCliPath, 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildDevModeJSON: %v", err)
 	}
@@ -951,7 +953,7 @@ func TestBuildDevModeJSON_CliPath_Present(t *testing.T) {
 }
 
 func TestBuildDevModeJSON_CliPath_Absent(t *testing.T) {
-	out, err := buildDevModeJSON(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", "", 0)
+	out, err := buildDevModeJSON(helperModeKeys("https://x.example.com/anthropic", "/bin/h"), "myws", "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildDevModeJSON: %v", err)
 	}
@@ -976,12 +978,12 @@ func TestHelperModeGolden(t *testing.T) {
 
 	setDeterministicUUIDs(t)
 
-	mc, err := buildMobileconfig(helperModeKeys(goldenGateway, goldenHelper), goldenProfile, "", 0)
+	mc, err := buildMobileconfig(helperModeKeys(goldenGateway, goldenHelper), goldenProfile, "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildMobileconfig: %v", err)
 	}
-	reg := buildRegFile(helperModeKeys(goldenGateway, goldenHelper), goldenProfile, "", 0)
-	jsn, err := buildDevModeJSON(helperModeKeys(goldenGateway, goldenHelper), goldenProfile, "", 0)
+	reg := buildRegFile(helperModeKeys(goldenGateway, goldenHelper), goldenProfile, "", 0, inferenceModelsJSON)
+	jsn, err := buildDevModeJSON(helperModeKeys(goldenGateway, goldenHelper), goldenProfile, "", 0, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildDevModeJSON: %v", err)
 	}
@@ -1070,7 +1072,7 @@ func TestHelperModeKeys_Coverage(t *testing.T) {
 
 func TestBuildMobileconfig_DaemonMode_KeysPresent(t *testing.T) {
 	keys := daemonModeKeys(50000, "fake-key-xyz", false)
-	out, err := buildMobileconfig(keys, "fleet-profile", "", 50000)
+	out, err := buildMobileconfig(keys, "fleet-profile", "", 50000, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildMobileconfig daemon: %v", err)
 	}
@@ -1106,7 +1108,7 @@ func TestBuildMobileconfig_DaemonMode_KeysPresent(t *testing.T) {
 
 func TestBuildRegFile_DaemonMode_KeysPresent(t *testing.T) {
 	keys := daemonModeKeys(50000, "fake-key-xyz", false)
-	out := buildRegFile(keys, "fleet-profile", "", 50000)
+	out := buildRegFile(keys, "fleet-profile", "", 50000, inferenceModelsJSON)
 
 	for _, want := range []string{
 		`"inferenceGatewayBaseUrl"="http://127.0.0.1:50000"`,
@@ -1132,7 +1134,7 @@ func TestBuildRegFile_DaemonMode_KeysPresent(t *testing.T) {
 
 func TestBuildDevModeJSON_DaemonMode_KeysPresent(t *testing.T) {
 	keys := daemonModeKeys(50000, "fake-key-xyz", false)
-	out, err := buildDevModeJSON(keys, "fleet-profile", "", 50000)
+	out, err := buildDevModeJSON(keys, "fleet-profile", "", 50000, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildDevModeJSON daemon: %v", err)
 	}
@@ -1163,7 +1165,7 @@ func TestBuildDevModeJSON_DaemonMode_KeysPresent(t *testing.T) {
 
 func TestBuildDaemonMode_WithOTEL_Mobileconfig(t *testing.T) {
 	keys := daemonModeKeys(49153, "key", true)
-	out, err := buildMobileconfig(keys, "p", "", 49153)
+	out, err := buildMobileconfig(keys, "p", "", 49153, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildMobileconfig: %v", err)
 	}
@@ -1183,7 +1185,7 @@ func TestBuildDaemonMode_WithOTEL_Mobileconfig(t *testing.T) {
 
 func TestBuildDaemonMode_WithOTEL_RegFile(t *testing.T) {
 	keys := daemonModeKeys(49153, "key", true)
-	out := buildRegFile(keys, "p", "", 49153)
+	out := buildRegFile(keys, "p", "", 49153, inferenceModelsJSON)
 	if !strings.Contains(out, `"otlpEndpoint"="http://127.0.0.1:49153/otel"`) {
 		t.Errorf("otel .reg missing otlpEndpoint; got:\n%s", out)
 	}
@@ -1194,7 +1196,7 @@ func TestBuildDaemonMode_WithOTEL_RegFile(t *testing.T) {
 
 func TestBuildDaemonMode_WithOTEL_JSON(t *testing.T) {
 	keys := daemonModeKeys(49153, "key", true)
-	out, err := buildDevModeJSON(keys, "p", "", 49153)
+	out, err := buildDevModeJSON(keys, "p", "", 49153, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildDevModeJSON: %v", err)
 	}
@@ -1214,12 +1216,12 @@ func TestBuildDaemonMode_WithOTEL_JSON(t *testing.T) {
 // the same mode when --daemon is set. No skew between formats.
 func TestDaemonModeCrossFileConsistency(t *testing.T) {
 	keys := daemonModeKeys(50000, "shared-key", false)
-	mc, err := buildMobileconfig(keys, "p", "", 50000)
+	mc, err := buildMobileconfig(keys, "p", "", 50000, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildMobileconfig: %v", err)
 	}
-	reg := buildRegFile(keys, "p", "", 50000)
-	jsn, err := buildDevModeJSON(keys, "p", "", 50000)
+	reg := buildRegFile(keys, "p", "", 50000, inferenceModelsJSON)
+	jsn, err := buildDevModeJSON(keys, "p", "", 50000, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("buildDevModeJSON: %v", err)
 	}
@@ -1254,12 +1256,12 @@ func TestDaemonModeCrossFileConsistency(t *testing.T) {
 // by asserting on a field that all three formats emit in daemon-mode.
 func TestDaemonModeCrossFileConsistency_PortPresent(t *testing.T) {
 	keys := daemonModeKeys(49999, "key", false)
-	mc, err := buildMobileconfig(keys, "p", "", 49999)
+	mc, err := buildMobileconfig(keys, "p", "", 49999, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
-	reg := buildRegFile(keys, "p", "", 49999)
-	jsn, err := buildDevModeJSON(keys, "p", "", 49999)
+	reg := buildRegFile(keys, "p", "", 49999, inferenceModelsJSON)
+	jsn, err := buildDevModeJSON(keys, "p", "", 49999, inferenceModelsJSON)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
@@ -1336,5 +1338,33 @@ func TestExtractDaemonFakeKeyFlag(t *testing.T) {
 		if got := extractDaemonFakeKeyFlag(c.args); got != c.want {
 			t.Errorf("extractDaemonFakeKeyFlag(%v) = %q, want %q", c.args, got, c.want)
 		}
+	}
+}
+
+// ---- model-picker discovery ------------------------------------------------
+
+// TestResolveInferenceModelsJSONFallback proves that when discovery cannot reach
+// Databricks (no real CLI/host in the test environment), resolveInferenceModelsJSON
+// returns the built-in const verbatim. This is the invariant the desktop
+// generation tests rely on to keep their verbatim assertions valid.
+func TestResolveInferenceModelsJSONFallback(t *testing.T) {
+	got := resolveInferenceModelsJSON("nonexistent-profile-xyz")
+	if got != inferenceModelsJSON {
+		t.Errorf("resolveInferenceModelsJSON fallback = %q,\nwant const %q", got, inferenceModelsJSON)
+	}
+}
+
+// TestFormatInferenceModels checks the wire-shape marshaling: supports1m is
+// emitted only for 1M-eligible entries (matching how the const omits it for
+// non-1M models).
+func TestFormatInferenceModels(t *testing.T) {
+	models := []modeldiscovery.Model{
+		{FQN: "a.b.opus", OneM: true},
+		{FQN: "a.b.haiku", OneM: false},
+	}
+	got := formatInferenceModels(models)
+	want := `[{"name":"a.b.opus","supports1m":true},{"name":"a.b.haiku"}]`
+	if got != want {
+		t.Errorf("formatInferenceModels() = %q, want %q", got, want)
 	}
 }

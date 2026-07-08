@@ -1009,7 +1009,7 @@ func TestConfigWrite_BootstrapWritesFullEnvBlock(t *testing.T) {
 	defer func() { statePath = origStatePath }()
 
 	proxyURL := "http://127.0.0.1:49153"
-	otelEnv := databricksFullSetupEnv()
+	otelEnv := databricksFullSetupEnv(defaultModelRouting())
 
 	if err := bootstrapSettings(0, "DEFAULT", proxyURL, otelEnv); err != nil {
 		t.Fatalf("bootstrapSettings failed: %v", err)
@@ -1037,7 +1037,7 @@ func TestConfigWrite_BootstrapWritesFullEnvBlock(t *testing.T) {
 	// the settings.json env block, with the exact value. Asserting value-
 	// equality (not just presence) means a regression bumping any model name
 	// in the helper without updating downstream consumers also fails here.
-	for k, want := range databricksFullSetupEnv() {
+	for k, want := range databricksFullSetupEnv(defaultModelRouting()) {
 		got, present := env[k]
 		if !present {
 			t.Errorf("missing key %q in settings.json env block (expected %q)", k, want)
@@ -1056,7 +1056,7 @@ func TestConfigWrite_BootstrapWritesFullEnvBlock(t *testing.T) {
 // regression class: "I deleted a line and tests still passed because the
 // integration test only checked presence of some keys."
 func TestDatabricksFullSetupEnv_KeyCoverage(t *testing.T) {
-	env := databricksFullSetupEnv()
+	env := databricksFullSetupEnv(defaultModelRouting())
 	wantKeys := map[string]bool{
 		"ANTHROPIC_MODEL":                        true,
 		"ANTHROPIC_DEFAULT_OPUS_MODEL":           true,
@@ -1084,6 +1084,34 @@ func TestDatabricksFullSetupEnv_KeyCoverage(t *testing.T) {
 	}
 	if env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] != "1" {
 		t.Errorf("CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS value drift: got %q", env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"])
+	}
+}
+
+// TestDatabricksFullSetupEnvOmitsUnresolvedFamily verifies that a routing with
+// only the Opus family populated emits exactly the two static keys plus the two
+// Opus model keys — and never emits an empty/wrong sonnet or haiku key. This is
+// the no-silent-mis-route guarantee for a partially-resolved discovery.
+func TestDatabricksFullSetupEnvOmitsUnresolvedFamily(t *testing.T) {
+	env := databricksFullSetupEnv(ModelRouting{Opus: "x"})
+
+	want := map[string]string{
+		"ANTHROPIC_CUSTOM_HEADERS":               "x-databricks-use-coding-agent-mode: true",
+		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+		"ANTHROPIC_MODEL":                        "x",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":           "x",
+	}
+	if len(env) != len(want) {
+		t.Errorf("databricksFullSetupEnv(Opus-only) returned %d keys, want exactly %d: %v", len(env), len(want), env)
+	}
+	for k, v := range want {
+		if env[k] != v {
+			t.Errorf("env[%q]: got %q, want %q", k, env[k], v)
+		}
+	}
+	for _, k := range []string{"ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"} {
+		if _, present := env[k]; present {
+			t.Errorf("key %q must be absent for an unresolved family, but was present", k)
+		}
 	}
 }
 

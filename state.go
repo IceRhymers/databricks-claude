@@ -35,6 +35,21 @@ type persistentState struct {
 	WithWebSearch        bool   `json:"with_websearch,omitempty"`
 	WebSearchBackend     string `json:"websearch_backend,omitempty"`
 	WebSearchFetchBudget int    `json:"websearch_fetch_budget,omitempty"`
+	// Models holds the resolved model FQN per family, written by the
+	// discovery-time config writer and read by the launch path. A nil pointer
+	// means discovery has never run; the launch path then falls back to
+	// defaultModelRouting.
+	Models *ModelRouting `json:"models,omitempty"`
+}
+
+// ModelRouting holds the resolved model FQN per family that the launch path
+// writes into settings.json. The [1m] suffix, when applicable, is already
+// baked into the FQN string by pkg/modeldiscovery. Empty string for a family
+// means "not discovered" — the launch path fills it from defaultModelRouting.
+type ModelRouting struct {
+	Opus   string `json:"opus,omitempty"`
+	Sonnet string `json:"sonnet,omitempty"`
+	Haiku  string `json:"haiku,omitempty"`
 }
 
 const defaultPort = 49153

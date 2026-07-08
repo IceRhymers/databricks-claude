@@ -19,6 +19,7 @@ import (
 	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
 	"github.com/IceRhymers/databricks-claude/pkg/cli"
 	"github.com/IceRhymers/databricks-claude/pkg/mdmprofile"
+	"github.com/IceRhymers/databricks-claude/pkg/modeldiscovery"
 )
 
 // uuidGenerator is the UUID factory used by buildMobileconfig. Overridable in
@@ -115,6 +116,58 @@ func helperDebugLog(format string, args ...any) {
 // Claude Desktop configuration. Kept as a single source of truth so the macOS,
 // Windows, and developer-mode JSON generators stay aligned.
 const inferenceModelsJSON = `[{"name":"databricks-claude-opus-4-7","supports1m":true},{"name":"databricks-claude-opus-4-6","supports1m":true},{"name":"databricks-claude-sonnet-4-6","supports1m":true},{"name":"databricks-claude-sonnet-4-5","supports1m":true},{"name":"databricks-claude-haiku-4-5"}]`
+
+// resolveInferenceModelsJSON returns the Claude Desktop model-picker list for
+// the given profile. It attempts live discovery against Unity Catalog
+// model-services and marshals the result to the same wire shape as
+// inferenceModelsJSON ({"name":FQN,"supports1m":true}, with supports1m emitted
+// only for 1M-eligible entries). On ANY error, or an empty discovery result, it
+// falls back to the built-in inferenceModelsJSON const verbatim and emits a
+// single note to stderr.
+func resolveInferenceModelsJSON(profile string) string {
+	models, err := discoverInferenceModels(profile)
+	if err == nil && len(models) > 0 {
+		return formatInferenceModels(models)
+	}
+	fmt.Fprintf(os.Stderr, "databricks-claude: model-picker discovery unavailable (%v); using built-in model list\n", err)
+	return inferenceModelsJSON
+}
+
+// discoverInferenceModels resolves the host and token for the profile and lists
+// anthropic-capable model-services. It is split out so resolveInferenceModelsJSON
+// can keep a single fallback path.
+func discoverInferenceModels(profile string) ([]modeldiscovery.Model, error) {
+	host, err := DiscoverHost(profile, "")
+	if err != nil {
+		return nil, err
+	}
+	tok, err := NewTokenProvider(profile, "").Token(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return modeldiscovery.DiscoverModels(context.Background(), modeldiscovery.NewClient(), host, tok)
+}
+
+// formatInferenceModels marshals discovered models into the Claude Desktop
+// inferenceModels wire shape. supports1m is emitted only for 1M-eligible entries
+// (matching how the const omits it for non-1M models such as haiku). Pure
+// function. On the (practically impossible) marshal error it returns the const
+// fallback.
+func formatInferenceModels(models []modeldiscovery.Model) string {
+	type wireModel struct {
+		Name       string `json:"name"`
+		Supports1m bool   `json:"supports1m,omitempty"`
+	}
+	arr := make([]wireModel, 0, len(models))
+	for _, m := range models {
+		arr = append(arr, wireModel{Name: m.FQN, Supports1m: m.OneM})
+	}
+	b, err := json.Marshal(arr)
+	if err != nil {
+		return inferenceModelsJSON
+	}
+	return string(b)
+}
 
 // desktopDeveloperModeArticleURL is the canonical Anthropic support article
 // describing how to import a JSON config into Claude Desktop's developer mode.
@@ -408,8 +461,13 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databrick
 		daemonPort = resolvedPort
 	}
 
+	// Resolve the model-picker list ONCE (discovery-driven, falling back to the
+	// built-in const) and thread it into every generator so all three artifacts
+	// stay aligned.
+	models := resolveInferenceModelsJSON(resolved)
+
 	if outputPath != "" {
-		if err := writeDesktopConfigByPath(outputPath, keys, resolved, databricksCLIPath, daemonPort); err != nil {
+		if err := writeDesktopConfigByPath(outputPath, keys, resolved, databricksCLIPath, daemonPort, models); err != nil {
 			fmt.Fprintf(os.Stderr, "databricks-claude: %v\n", err)
 			os.Exit(1)
 		}
@@ -433,19 +491,19 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databrick
 		path    string
 		content []byte
 	}
-	mc, err := buildMobileconfig(keys, resolved, databricksCLIPath, daemonPort)
+	mc, err := buildMobileconfig(keys, resolved, databricksCLIPath, daemonPort, models)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "databricks-claude: %v\n", err)
 		os.Exit(1)
 	}
-	dev, err := buildDevModeJSON(keys, resolved, databricksCLIPath, daemonPort)
+	dev, err := buildDevModeJSON(keys, resolved, databricksCLIPath, daemonPort, models)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "databricks-claude: %v\n", err)
 		os.Exit(1)
 	}
 	arts := []artifact{
 		{"databricks-claude-desktop.mobileconfig", []byte(mc)},
-		{"databricks-claude-desktop.reg", []byte(buildRegFile(keys, resolved, databricksCLIPath, daemonPort))},
+		{"databricks-claude-desktop.reg", []byte(buildRegFile(keys, resolved, databricksCLIPath, daemonPort, models))},
 		{"databricks-claude-desktop.json", dev},
 	}
 	wrote := []string{}
@@ -499,29 +557,29 @@ func resolveHelperPath(override string, forPkg bool) (string, error) {
 // host OS when no recognised extension is present) and writes to outputPath
 // atomically. For .json outputs, guardDevJSONOutputPath protects against
 // accidentally clobbering ~/.claude/settings.json via a typo.
-func writeDesktopConfigByPath(outputPath string, keys modeKeys, profile, cliPath string, daemonPort int) error {
+func writeDesktopConfigByPath(outputPath string, keys modeKeys, profile, cliPath string, daemonPort int, modelsJSON string) error {
 	lower := strings.ToLower(outputPath)
 	var data []byte
 	var err error
 	switch {
 	case strings.HasSuffix(lower, ".mobileconfig"):
 		var s string
-		s, err = buildMobileconfig(keys, profile, cliPath, daemonPort)
+		s, err = buildMobileconfig(keys, profile, cliPath, daemonPort, modelsJSON)
 		data = []byte(s)
 	case strings.HasSuffix(lower, ".reg"):
-		data = []byte(buildRegFile(keys, profile, cliPath, daemonPort))
+		data = []byte(buildRegFile(keys, profile, cliPath, daemonPort, modelsJSON))
 	case strings.HasSuffix(lower, ".json"):
 		if err := guardDevJSONOutputPath(outputPath); err != nil {
 			return err
 		}
-		data, err = buildDevModeJSON(keys, profile, cliPath, daemonPort)
+		data, err = buildDevModeJSON(keys, profile, cliPath, daemonPort, modelsJSON)
 	default:
 		// Fall back to host platform.
 		if runtime.GOOS == "windows" {
-			data = []byte(buildRegFile(keys, profile, cliPath, daemonPort))
+			data = []byte(buildRegFile(keys, profile, cliPath, daemonPort, modelsJSON))
 		} else {
 			var s string
-			s, err = buildMobileconfig(keys, profile, cliPath, daemonPort)
+			s, err = buildMobileconfig(keys, profile, cliPath, daemonPort, modelsJSON)
 			data = []byte(s)
 		}
 	}
@@ -606,16 +664,16 @@ func newUUID() (string, error) {
 
 // buildMobileconfig renders the macOS Claude Desktop Configuration Profile.
 // Dispatches to helper-mode or daemon-mode based on keys.CredHelper.
-func buildMobileconfig(keys modeKeys, profile, cliPath string, daemonPort int) (string, error) {
+func buildMobileconfig(keys modeKeys, profile, cliPath string, daemonPort int, modelsJSON string) (string, error) {
 	if keys.CredHelper != "" {
-		return buildMobileconfigHelperMode(keys.GatewayBaseURL, keys.CredHelper, profile, cliPath)
+		return buildMobileconfigHelperMode(keys.GatewayBaseURL, keys.CredHelper, profile, cliPath, modelsJSON)
 	}
-	return buildMobileconfigDaemonMode(keys, profile, cliPath, daemonPort)
+	return buildMobileconfigDaemonMode(keys, profile, cliPath, daemonPort, modelsJSON)
 }
 
 // buildMobileconfigHelperMode is the original buildMobileconfig implementation,
 // preserved verbatim to guarantee byte-identical output in helper-mode.
-func buildMobileconfigHelperMode(gatewayURL, helperPath, profile, cliPath string) (string, error) {
+func buildMobileconfigHelperMode(gatewayURL, helperPath, profile, cliPath, modelsJSON string) (string, error) {
 	innerUUID, err := uuidGenerator()
 	if err != nil {
 		return "", err
@@ -660,7 +718,7 @@ func buildMobileconfigHelperMode(gatewayURL, helperPath, profile, cliPath string
 				<key>inferenceGatewayAuthScheme</key>
 				<string>bearer</string>
 				<key>inferenceModels</key>
-				<string>` + plistEscape(inferenceModelsJSON) + `</string>
+				<string>` + plistEscape(modelsJSON) + `</string>
 				<key>inferenceCredentialHelper</key>
 				<string>` + plistEscape(helperPath) + `</string>
 				<key>inferenceCredentialHelperTtlSec</key>
@@ -723,7 +781,7 @@ func buildMobileconfigHelperMode(gatewayURL, helperPath, profile, cliPath string
 // daemonPort is a future-use field: the daemon currently does not read it from
 // MDM (it reads state.Port at startup), but endpoint tooling will use it in a
 // future issue to cross-check that the daemon is listening on the expected port.
-func buildMobileconfigDaemonMode(keys modeKeys, profile, cliPath string, daemonPort int) (string, error) {
+func buildMobileconfigDaemonMode(keys modeKeys, profile, cliPath string, daemonPort int, modelsJSON string) (string, error) {
 	innerUUID, err := uuidGenerator()
 	if err != nil {
 		return "", err
@@ -746,7 +804,7 @@ func buildMobileconfigDaemonMode(keys modeKeys, profile, cliPath string, daemonP
 		fmt.Fprintf(&inferenceXML, "\t\t\t\t<key>inferenceGatewayApiKey</key>\n\t\t\t\t<string>%s</string>\n", plistEscape(keys.GatewayAPIKey))
 	}
 	inferenceXML.WriteString("\t\t\t\t<key>inferenceGatewayAuthScheme</key>\n\t\t\t\t<string>bearer</string>\n")
-	fmt.Fprintf(&inferenceXML, "\t\t\t\t<key>inferenceModels</key>\n\t\t\t\t<string>%s</string>\n", plistEscape(inferenceModelsJSON))
+	fmt.Fprintf(&inferenceXML, "\t\t\t\t<key>inferenceModels</key>\n\t\t\t\t<string>%s</string>\n", plistEscape(modelsJSON))
 	if keys.OTELEndpoint != "" {
 		fmt.Fprintf(&inferenceXML, "\t\t\t\t<key>otlpEndpoint</key>\n\t\t\t\t<string>%s</string>\n", plistEscape(keys.OTELEndpoint))
 		fmt.Fprintf(&inferenceXML, "\t\t\t\t<key>otlpProtocol</key>\n\t\t\t\t<string>%s</string>\n", plistEscape(keys.OTELProtocol))
@@ -856,7 +914,7 @@ func plistEscape(s string) string {
 	return r.Replace(s)
 }
 
-func buildRegFile(keys modeKeys, profile, cliPath string, daemonPort int) string {
+func buildRegFile(keys modeKeys, profile, cliPath string, daemonPort int, modelsJSON string) string {
 	var b strings.Builder
 	b.WriteString("Windows Registry Editor Version 5.00\r\n\r\n")
 	b.WriteString("[HKEY_CURRENT_USER\\SOFTWARE\\Policies\\Claude]\r\n")
@@ -867,7 +925,7 @@ func buildRegFile(keys modeKeys, profile, cliPath string, daemonPort int) string
 		fmt.Fprintf(&b, "\"inferenceGatewayApiKey\"=\"%s\"\r\n", regEscape(keys.GatewayAPIKey))
 	}
 	b.WriteString(`"inferenceGatewayAuthScheme"="bearer"` + "\r\n")
-	fmt.Fprintf(&b, "\"inferenceModels\"=\"%s\"\r\n", regEscape(inferenceModelsJSON))
+	fmt.Fprintf(&b, "\"inferenceModels\"=\"%s\"\r\n", regEscape(modelsJSON))
 	if keys.CredHelper != "" {
 		fmt.Fprintf(&b, "\"inferenceCredentialHelper\"=\"%s\"\r\n", regEscape(keys.CredHelper))
 		fmt.Fprintf(&b, "\"inferenceCredentialHelperTtlSec\"=\"%d\"\r\n", keys.CredHelperTTL)
@@ -918,10 +976,10 @@ func buildRegFile(keys modeKeys, profile, cliPath string, daemonPort int) string
 //
 // inferenceModels is reused from inferenceModelsJSON via []json.RawMessage so
 // the model list never drifts between the three artifacts.
-func buildDevModeJSON(keys modeKeys, profile, cliPath string, daemonPort int) ([]byte, error) {
+func buildDevModeJSON(keys modeKeys, profile, cliPath string, daemonPort int, modelsJSON string) ([]byte, error) {
 	var models []json.RawMessage
-	if err := json.Unmarshal([]byte(inferenceModelsJSON), &models); err != nil {
-		return nil, fmt.Errorf("inferenceModelsJSON is malformed: %w", err)
+	if err := json.Unmarshal([]byte(modelsJSON), &models); err != nil {
+		return nil, fmt.Errorf("inferenceModels JSON is malformed: %w", err)
 	}
 
 	if keys.CredHelper != "" {

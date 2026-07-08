@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/IceRhymers/databricks-claude/internal/cmd"
+	"github.com/IceRhymers/databricks-claude/pkg/modeldiscovery"
 )
 
 // runConfigCommand implements the `databricks-claude config ...` dispatcher.
@@ -492,7 +493,8 @@ func runConfigWrite(args []string) {
 	port := resolvePort(portFlag, saved)
 	proxyURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 
-	if _, err := DiscoverHost(profile, ""); err != nil {
+	host, err := DiscoverHost(profile, "")
+	if err != nil {
 		log.Fatalf("databricks-claude: config write: failed to discover host for profile %q: %v\n"+
 			"Run 'databricks auth login --profile %s' first", profile, err, profile)
 	}
@@ -548,13 +550,60 @@ func runConfigWrite(args []string) {
 		saved = loadState()
 	}
 
+	// Model discovery: config write is a discovery-time writer (network I/O is
+	// allowed here — unlike the launch hot path). Fetch a token and query Unity
+	// AI Gateway for the newest Claude model per family, then persist the result
+	// so the launch path can read it offline.
+	tp := NewTokenProvider(profile, "")
+	token, err := tp.Token(context.Background())
+	if err != nil {
+		log.Fatalf("databricks-claude: config write: failed to fetch token for profile %q: %v", profile, err)
+	}
+	// TODO(pins): read pins from state once a `config model` setter exists.
+	ms, unresolved, derr := modeldiscovery.Discover(context.Background(), modeldiscovery.NewClient(), host, token, modeldiscovery.Pins{})
+	if derr != nil {
+		log.Fatalf("databricks-claude: config write: model discovery failed: %v\n"+
+			"This requires Unity AI Gateway v2 (UC model-services). Run `databricks-claude doctor` to diagnose.", derr)
+	}
+
+	routing := ModelRouting{Opus: ms.Opus.FQN, Sonnet: ms.Sonnet.FQN, Haiku: ms.Haiku.FQN}
+
+	// Count resolved families (non-empty FQN). Zero resolved is a hard failure:
+	// do NOT write settings and do NOT persist an empty ModelSet — the launch
+	// path's offline default is safer than a settings.json with no model keys.
+	resolvedCount := 0
+	for _, fqn := range []string{routing.Opus, routing.Sonnet, routing.Haiku} {
+		if fqn != "" {
+			resolvedCount++
+		}
+	}
+	if resolvedCount == 0 {
+		for _, u := range unresolved {
+			fmt.Fprintf(os.Stderr, "databricks-claude: config write: no model for %q family — pin one: %s\n", u.Family, u.PinCommand)
+		}
+		log.Fatalf("databricks-claude: config write: no Claude models discovered (no EXECUTE grants or empty model-services list). Pin a model or verify `databricks auth login`.")
+	}
+
+	// At least one family resolved: persist the routing (load-then-mutate so the
+	// whole-struct save preserves every other persisted field) and warn loudly
+	// about any family that stayed unresolved.
+	saved = loadState()
+	saved.Models = &routing
+	if err := saveState(saved); err != nil {
+		log.Fatalf("databricks-claude: config write: could not persist model routing: %v", err)
+	}
+	for _, u := range unresolved {
+		fmt.Fprintf(os.Stderr, "databricks-claude: config write: WARNING no model discovered for %q family — Claude Code will have no default for it. Pin one: %s\n", u.Family, u.PinCommand)
+	}
+
 	// Compose the full env block. Same shape as main.go:285–315 in the legacy
 	// path: OTEL keys + databricksFullSetupEnv (model routing + custom headers).
+	// routing omits unresolved-family keys automatically.
 	envOut := map[string]string{}
 	for k, v := range otelRes.OTELEnv {
 		envOut[k] = v
 	}
-	for k, v := range databricksFullSetupEnv() {
+	for k, v := range databricksFullSetupEnv(routing) {
 		envOut[k] = v
 	}
 

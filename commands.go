@@ -114,6 +114,7 @@ var rootCommand = cmd.Command{
 		configCommand,
 		hooksCommand,
 		serveCommand,
+		doctorCommand,
 	},
 }
 
@@ -1153,6 +1154,63 @@ Replaces the legacy --headless-ensure root flag.
 Flags:
   --port int   Proxy listen port (default: saved state > 49153)
   --help, -h   Show this help message
+`
+
+// doctorCommand declares the `doctor` subcommand: a non-interactive
+// diagnostic that runs model discovery, diffs the current settings.json model
+// pins against what discovery reports, prints the delta, and rewrites
+// settings.json ONLY under --fix (through bootstrapSettings, the sanctioned
+// atomic writer). It is the sanctioned recovery path for the hook/daemon flow
+// that can't prompt.
+var doctorCommand = cmd.Command{
+	Name:  "doctor",
+	Short: "Diagnose model-routing drift between settings.json and discovery (--fix to apply)",
+	Long:  doctorHelpTemplate,
+	Flags: []cmd.FlagDef{
+		{Name: "profile", Description: "Databricks CLI profile (default: state file > DEFAULT)", TakesArg: true, Completer: "__databricks_profiles", StateKey: "profile", MDMKey: "databricksProfile", Default: "DEFAULT"},
+		{Name: "port", Description: "Proxy port for ANTHROPIC_BASE_URL under --fix (default: state file > 49153)", TakesArg: true, StateKey: "port", Default: "49153"},
+		{Name: "fix", Description: "Rewrite settings.json to the discovered models"},
+		{Name: "help", Short: "h", Description: "Show help message"},
+	},
+}
+
+const doctorHelpTemplate = `Usage: databricks-claude doctor [flags]
+
+Non-interactive diagnostic for model routing. Runs Unity AI Gateway model
+discovery, diffs the discovered per-family models against the pins currently
+written into ~/.claude/settings.json, and prints the delta.
+
+Read-only by default: without --fix, doctor never touches settings.json. It
+exits 1 when ANY family is out of date (drift, stale-legacy, unresolved, or a
+newly discovered family), so scripts and hooks can detect model drift. With
+--fix, it rewrites settings.json to the discovered models through the same
+atomic writer the launch path uses. This is the sanctioned recovery path for
+the hook/daemon flow, which cannot prompt.
+
+Per-family status:
+  ok            settings.json pin matches discovery
+  drift         pin differs from discovery (non-legacy)
+  stale-legacy  pin is a legacy 'databricks-...' name; migrate to the UC FQN
+  unresolved    discovery found no model for the family; the current pin is
+                preserved under --fix (a working pin is never blanked)
+  new           no pin yet; discovery found one
+
+Flags:
+  --profile string   Databricks CLI profile (default: state > DEFAULT)
+  --port int         Proxy port for ANTHROPIC_BASE_URL under --fix (default: state > 49153)
+  --fix              Rewrite settings.json to the discovered models
+  --help, -h         Show this help message
+
+Examples:
+  # Diagnose model drift (read-only, exit 1 on drift):
+  databricks-claude doctor
+
+  # Apply the discovered models to settings.json:
+  databricks-claude doctor --fix
+
+Exit codes:
+  0   all pins up to date, or --fix applied
+  1   drift detected without --fix, or discovery/write failure
 `
 
 const hooksSessionEndHelpTemplate = `Usage: databricks-claude hooks session-end [flags]

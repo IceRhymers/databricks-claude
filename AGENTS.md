@@ -17,7 +17,8 @@ Transparent proxy wrapper for Claude Code that auto-refreshes Databricks OAuth t
 | `hooks.go` | Session hook install/uninstall: `installHooks`, `uninstallHooks` |
 | `ensureconfig.go` | Bootstrap helpers for first-run settings patching |
 | `commands.go` | Source-of-truth `rootCommand` declaration plus `desktopCommand` / `setupCommand` / `configCommand` / `serveCommand` tree nodes (drives parsing, help, completion) |
-| `config.go` | `config` subcommand runner: dispatches `config otel enable\|disable`, `config websearch enable\|disable`, `config write`, `config show`. Pure resolvers `resolveConfigOTEL` / `resolveConfigWebSearch` for testability |
+| `config.go` | `config` subcommand runner: dispatches `config otel enable\|disable`, `config websearch enable\|disable`, `config write`, `config show`. Pure resolvers `resolveConfigOTEL` / `resolveConfigWebSearch` for testability. `config write` is a discovery-time writer: runs `pkg/modeldiscovery.Discover` and persists the resolved `ModelSet` into state. |
+| `doctor.go` | `doctor` subcommand: non-interactive diff of settings.json model pins vs. `pkg/modeldiscovery.Discover` output (`diffModelRouting`, pure/testable). Read-only by default; `--fix` persists the discovered models to state and rewrites settings.json through `bootstrapSettings`. |
 | `completion_flags.go` | `flagDefs` slice shared by shell completion and flag parsing |
 | `databrickscfg.go` | Reads `~/.databrickscfg` section headers for profile completion |
 | `desktop_config.go` | `desktop` subcommand: `generate-config` writing `.mobileconfig`, `.reg`, and `.json` artifacts for Claude Desktop; credential-helper alias dispatch |
@@ -33,6 +34,7 @@ Transparent proxy wrapper for Claude Code that auto-refreshes Databricks OAuth t
 | `desktop_config_test.go` | Tests for `buildMobileconfig`, `buildRegFile`, `buildDevModeJSON`, `writeDesktopConfigByPath`, `guardDevJSONOutputPath`, `writeFileAtomic`, install-instruction routing, and model-list consistency across all three artifacts |
 | `main_test.go` | Tests for `parseArgs`, `handlePrintEnv`, persistent config, `deriveLogsTable`, full integration scenarios |
 | `config_test.go` | Tests for `config` subcommand parity, OTEL orchestration matrix, websearch resolver, state-preservation invariant on `config otel disable` |
+| `doctor_test.go` | Tests for `diffModelRouting`'s status matrix (ok/drift/stale-legacy/unresolved/new) |
 | `process_test.go` | Tests for `RunChild`, signal forwarding, exit code propagation |
 | `proxy_test.go` | Tests for inference and OTEL proxy routing, token injection, panic recovery |
 | `token_test.go` | Tests using helper binaries compiled at test time to mock the `databricks` CLI |
