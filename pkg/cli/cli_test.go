@@ -128,6 +128,19 @@ func withMDMReader(t *testing.T, r MDMReader) {
 	mdmReader = r
 }
 
+// isolatePATH points $PATH at an empty directory for the duration of the test.
+//
+// ResolveDatabricksCLI consults exec.LookPath (tier 4) before scanning
+// FallbackCLIDirs (tier 5). A developer machine with a real `databricks` on
+// PATH therefore resolves via tier 4 and never reaches the fallback tier the
+// test is asserting on, while CI (no Databricks CLI installed) does. Any test
+// that exercises the fallback tier with the real binary name must neutralize
+// PATH first, or it passes in CI and fails locally.
+func isolatePATH(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+}
+
 func TestResolveDatabricksCLI_MDM_ExecutablePath(t *testing.T) {
 	dir := t.TempDir()
 	mdmBin := makeExec(t, filepath.Join(dir, "databricks-mdm"))
@@ -152,6 +165,7 @@ func TestResolveDatabricksCLI_MDM_NonExecutable_FallsThrough(t *testing.T) {
 
 	withMDMReader(t, func(_, _ string) (string, error) { return nonExec, nil })
 	t.Setenv("DATABRICKS_CLI", "")
+	isolatePATH(t)
 
 	orig := FallbackCLIDirs
 	FallbackCLIDirs = []string{dir}
@@ -172,6 +186,7 @@ func TestResolveDatabricksCLI_MDM_Unset_NoRegression(t *testing.T) {
 
 	withMDMReader(t, func(_, _ string) (string, error) { return "", nil })
 	t.Setenv("DATABRICKS_CLI", "")
+	isolatePATH(t)
 
 	orig := FallbackCLIDirs
 	FallbackCLIDirs = []string{dir}
