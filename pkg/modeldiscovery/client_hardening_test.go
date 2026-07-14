@@ -38,6 +38,47 @@ func TestNewClientRefusesCrossHostRedirect(t *testing.T) {
 	}
 }
 
+// TestListServicesBootstrapsOrgID verifies ListServices recovers from the
+// header-less "Invalid MetastoreId" 400 the model-services LIST endpoint returns
+// by reading the echoed X-Databricks-Org-Id off the rejection and retrying once
+// with it. Without the bootstrap, discovery fails with a 400 on this workspace.
+func TestListServicesBootstrapsOrgID(t *testing.T) {
+	const wantOrg = "7474650869313380"
+	var attempts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		// The gateway echoes the caller's org id on every response, including
+		// the 400 rejection.
+		w.Header().Set("X-Databricks-Org-Id", wantOrg)
+		if r.Header.Get("X-Databricks-Org-Id") == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error_code":"MALFORMED_REQUEST","message":"Invalid MetastoreId: "}`))
+			return
+		}
+		if got := r.Header.Get("X-Databricks-Org-Id"); got != wantOrg {
+			t.Errorf("retry sent org id %q, want %q", got, wantOrg)
+		}
+		_ = json.NewEncoder(w).Encode(wireListResponse{
+			ModelServices: []wireService{{
+				Name:              "model-services/system.ai.claude-opus-4-8",
+				SupportedAPITypes: messages,
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	services, err := ListServices(context.Background(), NewClient(), srv.URL, "tok")
+	if err != nil {
+		t.Fatalf("ListServices: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("expected 2 attempts (reject then bootstrapped retry), got %d", attempts)
+	}
+	if len(services) != 1 || services[0].FQN != "system.ai.claude-opus-4-8" {
+		t.Errorf("unexpected services: %+v", services)
+	}
+}
+
 // TestGetServiceEscapesFQN verifies a crafted service FQN is escaped as a single
 // path segment rather than traversing to another API path.
 func TestGetServiceEscapesFQN(t *testing.T) {

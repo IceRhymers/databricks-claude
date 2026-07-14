@@ -1,6 +1,7 @@
 package modeldiscovery
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,8 +20,28 @@ import (
 // caller's EXECUTE grants.
 var ErrForbidden = errors.New("forbidden")
 
+// errMissingOrgID is returned (wrapped) by doGet when the model-services
+// collection endpoint rejects a request with 400 "Invalid MetastoreId" because
+// no org id was supplied. Unlike most Unity Catalog endpoints, the LIST
+// (collection) endpoint resolves the caller's metastore from the org-id request
+// header rather than the token's workspace context, so a header-less LIST fails.
+// ListServices uses this sentinel to bootstrap the header and retry once.
+var errMissingOrgID = errors.New("model-services: metastore unresolved (missing org id)")
+
 // modelServicesPath is the Unity Catalog model-services collection endpoint.
 const modelServicesPath = "/api/2.1/unity-catalog/model-services"
+
+// orgIDHeader carries the caller's workspace org id. The model-services LIST
+// endpoint maps it to a metastore; without it the gateway returns 400 "Invalid
+// MetastoreId". The gateway echoes this header on every response (including that
+// 400), so ListServices self-bootstraps the value rather than requiring callers
+// to plumb it in. The individual GET does not need it — the securable name in
+// the path anchors the metastore.
+const orgIDHeader = "X-Databricks-Org-Id"
+
+// invalidMetastoreMarker is the substring the gateway returns in the 400 body
+// when it cannot resolve a metastore from an absent org-id header.
+const invalidMetastoreMarker = "Invalid MetastoreId"
 
 // listPageSize is the page_size requested when listing model-services. It is
 // cheap insurance against a low default; pagination is still followed.
@@ -140,6 +161,12 @@ func catalogOf(fqn string) string {
 func ListServices(ctx context.Context, client *http.Client, host, token string) ([]Service, error) {
 	var services []Service
 	pageToken := ""
+	// orgID is resolved lazily: the LIST endpoint rejects a header-less request
+	// with errMissingOrgID but echoes the caller's org id, which we then send on
+	// a one-shot retry (and on every subsequent page). Workspaces that resolve
+	// the metastore without the header succeed on the first attempt and leave
+	// this empty.
+	orgID := ""
 	// seen guards against a misbehaving/compromised gateway that returns the
 	// same non-empty next_page_token forever, which would otherwise loop
 	// unboundedly and grow services until OOM. maxPages is a belt-and-suspenders
@@ -158,7 +185,13 @@ func ListServices(ctx context.Context, client *http.Client, host, token string) 
 			url += "&page_token=" + neturl.QueryEscape(pageToken)
 		}
 
-		body, err := doGet(ctx, client, url, token)
+		body, respOrgID, err := doGet(ctx, client, url, token, orgID)
+		if errors.Is(err, errMissingOrgID) && orgID == "" && respOrgID != "" {
+			// Bootstrap the org-id header from the rejected response and retry
+			// this page once. Every later page reuses the resolved orgID.
+			orgID = respOrgID
+			body, _, err = doGet(ctx, client, url, token, orgID)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -194,7 +227,9 @@ func GetService(ctx context.Context, client *http.Client, host, token, fqn strin
 	// fqn comes verbatim from the LIST response — escape it as a single path
 	// segment so a crafted service name cannot traverse to another API path.
 	url := fmt.Sprintf("%s%s/%s", strings.TrimRight(host, "/"), modelServicesPath, neturl.PathEscape(fqn))
-	body, err := doGet(ctx, client, url, token)
+	// The individual GET resolves the metastore from the securable name in the
+	// path, so it needs no org-id header.
+	body, _, err := doGet(ctx, client, url, token, "")
 	if err != nil {
 		return Service{}, err
 	}
@@ -206,33 +241,45 @@ func GetService(ctx context.Context, client *http.Client, host, token, fqn strin
 	return w.toService(), nil
 }
 
-// doGet performs an authenticated GET and returns the response body. It maps a
-// 403 to ErrForbidden and any other non-2xx status to a status-bearing error.
-func doGet(ctx context.Context, client *http.Client, url, token string) ([]byte, error) {
+// doGet performs an authenticated GET and returns the response body along with
+// the X-Databricks-Org-Id echoed on the response (returned even on error so
+// ListServices can bootstrap the org-id header). When orgID is non-empty it is
+// sent as the org-id request header. doGet maps a 403 to ErrForbidden, a 400
+// "Invalid MetastoreId" to errMissingOrgID, and any other non-2xx status to a
+// status-bearing error.
+func doGet(ctx context.Context, client *http.Client, url, token, orgID string) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("model-services: build request: %w", err)
+		return nil, "", fmt.Errorf("model-services: build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	if orgID != "" {
+		req.Header.Set(orgIDHeader, orgID)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("model-services: request %s: %w", url, err)
+		return nil, "", fmt.Errorf("model-services: request %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
-		return nil, fmt.Errorf("model-services: read response body: %w", err)
+		return nil, "", fmt.Errorf("model-services: read response body: %w", err)
 	}
 
+	respOrgID := resp.Header.Get(orgIDHeader)
+
 	if resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("model-services: GET %s: %w", url, ErrForbidden)
+		return nil, respOrgID, fmt.Errorf("model-services: GET %s: %w", url, ErrForbidden)
+	}
+	if resp.StatusCode == http.StatusBadRequest && bytes.Contains(body, []byte(invalidMetastoreMarker)) {
+		return nil, respOrgID, fmt.Errorf("model-services: GET %s: %w", url, errMissingOrgID)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("model-services: GET %s: unexpected status %d", url, resp.StatusCode)
+		return nil, respOrgID, fmt.Errorf("model-services: GET %s: unexpected status %d", url, resp.StatusCode)
 	}
-	return body, nil
+	return body, respOrgID, nil
 }
 
 // needsEnrichment reports whether an individual GetService is required to make a
