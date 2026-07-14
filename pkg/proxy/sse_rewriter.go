@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IceRhymers/databricks-claude/pkg/proxy/anthropic"
-	"github.com/IceRhymers/databricks-claude/pkg/websearch"
+	"github.com/IceRhymers/databricks-agents/pkg/proxy/anthropic"
+	"github.com/IceRhymers/databricks-agents/pkg/websearch"
 )
 
 // rewrittenTools records which tool kinds the request-side rewrite touched.

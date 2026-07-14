@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/IceRhymers/databricks-claude/internal/cmd"
-	"github.com/IceRhymers/databricks-claude/pkg/modeldiscovery"
+	"github.com/IceRhymers/databricks-agents/internal/cmd"
+	"github.com/IceRhymers/databricks-agents/pkg/modeldiscovery"
 )
 
 // modelDelta is the per-family comparison between the current settings.json

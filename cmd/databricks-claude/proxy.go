@@ -5,8 +5,8 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/IceRhymers/databricks-claude/pkg/proxy"
-	"github.com/IceRhymers/databricks-claude/pkg/tokencache"
+	"github.com/IceRhymers/databricks-agents/pkg/proxy"
+	"github.com/IceRhymers/databricks-agents/pkg/tokencache"
 )
 
 // ProxyConfig holds the configuration for the proxy server.

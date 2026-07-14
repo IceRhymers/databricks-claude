@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IceRhymers/databricks-claude/pkg/proxy/anthropic"
-	"github.com/IceRhymers/databricks-claude/pkg/websearch"
+	"github.com/IceRhymers/databricks-agents/pkg/proxy/anthropic"
+	"github.com/IceRhymers/databricks-agents/pkg/websearch"
 )
 
 // fakeBackend is an in-memory websearch.Backend for tests.

@@ -14,17 +14,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IceRhymers/databricks-claude/internal/cmd"
-	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
-	"github.com/IceRhymers/databricks-claude/pkg/cli"
-	"github.com/IceRhymers/databricks-claude/pkg/completion"
-	"github.com/IceRhymers/databricks-claude/pkg/health"
-	"github.com/IceRhymers/databricks-claude/pkg/mdmprofile"
-	"github.com/IceRhymers/databricks-claude/pkg/portbind"
-	"github.com/IceRhymers/databricks-claude/pkg/proxy"
-	"github.com/IceRhymers/databricks-claude/pkg/refcount"
-	"github.com/IceRhymers/databricks-claude/pkg/updater"
-	"github.com/IceRhymers/databricks-claude/pkg/websearch"
+	"github.com/IceRhymers/databricks-agents/internal/cmd"
+	"github.com/IceRhymers/databricks-agents/pkg/authcheck"
+	"github.com/IceRhymers/databricks-agents/pkg/cli"
+	"github.com/IceRhymers/databricks-agents/pkg/completion"
+	"github.com/IceRhymers/databricks-agents/pkg/health"
+	"github.com/IceRhymers/databricks-agents/pkg/mdmprofile"
+	"github.com/IceRhymers/databricks-agents/pkg/portbind"
+	"github.com/IceRhymers/databricks-agents/pkg/proxy"
+	"github.com/IceRhymers/databricks-agents/pkg/refcount"
+	"github.com/IceRhymers/databricks-agents/pkg/updater"
+	"github.com/IceRhymers/databricks-agents/pkg/websearch"
 )
 
 // Version is set at build time via -ldflags.

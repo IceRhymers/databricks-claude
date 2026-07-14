@@ -9,8 +9,8 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/IceRhymers/databricks-claude/pkg/health"
-	"github.com/IceRhymers/databricks-claude/pkg/refcount"
+	"github.com/IceRhymers/databricks-agents/pkg/health"
+	"github.com/IceRhymers/databricks-agents/pkg/refcount"
 )
 
 // Config holds the parameters for Ensure.

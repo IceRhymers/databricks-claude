@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IceRhymers/databricks-claude/pkg/modeldiscovery"
+	"github.com/IceRhymers/databricks-agents/pkg/modeldiscovery"
 )
 
 // goldenDir is the directory storing helper-mode golden artifacts.

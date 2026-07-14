@@ -13,11 +13,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IceRhymers/databricks-claude/internal/cmd"
-	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
-	"github.com/IceRhymers/databricks-claude/pkg/mdmprofile"
-	"github.com/IceRhymers/databricks-claude/pkg/proxy"
-	"github.com/IceRhymers/databricks-claude/pkg/websearch"
+	"github.com/IceRhymers/databricks-agents/internal/cmd"
+	"github.com/IceRhymers/databricks-agents/pkg/authcheck"
+	"github.com/IceRhymers/databricks-agents/pkg/mdmprofile"
+	"github.com/IceRhymers/databricks-agents/pkg/proxy"
+	"github.com/IceRhymers/databricks-agents/pkg/websearch"
 )
 
 // serveMode discriminates the two lifecycle policies that share the `serve`

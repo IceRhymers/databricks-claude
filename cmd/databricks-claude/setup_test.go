@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
+	"github.com/IceRhymers/databricks-agents/pkg/authcheck"
 )
 
 // buildAuthMockBinary compiles a minimal "databricks" mock binary.

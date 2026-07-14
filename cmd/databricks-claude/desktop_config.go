@@ -15,11 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IceRhymers/databricks-claude/internal/cmd"
-	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
-	"github.com/IceRhymers/databricks-claude/pkg/cli"
-	"github.com/IceRhymers/databricks-claude/pkg/mdmprofile"
-	"github.com/IceRhymers/databricks-claude/pkg/modeldiscovery"
+	"github.com/IceRhymers/databricks-agents/internal/cmd"
+	"github.com/IceRhymers/databricks-agents/pkg/authcheck"
+	"github.com/IceRhymers/databricks-agents/pkg/cli"
+	"github.com/IceRhymers/databricks-agents/pkg/mdmprofile"
+	"github.com/IceRhymers/databricks-agents/pkg/modeldiscovery"
 )
 
 // uuidGenerator is the UUID factory used by buildMobileconfig. Overridable in

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IceRhymers/databricks-claude/internal/cmd"
+	"github.com/IceRhymers/databricks-agents/internal/cmd"
 )
 
 // renderHelpToString returns a closure that renders c's help via cmd.Render

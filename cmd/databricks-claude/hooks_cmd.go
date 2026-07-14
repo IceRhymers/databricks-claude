@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/IceRhymers/databricks-claude/internal/cmd"
+	"github.com/IceRhymers/databricks-agents/internal/cmd"
 )
 
 // runHooksCommand implements `databricks-claude hooks ...`. args is everything

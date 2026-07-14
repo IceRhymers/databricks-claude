@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IceRhymers/databricks-claude/pkg/websearch"
+	"github.com/IceRhymers/databricks-agents/pkg/websearch"
 )
 
 // erroringBackend is a Backend that returns a fixed error from Search.

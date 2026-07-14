@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/IceRhymers/databricks-claude/pkg/modeldiscovery"
+	"github.com/IceRhymers/databricks-agents/pkg/modeldiscovery"
 )
 
 // TestDiffModelRouting drives the pure diff surface of the doctor command

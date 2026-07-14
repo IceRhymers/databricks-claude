@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IceRhymers/databricks-claude/pkg/cli"
+	"github.com/IceRhymers/databricks-agents/pkg/cli"
 )
 
 // Overridable for testing.
