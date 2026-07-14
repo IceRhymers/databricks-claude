@@ -335,7 +335,8 @@ func buildSessionOTELEnv(proxyURL, metricsTable, logsTable, tracesTable string) 
 	// Always include the model routing / custom header keys so a fresh
 	// session-mode start matches what the wrapper writes. databricksFullSetupEnv
 	// lives in main.go.
-	for k, v := range databricksFullSetupEnv() {
+	// launchModelRouting reads persisted state (cheap file read, no network) — the no-hot-path-discovery invariant.
+	for k, v := range databricksFullSetupEnv(launchModelRouting(loadState())) {
 		otelEnv[k] = v
 	}
 	return otelEnv

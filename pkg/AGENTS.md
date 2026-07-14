@@ -16,6 +16,7 @@ Reusable library packages extracted from the root `main` package. Each sub-packa
 | `headless/` | Detached-proxy spawn helpers: `Ensure` (start-if-absent) and refcount integration. `Config.EnsureCommand` (added in #174) lets databricks-claude spawn `serve --session-mode` instead of the deleted `--headless` root flag; siblings (databricks-codex, databricks-opencode) leave it empty for the legacy `--headless` shape. |
 | `health/` | `/health` endpoint handler returning JSON liveness data |
 | `lifecycle/` | HTTP handler wrapper adding `/shutdown` and idle timeout |
+| `modeldiscovery/` | Unity AI Gateway model-services discovery: lists UC model-services, resolves the newest anthropic-capable model per family (opus/sonnet/haiku) via a pure `Resolve()` function, numeric version sort, and the 1M-context predicate |
 | `portbind/` | Port binding helpers with configured-port support |
 | `proxy/` | HTTP/WebSocket reverse proxy, security checks, log sanitization (see `proxy/AGENTS.md`) |
 | `refcount/` | Atomic session reference counter |

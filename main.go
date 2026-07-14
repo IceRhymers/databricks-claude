@@ -157,6 +157,16 @@ func main() {
 		return
 	}
 
+	// `doctor` subcommand — non-interactive model-routing diagnostic. Runs
+	// model discovery, diffs the discovered per-family models against the pins
+	// in ~/.claude/settings.json, prints the delta, and rewrites settings.json
+	// ONLY under --fix (through bootstrapSettings). The sanctioned recovery
+	// path for the hook/daemon flow that can't prompt.
+	if len(os.Args) >= 2 && os.Args[1] == "doctor" {
+		runDoctor(os.Args[2:])
+		return
+	}
+
 	// Parse databricks-claude flags, passing everything else through to claude.
 	// Usage: databricks-claude [databricks-claude-flags] [--] [claude-args...]
 	// Unknown flags are forwarded to claude automatically.
@@ -528,8 +538,11 @@ func main() {
 	// "stale OTEL config detected" log).
 	_ = otelConfigured
 	if needsFullSetup {
-		// Also write Databricks-specific keys for full setup.
-		for k, v := range databricksFullSetupEnv() {
+		// Also write Databricks-specific keys for full setup. launchModelRouting
+		// reads persisted state (cheap file read, no network) — the
+		// no-hot-path-discovery invariant. wsState is the already-loaded state in
+		// scope; reuse it rather than re-reading.
+		for k, v := range databricksFullSetupEnv(launchModelRouting(wsState)) {
 			otelEnv[k] = v
 		}
 	}
@@ -728,6 +741,42 @@ func handleHelp() {
 	}
 }
 
+// defaultModelRouting is the OFFLINE FALLBACK used when no ModelSet has been
+// discovered/persisted (fresh install, offline, empty grants). Demoted from
+// the former hardcoded map — deliberately NOT deleted: the launch path, where
+// discovery is forbidden, must always have something legal to write.
+//
+// Model names are versioned and drift as Databricks ships new models;
+// bumping them here is the right place.
+func defaultModelRouting() ModelRouting {
+	return ModelRouting{
+		Opus:   "databricks-claude-opus-4-7",
+		Sonnet: "databricks-claude-sonnet-4-6",
+		Haiku:  "databricks-claude-haiku-4-5",
+	}
+}
+
+// launchModelRouting returns the persisted ModelRouting if present, else the
+// demoted default; blank per-family fields fall back to the default. NEVER
+// performs network I/O — safe to call on the launch hot path.
+func launchModelRouting(s persistentState) ModelRouting {
+	def := defaultModelRouting()
+	if s.Models == nil {
+		return def
+	}
+	m := *s.Models
+	if m.Opus == "" {
+		m.Opus = def.Opus
+	}
+	if m.Sonnet == "" {
+		m.Sonnet = def.Sonnet
+	}
+	if m.Haiku == "" {
+		m.Haiku = def.Haiku
+	}
+	return m
+}
+
 // databricksFullSetupEnv returns the Databricks-specific env keys written
 // during a "full setup" bootstrap (first-run, --write-claude-config, etc.).
 // These cover model routing, the coding-agent-mode custom header, and the
@@ -736,17 +785,27 @@ func handleHelp() {
 // regressions deleting any key fail the integration tests that assert
 // against this map.
 //
-// Model names are versioned and drift as Databricks ships new models;
-// bumping them here is the right place.
-func databricksFullSetupEnv() map[string]string {
-	return map[string]string{
-		"ANTHROPIC_MODEL":                        "databricks-claude-opus-4-7",
-		"ANTHROPIC_DEFAULT_OPUS_MODEL":           "databricks-claude-opus-4-7",
-		"ANTHROPIC_DEFAULT_SONNET_MODEL":         "databricks-claude-sonnet-4-6",
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL":          "databricks-claude-haiku-4-5",
+// A family's model key is OMITTED when its FQN is empty, so a discovery-time
+// writer never emits an empty or wrongly-substituted model for an unresolved
+// family (no silent mis-route). Launch callers pass launchModelRouting(...)
+// which is always fully populated, so all six keys are present on the launch
+// path.
+func databricksFullSetupEnv(m ModelRouting) map[string]string {
+	env := map[string]string{
 		"ANTHROPIC_CUSTOM_HEADERS":               "x-databricks-use-coding-agent-mode: true",
 		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
 	}
+	if m.Opus != "" {
+		env["ANTHROPIC_MODEL"] = m.Opus
+		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = m.Opus
+	}
+	if m.Sonnet != "" {
+		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = m.Sonnet
+	}
+	if m.Haiku != "" {
+		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = m.Haiku
+	}
+	return env
 }
 
 // buildUpdaterConfig returns the standard updater.Config for databricks-claude.

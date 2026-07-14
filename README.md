@@ -493,6 +493,8 @@ See [Web Search & Fetch (Workaround, opt-in)](#web-search--fetch-workaround-opt-
 
 Writes the first-run `~/.claude/settings.json` env block (proxy URL, model routing, custom headers, optional OTEL keys) and exits. No proxy startup, no port binding, no child process — purely a settings bootstrap. Idempotent.
 
+Model routing is **auto-discovered from Unity Catalog** on every run: `config write` fetches a token and queries the Unity AI Gateway model-services API for the newest Claude model per family (opus/sonnet/haiku) that supports the Anthropic Messages API, then persists the result to `~/.claude/.databricks-claude.json` so later launches don't need to hit the network. If a family can't be resolved (no `EXECUTE` grant, empty catalog), `config write` prints a copy-pasteable pin hint for that family and fails loudly rather than silently mis-routing; it only aborts entirely when *zero* families resolve. See [`doctor` Subcommand](#doctor-subcommand) to diagnose or fix drift later without re-running the full bootstrap.
+
 ```bash
 # Bare bootstrap (default profile, default port):
 databricks-claude config write
@@ -744,7 +746,7 @@ databricks-claude config write --with-websearch
 
 **Why bootstrap via `config write` instead of hand-editing `settings.json`?**
 
-The wrapper writes more than `ANTHROPIC_BASE_URL` on first run. It also writes Databricks-specific model routing (`ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`), the `x-databricks-use-coding-agent-mode` custom header, and the experimental-betas flag — and the model names are versioned (`databricks-claude-opus-4-7`, etc.), so they change over time. Letting the wrapper write them keeps you in sync with whatever the current shipping binary thinks is correct. Hand-edits get stale.
+The wrapper writes more than `ANTHROPIC_BASE_URL` on first run. It also writes Databricks-specific model routing (`ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_HAIKU_MODEL`), the `x-databricks-use-coding-agent-mode` custom header, and the experimental-betas flag. The model routing is **auto-discovered live from Unity Catalog** every time `config write` runs — it queries the Unity AI Gateway model-services API for the newest Claude model per family you have `EXECUTE` access to, rather than a name baked into the binary. Letting the wrapper write them keeps you in sync as Databricks ships new models or retires old aliases; run `databricks-claude doctor` any time to check whether your settings.json has drifted from what discovery would resolve today. Hand-edits get stale.
 
 The write is idempotent — `ensureConfig` short-circuits when the env block already matches.
 
@@ -789,6 +791,44 @@ databricks-claude serve --session-mode
 | `--verbose`, `-v` | `false` | Enable debug logging to stderr. |
 
 > **Breaking change (#174):** `databricks-claude --headless` is now `databricks-claude serve --session-mode`. `--idle-timeout` moved from root to a `serve` flag. Bare `serve` (no mode flag, no sub-subcommand) now exits with code 2 — specify `--session-mode`, `--daemon`, or one of `install|uninstall|status`. The required-explicit-mode invariant prevents a typo at the hooks spawn site from silently degrading to the daemon lifecycle (wrong refcount semantics, broken `hooks session-end`).
+
+## `doctor` Subcommand
+
+Non-interactive diagnostic for model routing. `doctor` runs the same Unity AI Gateway model discovery as `config write`, diffs the discovered per-family models (opus/sonnet/haiku) against the pins currently written into `~/.claude/settings.json`, and prints the delta. Read-only by default — without `--fix`, it never touches settings.json.
+
+```bash
+# Diagnose model drift (read-only, exits 1 if anything is out of date):
+databricks-claude doctor
+
+# Apply the discovered models to settings.json:
+databricks-claude doctor --fix
+```
+
+Per-family status:
+
+| Status | Meaning |
+|--------|---------|
+| `ok` | settings.json pin matches discovery |
+| `drift` | pin differs from discovery (non-legacy) |
+| `stale-legacy` | pin is a legacy `databricks-...` name; migrate to the UC FQN |
+| `unresolved` | discovery found no model for the family; the current pin is preserved under `--fix` (a working pin is never blanked) |
+| `new` | no pin yet; discovery found one |
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--profile string` | state → `DEFAULT` | Databricks CLI profile |
+| `--port int` | state → `49153` | Proxy port baked into `ANTHROPIC_BASE_URL` when `--fix` rewrites settings.json |
+| `--fix` | | Rewrite settings.json to the discovered models, through the same atomic writer the launch path uses |
+| `--help`, `-h` | | Show this help message |
+
+Exit codes:
+
+| Code | Meaning |
+|------|---------|
+| 0 | all pins up to date, or `--fix` applied |
+| 1 | drift detected without `--fix`, or discovery/write failure |
+
+`doctor` is the sanctioned recovery path for the hook/daemon flow, which can't prompt — run it (with `--fix`) whenever settings.json's model pins look stale, e.g. after Databricks retires a legacy `databricks-claude-*` alias or ships a newer model in a family you have access to.
 
 ## How It Works
 
@@ -878,6 +918,10 @@ databricks-claude configuration:
 ```
 
 If the token shows as empty or the base URL looks wrong, check your Databricks CLI profile with `databricks auth env`.
+
+### Diagnose model routing drift
+
+If Claude Code is calling a model you didn't expect (e.g. after Databricks ships a new model or retires a legacy alias), run `databricks-claude doctor` to diff your settings.json model pins against what Unity AI Gateway discovery resolves today, and `databricks-claude doctor --fix` to apply the discovered models. See [`doctor` Subcommand](#doctor-subcommand) for the full status matrix and exit codes.
 
 ### View full usage
 

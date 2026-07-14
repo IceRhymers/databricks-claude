@@ -166,6 +166,86 @@ func TestStatePath_Override(t *testing.T) {
 	}
 }
 
+func TestModelRoutingRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	orig := statePath
+	statePath = func() string { return filepath.Join(dir, "state.json") }
+	defer func() { statePath = orig }()
+
+	want := &ModelRouting{Opus: "o", Sonnet: "s", Haiku: "h"}
+	if err := saveState(persistentState{Models: want}); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+	got := loadState()
+	if got.Models == nil {
+		t.Fatal("Models: got nil, want non-nil after round-trip")
+	}
+	if *got.Models != *want {
+		t.Errorf("Models: got %+v, want %+v", *got.Models, *want)
+	}
+}
+
+// TestCrossWriterPreservesModels proves that a DIFFERENT writer's pure resolver
+// (resolveConfigWebSearch / resolveConfigOTEL) carries the persisted Models
+// field through its whole-struct NewState — the load-then-mutate invariant that
+// stops one writer from silently dropping another's persisted field.
+func TestCrossWriterPreservesModels(t *testing.T) {
+	dir := t.TempDir()
+	orig := statePath
+	statePath = func() string { return filepath.Join(dir, "state.json") }
+	defer func() { statePath = orig }()
+
+	seed := &ModelRouting{Opus: "o", Sonnet: "s", Haiku: "h"}
+	if err := saveState(persistentState{Models: seed}); err != nil {
+		t.Fatalf("saveState: %v", err)
+	}
+
+	// Websearch writer.
+	saved := loadState()
+	wsRes := resolveConfigWebSearch(saved, true, "", false, 0, false)
+	if err := saveState(wsRes.NewState); err != nil {
+		t.Fatalf("saveState (websearch): %v", err)
+	}
+	got := loadState()
+	if got.Models == nil || *got.Models != *seed {
+		t.Errorf("after websearch writer: Models = %v, want %+v", got.Models, *seed)
+	}
+
+	// OTEL writer.
+	saved = loadState()
+	otelRes := resolveConfigOTEL(saved, defaultPort, "http://127.0.0.1:49153",
+		"", false, "", false, false, "", false, false)
+	if otelRes.NewState.Models == nil || *otelRes.NewState.Models != *seed {
+		t.Errorf("resolveConfigOTEL NewState.Models = %v, want %+v", otelRes.NewState.Models, *seed)
+	}
+	if err := saveState(otelRes.NewState); err != nil {
+		t.Fatalf("saveState (otel): %v", err)
+	}
+	got = loadState()
+	if got.Models == nil || *got.Models != *seed {
+		t.Errorf("after otel writer: Models = %v, want %+v", got.Models, *seed)
+	}
+}
+
+func TestLaunchModelRoutingFallback(t *testing.T) {
+	def := defaultModelRouting()
+
+	if got := launchModelRouting(persistentState{}); got != def {
+		t.Errorf("launchModelRouting(empty) = %+v, want default %+v", got, def)
+	}
+
+	got := launchModelRouting(persistentState{Models: &ModelRouting{Opus: "custom"}})
+	if got.Opus != "custom" {
+		t.Errorf("Opus: got %q, want %q", got.Opus, "custom")
+	}
+	if got.Sonnet != def.Sonnet {
+		t.Errorf("Sonnet: got %q, want default %q", got.Sonnet, def.Sonnet)
+	}
+	if got.Haiku != def.Haiku {
+		t.Errorf("Haiku: got %q, want default %q", got.Haiku, def.Haiku)
+	}
+}
+
 func TestSaveAndLoadState_WebSearch(t *testing.T) {
 	dir := t.TempDir()
 	orig := statePath
