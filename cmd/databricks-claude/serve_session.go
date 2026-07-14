@@ -11,12 +11,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/IceRhymers/databricks-claude/pkg/authcheck"
-	"github.com/IceRhymers/databricks-claude/pkg/health"
-	"github.com/IceRhymers/databricks-claude/pkg/lifecycle"
-	"github.com/IceRhymers/databricks-claude/pkg/portbind"
-	"github.com/IceRhymers/databricks-claude/pkg/proxy"
-	"github.com/IceRhymers/databricks-claude/pkg/refcount"
+	"github.com/IceRhymers/databricks-agents/pkg/authcheck"
+	"github.com/IceRhymers/databricks-agents/pkg/health"
+	"github.com/IceRhymers/databricks-agents/pkg/lifecycle"
+	"github.com/IceRhymers/databricks-agents/pkg/portbind"
+	"github.com/IceRhymers/databricks-agents/pkg/proxy"
+	"github.com/IceRhymers/databricks-agents/pkg/refcount"
 )
 
 // runServeSession implements `databricks-claude serve --session-mode`. The

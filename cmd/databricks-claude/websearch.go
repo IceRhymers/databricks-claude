@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/IceRhymers/databricks-claude/pkg/websearch"
+	"github.com/IceRhymers/databricks-agents/pkg/websearch"
 )
 
 // buildWebSearchBackend resolves the named --websearch-backend to an

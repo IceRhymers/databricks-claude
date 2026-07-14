@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/IceRhymers/databricks-claude/internal/cmd"
+	"github.com/IceRhymers/databricks-agents/internal/cmd"
 )
 
 // rootCommand is the source-of-truth declaration for the databricks-claude

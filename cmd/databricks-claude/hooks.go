@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IceRhymers/databricks-claude/pkg/headless"
-	"github.com/IceRhymers/databricks-claude/pkg/health"
-	"github.com/IceRhymers/databricks-claude/pkg/refcount"
+	"github.com/IceRhymers/databricks-agents/pkg/headless"
+	"github.com/IceRhymers/databricks-agents/pkg/health"
+	"github.com/IceRhymers/databricks-agents/pkg/refcount"
 )
 
 // headlessEnsure checks whether the proxy is healthy on the given port.

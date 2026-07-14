@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/IceRhymers/databricks-claude/pkg/refcount"
+	"github.com/IceRhymers/databricks-agents/pkg/refcount"
 )
 
 // TestHeadlessEnsure_ManagedSessionSkips verifies that headlessEnsure returns
