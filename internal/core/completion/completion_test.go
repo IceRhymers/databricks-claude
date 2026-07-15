@@ -64,7 +64,7 @@ func TestGenerateZsh_ContainsFlags(t *testing.T) {
 // would collapse the surrounding zsh single-quoted _arguments spec, producing
 // "_arguments:comparguments:NNN: invalid option definition" at completion time.
 // zsh does NOT honor backslash escapes inside single-quoted strings — the
-// canonical escape for a literal ' is '\”.
+// canonical escape for a literal ' is '\''.
 func TestGenerateZsh_EscapesApostrophesInDescriptions(t *testing.T) {
 	flags := []FlagDef{
 		{Name: "daemon", Description: "emit artifacts pointing at a local 'databricks-claude serve' daemon"},

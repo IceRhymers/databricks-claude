@@ -567,7 +567,7 @@ end`
 // zshEscape escapes a string for safe interpolation inside a zsh
 // single-quoted string. zsh does NOT honor backslash escapes inside '...';
 // the canonical way to embed a literal ' is to close the quote, emit a
-// backslash-escaped quote, and reopen: ' becomes '\”.
+// backslash-escaped quote, and reopen: ' becomes '\''.
 func zshEscape(s string) string {
 	return strings.ReplaceAll(s, "'", "'\\''")
 }
