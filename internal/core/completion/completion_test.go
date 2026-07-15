@@ -64,7 +64,7 @@ func TestGenerateZsh_ContainsFlags(t *testing.T) {
 // would collapse the surrounding zsh single-quoted _arguments spec, producing
 // "_arguments:comparguments:NNN: invalid option definition" at completion time.
 // zsh does NOT honor backslash escapes inside single-quoted strings — the
-// canonical escape for a literal ' is '\''.
+// canonical escape for a literal ' is '\”.
 func TestGenerateZsh_EscapesApostrophesInDescriptions(t *testing.T) {
 	flags := []FlagDef{
 		{Name: "daemon", Description: "emit artifacts pointing at a local 'databricks-claude serve' daemon"},
@@ -187,17 +187,17 @@ func TestGenerateBashFull_NestedSubcommandsBlock(t *testing.T) {
 	out := GenerateBashFull("dbc", rootFlags, subs)
 	for _, want := range []string{
 		// depth-1 subcommand list
-		`completion update`,                    // not present
-		`local subcmds="completion serve"`,     // root subcmds list
-		`case "$sub1" in`,                      // top-level dispatch
-		`completion)`,                          // first subcmd arm
-		`serve)`,                               // serve arm
-		`case "$sub2" in`,                      // nested dispatch under serve
-		`install)`,                             // nested arm
-		`status)`,                              // nested arm
-		`local subcmds2="install status"`,      // nested subcmd list
-		`--skip-auth-check`,                    // install-scoped flag
-		`--log-file`,                           // serve-scoped flag
+		`completion update`,                // not present
+		`local subcmds="completion serve"`, // root subcmds list
+		`case "$sub1" in`,                  // top-level dispatch
+		`completion)`,                      // first subcmd arm
+		`serve)`,                           // serve arm
+		`case "$sub2" in`,                  // nested dispatch under serve
+		`install)`,                         // nested arm
+		`status)`,                          // nested arm
+		`local subcmds2="install status"`,  // nested subcmd list
+		`--skip-auth-check`,                // install-scoped flag
+		`--log-file`,                       // serve-scoped flag
 	} {
 		if want == `completion update` {
 			if strings.Contains(out, want) {

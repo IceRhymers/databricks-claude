@@ -25,7 +25,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/IceRhymers/databricks-agents/pkg/completion"
+	"github.com/IceRhymers/databricks-agents/internal/core/completion"
 )
 
 // FlagDef describes one CLI flag. Superset of pkg/completion.FlagDef:

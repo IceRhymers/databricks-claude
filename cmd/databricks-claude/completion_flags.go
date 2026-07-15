@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/IceRhymers/databricks-agents/pkg/completion"
+	"github.com/IceRhymers/databricks-agents/internal/core/completion"
 )
 
 // flagDefs is the legacy flat-slice view of the root command's flags. It is
