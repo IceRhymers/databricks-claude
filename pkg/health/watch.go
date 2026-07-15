@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/IceRhymers/databricks-agents/pkg/proxy"
+	"github.com/IceRhymers/databricks-agents/internal/core/proxy"
 )
 
 // WatchProxy polls the proxy health endpoint and takes over the port if the

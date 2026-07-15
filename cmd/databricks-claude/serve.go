@@ -15,8 +15,8 @@ import (
 
 	"github.com/IceRhymers/databricks-agents/internal/cmd"
 	"github.com/IceRhymers/databricks-agents/internal/core/authcheck"
+	"github.com/IceRhymers/databricks-agents/internal/core/proxy"
 	"github.com/IceRhymers/databricks-agents/pkg/mdmprofile"
-	"github.com/IceRhymers/databricks-agents/pkg/proxy"
 	"github.com/IceRhymers/databricks-agents/pkg/websearch"
 )
 
