@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/IceRhymers/databricks-agents/pkg/proxy"
+	"github.com/IceRhymers/databricks-agents/internal/core/proxy"
 )
 
 // --- parseServeFlags tests ---

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IceRhymers/databricks-agents/pkg/proxy/anthropic"
+	"github.com/IceRhymers/databricks-agents/internal/core/proxy/anthropic"
 	"github.com/IceRhymers/databricks-agents/pkg/websearch"
 )
 

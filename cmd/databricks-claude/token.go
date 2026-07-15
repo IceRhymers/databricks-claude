@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IceRhymers/databricks-agents/pkg/cli"
-	"github.com/IceRhymers/databricks-agents/pkg/tokencache"
+	"github.com/IceRhymers/databricks-agents/internal/core/cli"
+	"github.com/IceRhymers/databricks-agents/internal/core/tokencache"
 )
 
 // resolveDatabricksCLI delegates to pkg/cli for CLI binary resolution.
