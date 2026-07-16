@@ -2,9 +2,7 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -130,93 +128,140 @@ func main() {
 	return bin
 }
 
+// seedHelperState points the credential helper's state file at a mock CLI so
+// credentialHelperToken's internal loadState() picks it up. Returns the cleanup.
+func seedHelperState(t *testing.T, cliPath string) func() {
+	t.Helper()
+	_, cleanup := overrideStatePath(t)
+	if err := saveState(persistentState{Profile: "DEFAULT", DatabricksCLIPath: cliPath}); err != nil {
+		cleanup()
+		t.Fatalf("seed state: %v", err)
+	}
+	return cleanup
+}
+
 // TestRunCredentialHelper_WarmCache verifies the fast path: when the token
 // provider succeeds on the first attempt, no login subprocess is spawned.
+//
+// Calls the real credentialHelperToken seam (#218). Before the seam existed
+// this test re-implemented the helper's sequence and pinned nothing about it.
 func TestRunCredentialHelper_WarmCache(t *testing.T) {
 	const token = "dapi-warm-cache-token"
 	// Build a mock that always returns a valid token on "auth token".
 	bin := buildHelperBinary(t, `{"access_token":"`+token+`","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}`, 0)
 
-	_, cleanup := overrideStatePath(t)
-	defer cleanup()
+	defer seedHelperState(t, bin)()
 
-	// Pre-warm the token cache by calling the token provider directly.
-	tp := NewTokenProvider("DEFAULT", bin)
-	if _, err := tp.Token(context.Background()); err != nil {
-		t.Fatalf("pre-warm token: %v", err)
-	}
-
-	// Now verify the helper path: tp.Token() should return the cached token
-	// without calling login.
-	tok, err := tp.Token(context.Background())
+	var loginOut bytes.Buffer
+	tok, err := credentialHelperToken("DEFAULT", &loginOut)
 	if err != nil {
-		t.Fatalf("warm cache tp.Token: %v", err)
+		t.Fatalf("credentialHelperToken: %v", err)
 	}
-	if !strings.Contains(tok, "dapi-warm-cache-token") {
-		t.Errorf("token = %q, expected dapi-warm-cache-token", tok)
+	if tok != token {
+		t.Errorf("token = %q, want %q", tok, token)
+	}
+	// Fast path: no login subprocess, so nothing reaches loginOut.
+	if loginOut.Len() != 0 {
+		t.Errorf("warm cache spawned login; loginOut = %q", loginOut.String())
 	}
 }
 
 // TestRunCredentialHelper_ColdCache_LoginOK verifies the recovery path:
-// when tp.Token() fails initially (token expired), EnsureAuthenticatedWithStdout
-// is called and then tp.Token() is retried successfully.
+// when the first token fetch fails (expired), the seam invokes
+// EnsureAuthenticatedWithStdout and retries successfully.
+//
+// Calls the real seam (#218), so the retry orchestration itself is now pinned —
+// previously the test drove each step by hand and could not have caught the
+// helper wiring them up wrongly.
 func TestRunCredentialHelper_ColdCache_LoginOK(t *testing.T) {
 	const token = `{"access_token":"dapi-retry-ok","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}`
 	bin, _ := buildRetryTokenBinary(t, token)
 
-	_, cleanup := overrideStatePath(t)
-	defer cleanup()
+	defer seedHelperState(t, bin)()
 
-	// First call: should fail (simulates cold/expired cache).
-	tp := NewTokenProvider("DEFAULT", bin)
-	_, firstErr := tp.Token(context.Background())
-	if firstErr == nil {
-		t.Skip("mock first call unexpectedly succeeded; binary may have stale count file")
-	}
-
-	// EnsureAuthenticatedWithStdout: login succeeds (bin exits 0 for auth login).
-	var buf bytes.Buffer
-	if err := ensureAuthForHelper("DEFAULT", bin, &buf); err != nil {
-		t.Fatalf("EnsureAuthenticatedWithStdout: %v", err)
-	}
-
-	// Second call: should succeed after login.
-	tp2 := NewTokenProvider("DEFAULT", bin)
-	tok, err := tp2.Token(context.Background())
+	var loginOut bytes.Buffer
+	tok, err := credentialHelperToken("DEFAULT", &loginOut)
 	if err != nil {
-		t.Fatalf("tp.Token retry: %v", err)
+		t.Fatalf("credentialHelperToken: %v", err)
 	}
-	if !strings.Contains(tok, "dapi-retry-ok") {
-		t.Errorf("token = %q, expected dapi-retry-ok", tok)
+	if tok != "dapi-retry-ok" {
+		t.Errorf("token = %q, want %q", tok, "dapi-retry-ok")
 	}
 }
 
-// TestRunCredentialHelper_ColdCache_LoginFail verifies the failure path:
-// when both tp.Token() and EnsureAuthenticatedWithStdout fail, the helper
-// should report a non-zero exit (we test the error return, not os.Exit).
+// TestRunCredentialHelper_ColdCache_LoginFail verifies the failure path: when
+// both the token fetch and the re-auth fail, the seam returns the error the
+// caller turns into "databricks-claude: <err>\n" + exit 1.
+//
+// #218: this test previously asserted a stderr string it had just formatted
+// itself — a tautology that could not fail — because runCredentialHelper had no
+// error return to assert against, despite the comment claiming otherwise. The
+// seam gives it one, so it now asserts what its name promises.
 func TestRunCredentialHelper_ColdCache_LoginFail(t *testing.T) {
 	bin := buildAlwaysFailLoginBinary(t)
 
-	_, cleanup := overrideStatePath(t)
-	defer cleanup()
+	defer seedHelperState(t, bin)()
 
-	tp := NewTokenProvider("DEFAULT", bin)
-	_, firstErr := tp.Token(context.Background())
-	if firstErr == nil {
-		t.Fatal("expected tp.Token to fail with always-fail binary")
+	var loginOut bytes.Buffer
+	tok, err := credentialHelperToken("DEFAULT", &loginOut)
+	if err == nil {
+		t.Fatalf("expected error when login fails; got token %q", tok)
 	}
-
-	var buf bytes.Buffer
-	authErr := ensureAuthForHelper("DEFAULT", bin, &buf)
-	if authErr == nil {
-		t.Fatal("expected EnsureAuthenticatedWithStdout to fail when login fails")
+	if tok != "" {
+		t.Errorf("token = %q, want empty on failure", tok)
 	}
+	// Pins the caller's stderr contract: "databricks-claude: " + err + "\n"
+	// must reproduce today's byte-for-byte message.
+	if !strings.Contains(err.Error(), "credential helper authentication failed") {
+		t.Errorf("err = %q, want it to mention authentication failure", err)
+	}
+	if got := fmt.Sprintf("databricks-claude: %v\n", err); !strings.HasPrefix(got, "databricks-claude: credential helper authentication failed: ") {
+		t.Errorf("caller stderr line = %q", got)
+	}
+}
 
-	// Verify that a stderr message would be written (helper exits 1 path).
-	var stderr strings.Builder
-	fmt.Fprintf(&stderr, "databricks-claude: credential helper authentication failed: %v\n", authErr)
-	if !strings.Contains(stderr.String(), "credential helper authentication failed") {
-		t.Errorf("stderr message does not mention failure, got %q", stderr.String())
+// TestCredentialHelper_HonorsStateDatabricksCLIPath is AC#6′ (#218): it pins
+// the credential helper's use of state.DatabricksCLIPath across the migration
+// of desktop_config.go:330 from the positional NewTokenProvider(profile, cmdName)
+// to the keyed dbxauth.Config{Profile, CLIPath}.
+//
+// HERMETICITY IS LOAD-BEARING — do not remove either Setenv. cli.ResolveDatabricksCLI
+// consults $DATABRICKS_CLI *before* MDM and LookPath, so with it unset in the
+// ambient environment a Profile/CLIPath key-swap silently resolves a real CLI and
+// this test would PASS while the helper is broken. With both cleared, a swap makes
+// the CLI unresolvable and the test fails — which is the entire point of the pin.
+func TestCredentialHelper_HonorsStateDatabricksCLIPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0o755 not portable on windows")
+	}
+	const token = "dapi-from-state-cli-path"
+	bin := buildHelperBinary(t, `{"access_token":"`+token+`","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}`, 0)
+
+	defer seedHelperState(t, bin)()
+
+	// Hermetic: the mock is reachable ONLY via state.DatabricksCLIPath.
+	t.Setenv("PATH", "")
+	t.Setenv("DATABRICKS_CLI", "")
+
+	var loginOut bytes.Buffer
+	tok, err := credentialHelperToken("DEFAULT", &loginOut)
+	if err != nil {
+		t.Fatalf("credentialHelperToken: %v", err)
+	}
+	if tok != token {
+		t.Errorf("token = %q, want %q", tok, token)
+	}
+	// Desktop reads stdout verbatim: the token must carry no trailing newline
+	// and no surrounding whitespace.
+	if tok != strings.TrimSpace(tok) {
+		t.Errorf("token has surrounding whitespace: %q", tok)
+	}
+	if strings.HasSuffix(tok, "\n") {
+		t.Errorf("token has trailing newline: %q", tok)
+	}
+	// The bare-token contract: login output must never reach stdout.
+	if loginOut.Len() != 0 {
+		t.Errorf("unexpected login output: %q", loginOut.String())
 	}
 }
 
@@ -284,26 +329,9 @@ func TestRunCredentialHelper_RealProfile_MDMPopulated_StateWins(t *testing.T) {
 	}
 }
 
-// ensureAuthForHelper is a thin test helper that calls
-// authcheck.EnsureAuthenticatedWithStdout through the public API.
-func ensureAuthForHelper(profile, cliPath string, w io.Writer) error {
-	from := authcheck_EnsureAuthenticatedWithStdout
-	return from(profile, cliPath, w)
-}
-
-// authcheck_EnsureAuthenticatedWithStdout is an alias that avoids importing
-// authcheck in test files where the package is already an internal dependency.
-// Resolved via the init function below.
-var authcheck_EnsureAuthenticatedWithStdout func(profile, cmdName string, w io.Writer) error
-
-func init() {
-	// Wire the authcheck function.
-	authcheck_EnsureAuthenticatedWithStdout = func(profile, cmdName string, w io.Writer) error {
-		// Import indirection: use pkg/authcheck through the main package
-		// by calling the same function runCredentialHelper uses.
-		cmd := exec.Command(resolveDatabricksCLI(cmdName), "auth", "login", "--profile", profile)
-		cmd.Stdout = w
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-	}
-}
+// #218: the ensureAuthForHelper / authcheck_EnsureAuthenticatedWithStdout /
+// init() chain that lived here is deleted. It claimed to call "the same function
+// runCredentialHelper uses" but re-implemented login by shelling out itself and
+// never called authcheck at all — so the tests that used it could not have caught
+// a change in the helper's real auth wiring. The credentialHelperToken seam calls
+// the real authcheck.EnsureAuthenticatedWithStdout, so the indirection is dead.
