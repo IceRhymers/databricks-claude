@@ -130,8 +130,16 @@ func main() {
 
 // seedHelperState points the credential helper's state file at a mock CLI so
 // credentialHelperToken's internal loadState() picks it up. Returns the cleanup.
+//
+// Overrides HOME as well: credentialHelperToken calls helperDebugLog, which
+// resolves its log dir from os.UserHomeDir() and is ungated, so without this the
+// suite appends to the developer's real ~/.cache/databricks-claude (or
+// ~/Library/Logs on darwin) — including token prefixes. Harmless with today's
+// hardcoded literals, but a test that ever seeds a real token would leak its
+// prefix to disk.
 func seedHelperState(t *testing.T, cliPath string) func() {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	_, cleanup := overrideStatePath(t)
 	if err := saveState(persistentState{Profile: "DEFAULT", DatabricksCLIPath: cliPath}); err != nil {
 		cleanup()
@@ -269,6 +277,7 @@ func TestCredentialHelper_HonorsStateDatabricksCLIPath(t *testing.T) {
 // when state.Profile is the "DEFAULT" sentinel AND MDM supplies a profile,
 // resolveCredHelperProfile advances past state and returns the MDM value.
 func TestRunCredentialHelper_StateDefault_MDMPopulated_UsesMDM(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // resolveCredHelperProfile → helperDebugLog writes under $HOME
 	_, cleanup := overrideStatePath(t)
 	defer cleanup()
 
@@ -291,6 +300,7 @@ func TestRunCredentialHelper_StateDefault_MDMPopulated_UsesMDM(t *testing.T) {
 // that when state.Profile is the sentinel AND MDM is empty, the helper still
 // falls through to "DEFAULT" — no regression on the no-config case.
 func TestRunCredentialHelper_StateDefault_NoMDM_FallsThroughToDEFAULT(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // resolveCredHelperProfile → helperDebugLog writes under $HOME
 	_, cleanup := overrideStatePath(t)
 	defer cleanup()
 
@@ -312,6 +322,7 @@ func TestRunCredentialHelper_StateDefault_NoMDM_FallsThroughToDEFAULT(t *testing
 // real profile in state beats MDM — the local admin's explicit choice wins
 // over fleet MDM (resolution order: flag > state > MDM > "DEFAULT").
 func TestRunCredentialHelper_RealProfile_MDMPopulated_StateWins(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // resolveCredHelperProfile → helperDebugLog writes under $HOME
 	_, cleanup := overrideStatePath(t)
 	defer cleanup()
 
