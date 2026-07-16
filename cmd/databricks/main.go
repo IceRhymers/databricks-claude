@@ -39,7 +39,7 @@ type agent struct {
 
 // agents is the source of truth for dispatch, `list`, and completion. Kept
 // local to cmd/databricks (zero coupling); a future issue may promote it to an
-// internal/agents package if the #204 release matrix needs the same list.
+// internal/agents package if the release matrix ever needs the same list.
 var agents = []agent{
 	{"claude", "databricks-claude", "Claude Code via Databricks OAuth"},
 	{"codex", "databricks-codex", "OpenAI Codex CLI via Databricks OAuth"},

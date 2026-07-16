@@ -43,7 +43,9 @@ Download the latest release from the [releases page](https://github.com/IceRhyme
 go install github.com/IceRhymers/databricks-agents/cmd/databricks-claude@latest
 ```
 
-This module also builds `databricks-codex` (`go install github.com/IceRhymers/databricks-agents/cmd/databricks-codex@latest`) and `databricks-opencode` (`go install github.com/IceRhymers/databricks-agents/cmd/databricks-opencode@latest`) — see [`databricks-codex`](#databricks-codex) and [`databricks-opencode`](#databricks-opencode) below for their own install/usage — plus the [`databricks`](#databricks-multiplexer) multiplexer that dispatches to all three.
+This module also builds `databricks-codex` (`go install github.com/IceRhymers/databricks-agents/cmd/databricks-codex@latest`) and `databricks-opencode` (`go install github.com/IceRhymers/databricks-agents/cmd/databricks-opencode@latest`) — see [`databricks-codex`](#databricks-codex) and [`databricks-opencode`](#databricks-opencode) below for their own install/usage — plus the [`databricks`](#databricks-multiplexer) multiplexer (`go install github.com/IceRhymers/databricks-agents/cmd/databricks@latest`) that dispatches to all three.
+
+All four binaries are released **lockstep** — a single git tag builds and publishes `databricks`, `databricks-claude`, `databricks-codex`, and `databricks-opencode` for darwin/linux/windows (amd64 + arm64) under one version and one changelog. The [releases page](https://github.com/IceRhymers/databricks-claude/releases) carries every binary as `<name>-<os>-<arch>` assets (e.g. `databricks-darwin-arm64`, `databricks-claude-linux-amd64`, windows are `.exe`). Homebrew and Scoop currently install `databricks-claude` only; grab the other three from the releases page or `go install`.
 
 ## Pick Your Setup
 
