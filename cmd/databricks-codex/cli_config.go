@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/IceRhymers/databricks-agents/internal/cmd"
+	"github.com/IceRhymers/databricks-agents/internal/core/dbxauth"
 )
 
 // runConfigCommand implements the `databricks-codex config ...` dispatcher.
@@ -165,7 +166,7 @@ func runConfigOTELEnable(args []string) {
 	// Validate profile reachability before persisting anything — fail fast
 	// with an actionable error rather than writing state for a profile that
 	// is broken at next session start.
-	if _, err := DiscoverHost("", profile); err != nil {
+	if _, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: profile}); err != nil {
 		log.Fatalf("databricks-codex: config otel enable: failed to discover host for profile %q: %v\n"+
 			"Run 'databricks auth login --profile %s' first", profile, err, profile)
 	}
@@ -272,14 +273,14 @@ func runConfigShow(args []string) {
 		profile = "DEFAULT"
 	}
 
-	host, err := DiscoverHost("", profile)
+	host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: profile})
 	if err != nil {
 		log.Fatalf("databricks-codex: config show: failed to discover host for profile %q: %v\n"+
 			"Run 'databricks auth login --profile %s' first", profile, err, profile)
 	}
 	gatewayURL := ConstructGatewayURL(host)
 
-	tp := NewTokenProvider("", profile)
+	tp := dbxauth.NewProvider(dbxauth.Config{Profile: profile})
 	token, err := tp.Token(context.Background())
 	if err != nil {
 		log.Fatalf("databricks-codex: config show: failed to fetch token for profile %q: %v", profile, err)

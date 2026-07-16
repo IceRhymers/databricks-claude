@@ -218,6 +218,20 @@ func TestResolveDatabricksCLI_AbsoluteBeforeMDM(t *testing.T) {
 	}
 }
 
+// TestResolveDatabricksCLI_NotFoundReturnsBareName: no binary anywhere → bare name returned.
+func TestResolveDatabricksCLI_NotFoundReturnsBareName(t *testing.T) {
+	tmp := t.TempDir()
+	isolatePATH(t)
+	t.Setenv("HOME", tmp)
+	t.Setenv("DATABRICKS_CLI", "")
+	// Use a name that is guaranteed not to exist anywhere on this machine.
+	uniqueName := "databricks-test-resolve-notfound-unique"
+	got := ResolveDatabricksCLI(uniqueName)
+	if got != uniqueName {
+		t.Errorf("got %q, want %q", got, uniqueName)
+	}
+}
+
 func TestResolveDatabricksCLI_EnvBeforeMDM(t *testing.T) {
 	dir := t.TempDir()
 	envBin := makeExec(t, filepath.Join(dir, "databricks-env"))

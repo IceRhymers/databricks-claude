@@ -15,6 +15,7 @@ import (
 
 	"github.com/IceRhymers/databricks-agents/internal/cmd"
 	"github.com/IceRhymers/databricks-agents/internal/core/authcheck"
+	"github.com/IceRhymers/databricks-agents/internal/core/dbxauth"
 	"github.com/IceRhymers/databricks-agents/internal/core/proxy"
 	"github.com/IceRhymers/databricks-agents/pkg/mdmprofile"
 	"github.com/IceRhymers/databricks-agents/pkg/websearch"
@@ -452,7 +453,7 @@ func runServe(args []string) {
 	}
 
 	// Discover workspace host and construct the AI Gateway URL.
-	host, err := DiscoverHost(resolvedProfile, "")
+	host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: resolvedProfile})
 	if err != nil {
 		log.Fatalf("databricks-claude: serve: failed to discover host for profile %q: %v\n"+
 			"Run 'databricks auth login --profile %s' first", resolvedProfile, err, resolvedProfile)
@@ -461,7 +462,7 @@ func runServe(args []string) {
 	otelUpstream := host + "/api/2.0/otel"
 
 	// Seed token cache.
-	tp := NewTokenProvider(resolvedProfile, "")
+	tp := dbxauth.NewProvider(dbxauth.Config{Profile: resolvedProfile})
 	if _, err := tp.Token(context.Background()); err != nil {
 		log.Fatalf("databricks-claude: serve: failed to fetch initial token: %v", err)
 	}

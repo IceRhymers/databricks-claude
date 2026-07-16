@@ -18,6 +18,7 @@ import (
 	"github.com/IceRhymers/databricks-agents/internal/cmd"
 	"github.com/IceRhymers/databricks-agents/internal/core/authcheck"
 	"github.com/IceRhymers/databricks-agents/internal/core/cli"
+	"github.com/IceRhymers/databricks-agents/internal/core/dbxauth"
 	"github.com/IceRhymers/databricks-agents/pkg/mdmprofile"
 	"github.com/IceRhymers/databricks-agents/pkg/modeldiscovery"
 )
@@ -145,11 +146,11 @@ func resolveInferenceModelsJSON(profile string) string {
 // anthropic-capable model-services. It is split out so resolveInferenceModelsJSON
 // can keep a single fallback path.
 func discoverInferenceModels(profile string) ([]modeldiscovery.Model, error) {
-	host, err := DiscoverHost(profile, "")
+	host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: profile})
 	if err != nil {
 		return nil, err
 	}
-	tok, err := NewTokenProvider(profile, "").Token(context.Background())
+	tok, err := dbxauth.NewProvider(dbxauth.Config{Profile: profile}).Token(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -329,7 +330,7 @@ func credentialHelperToken(profile string, loginOut io.Writer) (string, error) {
 
 	// state.DatabricksCLIPath ("" → fall through to PATH/fallback scan in
 	// cli.ResolveDatabricksCLI) overrides the default "databricks" lookup.
-	tp := NewTokenProvider(resolved, state.DatabricksCLIPath)
+	tp := dbxauth.NewProvider(dbxauth.Config{Profile: resolved, CLIPath: state.DatabricksCLIPath})
 	helperDebugLog("tp.Token first attempt profile=%q", resolved)
 	tok, err := tp.Token(context.Background())
 	if err != nil {
@@ -451,7 +452,7 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databrick
 			fmt.Fprintf(os.Stderr, "databricks-claude: --databricks-cli-path must be absolute, got %q\n", databricksCLIPath)
 			os.Exit(1)
 		}
-		if !isExecutableFile(databricksCLIPath) {
+		if !cli.IsExecutableFile(databricksCLIPath) {
 			fmt.Fprintf(os.Stderr, "databricks-claude: --databricks-cli-path %q is not an executable file\n", databricksCLIPath)
 			os.Exit(1)
 		}
@@ -476,7 +477,7 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databrick
 		}
 		keys = daemonModeKeys(resolvedPort, fakeKey, withOTEL)
 	} else {
-		host, err := DiscoverHost(resolved, "")
+		host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: resolved})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "databricks-claude: failed to discover host for profile %q: %v\n", resolved, err)
 			fmt.Fprintf(os.Stderr, "Run 'databricks auth login --profile %s' first.\n", resolved)
