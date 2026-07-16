@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -45,6 +44,8 @@ func inferenceHandler(upstream *url.URL, config *Config, ws WebSearchSettings) h
 			return
 		}
 
+		lg := logger{prefix: config.ToolName, verbose: config.Verbose}
+
 		// Buffer the body so we can optionally inspect/mutate it. Bodies are
 		// /v1/messages JSON requests, bounded by max_tokens budget — well
 		// under a few MB. Cap defensively at 8 MiB.
@@ -63,18 +64,18 @@ func inferenceHandler(upstream *url.URL, config *Config, ws WebSearchSettings) h
 
 		var rewroteTools rewrittenTools
 		if ws.Enabled && isMessagesPath(r.URL.Path) && len(bodyBytes) > 0 {
-			if mutated, tools, ok := tryRewriteRequest(r.Context(), bodyBytes, ws, config.Verbose); ok {
+			if mutated, tools, ok := tryRewriteRequest(r.Context(), bodyBytes, ws, lg); ok {
 				bodyBytes = mutated
 				rewroteTools = tools
-			} else if config.Verbose {
-				log.Printf("databricks-claude: websearch: no rewrite applied to /v1/messages (no web_search_*/web_fetch_* tools and no annotated tool_results matched)")
+			} else {
+				lg.Vlogf("websearch: no rewrite applied to /v1/messages (no web_search_*/web_fetch_* tools and no annotated tool_results matched)")
 			}
 		}
 
 		// Build outbound request.
 		token, terr := config.TokenSource.Token(r.Context())
 		if terr != nil {
-			log.Printf("databricks-claude: token fetch error: %v", terr)
+			lg.Logf("token fetch error: %v", terr)
 		}
 
 		basePath := strings.TrimRight(upstream.Path, "/")
@@ -109,9 +110,7 @@ func inferenceHandler(upstream *url.URL, config *Config, ws WebSearchSettings) h
 		outReq.ContentLength = int64(len(bodyBytes))
 		outReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(bodyBytes)))
 
-		if config.Verbose {
-			log.Printf("databricks-claude: inference → %s %s%s", outReq.Method, outReq.URL.Host, outReq.URL.Path)
-		}
+		lg.Vlogf("inference → %s %s%s", outReq.Method, outReq.URL.Host, outReq.URL.Path)
 
 		resp, err := transport.RoundTrip(outReq)
 		if err != nil {
@@ -146,8 +145,8 @@ func inferenceHandler(upstream *url.URL, config *Config, ws WebSearchSettings) h
 				// length on the wire.
 				w.Header().Del("Content-Length")
 				w.WriteHeader(resp.StatusCode)
-				if err := pumpResponsesSSE(r.Context(), w, resp.Body, config.Verbose); err != nil && config.Verbose {
-					log.Printf("databricks-claude: responses: SSE pump err: %v", err)
+				if err := pumpResponsesSSE(r.Context(), w, resp.Body, lg); err != nil {
+					lg.Vlogf("responses: SSE pump err: %v", err)
 				}
 				return
 			}
@@ -161,7 +160,7 @@ func inferenceHandler(upstream *url.URL, config *Config, ws WebSearchSettings) h
 				}
 			}
 			w.WriteHeader(resp.StatusCode)
-			flushingCopy(w, resp.Body, config.Verbose)
+			flushingCopy(w, resp.Body, lg)
 			return
 		}
 
@@ -185,8 +184,8 @@ func inferenceHandler(upstream *url.URL, config *Config, ws WebSearchSettings) h
 		switch {
 		case isSSEResponse(resp):
 			w.WriteHeader(resp.StatusCode)
-			if err := pumpSSE(r.Context(), w, resp.Body, ws, rewroteTools, config.Verbose); err != nil && config.Verbose {
-				log.Printf("databricks-claude: websearch: SSE pump err: %v", err)
+			if err := pumpSSE(r.Context(), w, resp.Body, ws, rewroteTools, lg.verbose); err != nil {
+				lg.Vlogf("websearch: SSE pump err: %v", err)
 			}
 			return
 		case isJSONResponse(resp):
@@ -197,9 +196,11 @@ func inferenceHandler(upstream *url.URL, config *Config, ws WebSearchSettings) h
 				http.Error(w, "read upstream JSON failed", http.StatusBadGateway)
 				return
 			}
-			out, jerr := rewriteJSONResponse(r.Context(), body, ws, config.Verbose)
-			if jerr != nil && config.Verbose {
-				log.Printf("databricks-claude: websearch: JSON rewrite err: %v (forwarding original)", jerr)
+			out, jerr := rewriteJSONResponse(r.Context(), body, ws, lg.verbose)
+			// Guard gates the `out = body` fallback as well as the log, so it
+			// stays an explicit check rather than folding into Vlogf.
+			if jerr != nil && lg.verbose {
+				lg.Logf("websearch: JSON rewrite err: %v (forwarding original)", jerr)
 				out = body
 			}
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(out)))
@@ -208,11 +209,9 @@ func inferenceHandler(upstream *url.URL, config *Config, ws WebSearchSettings) h
 			return
 		default:
 			// Unknown content-type: defensive passthrough with flushing copy.
-			if config.Verbose {
-				log.Printf("databricks-claude: websearch: unexpected Content-Type %q on rewrite path; passing through", resp.Header.Get("Content-Type"))
-			}
+			lg.Vlogf("websearch: unexpected Content-Type %q on rewrite path; passing through", resp.Header.Get("Content-Type"))
 			w.WriteHeader(resp.StatusCode)
-			flushingCopy(w, resp.Body, config.Verbose)
+			flushingCopy(w, resp.Body, lg)
 			return
 		}
 	})
@@ -226,7 +225,7 @@ func isMessagesPath(p string) bool {
 // the client as they arrive. Used by the byte-identity passthrough fast
 // path AND the unknown-content-type defensive branch — keep these two
 // callers in lockstep.
-func flushingCopy(w http.ResponseWriter, src io.Reader, verbose bool) {
+func flushingCopy(w http.ResponseWriter, src io.Reader, lg logger) {
 	flusher, _ := w.(http.Flusher)
 	buf := make([]byte, 4096)
 	for {
@@ -240,8 +239,8 @@ func flushingCopy(w http.ResponseWriter, src io.Reader, verbose bool) {
 			}
 		}
 		if rerr != nil {
-			if rerr != io.EOF && verbose {
-				log.Printf("databricks-claude: response read err: %v", rerr)
+			if rerr != io.EOF {
+				lg.Vlogf("response read err: %v", rerr)
 			}
 			return
 		}
@@ -265,17 +264,17 @@ func isHopByHop(h string) bool {
 // which kinds of server tools were touched (used by the response-side
 // SSE/JSON rewriter), and ok=true if a successful rewrite was done.
 // On ok=false the body is unchanged and rewrittenTools is zero.
-func tryRewriteRequest(ctx context.Context, body []byte, ws WebSearchSettings, verbose bool) ([]byte, rewrittenTools, bool) {
+func tryRewriteRequest(ctx context.Context, body []byte, ws WebSearchSettings, lg logger) ([]byte, rewrittenTools, bool) {
 	var rt rewrittenTools
 	var req anthropic.Request
 	if err := json.Unmarshal(body, &req); err != nil {
-		if verbose {
-			log.Printf("databricks-claude: websearch: body not JSON-decodable as Anthropic Request: %v", err)
-		}
+		lg.Vlogf("websearch: body not JSON-decodable as Anthropic Request: %v", err)
 		return body, rt, false
 	}
 
-	if verbose {
+	// Guard gates the names accumulation below, not just the log, so it stays
+	// an explicit check rather than folding into Vlogf.
+	if lg.verbose {
 		names := make([]string, 0, len(req.Tools))
 		for _, t := range req.Tools {
 			var probe struct {
@@ -289,7 +288,7 @@ func tryRewriteRequest(ctx context.Context, body []byte, ws WebSearchSettings, v
 				names = append(names, probe.Name)
 			}
 		}
-		log.Printf("databricks-claude: websearch: /v1/messages tools=%d %v", len(req.Tools), names)
+		lg.Logf("websearch: /v1/messages tools=%d %v", len(req.Tools), names)
 	}
 
 	// Phase 1: walk Tools and rewrite web_search_*/web_fetch_*.
@@ -312,8 +311,8 @@ func tryRewriteRequest(ctx context.Context, body []byte, ws WebSearchSettings, v
 	if rewroteFetch > 0 {
 		rt.HasWebFetch = true
 	}
-	if verbose && (rewroteSearch+rewroteFetch) > 0 {
-		log.Printf("databricks-claude: websearch: rewrote tools web_search=%d web_fetch=%d", rewroteSearch, rewroteFetch)
+	if (rewroteSearch + rewroteFetch) > 0 {
+		lg.Vlogf("websearch: rewrote tools web_search=%d web_fetch=%d", rewroteSearch, rewroteFetch)
 	}
 
 	// Phase 2: walk Messages, build a map of tool_use_id → {name, input}
@@ -329,9 +328,7 @@ func tryRewriteRequest(ctx context.Context, body []byte, ws WebSearchSettings, v
 			}
 		}
 	}
-	if verbose {
-		log.Printf("databricks-claude: websearch: annotated tool_use_ids=%d substituted messages=%d", len(annotated), substituted)
-	}
+	lg.Vlogf("websearch: annotated tool_use_ids=%d substituted messages=%d", len(annotated), substituted)
 
 	// If nothing changed, signal "no rewrite" so the outer code can log that.
 	if rewroteSearch+rewroteFetch+substituted == 0 {

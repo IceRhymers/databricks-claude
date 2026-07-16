@@ -15,7 +15,7 @@ import (
 func runResponsesPump(t *testing.T, input string) string {
 	t.Helper()
 	rec := newFlushRecorder()
-	if err := pumpResponsesSSE(context.Background(), rec, strings.NewReader(input), false); err != nil {
+	if err := pumpResponsesSSE(context.Background(), rec, strings.NewReader(input), logger{}); err != nil {
 		t.Fatalf("pumpResponsesSSE: %v", err)
 	}
 	return rec.body.String()
@@ -191,7 +191,7 @@ func TestResponsesRewriter_OversizedFrameNoPanic(t *testing.T) {
 
 	rec := newFlushRecorder()
 	// Must not panic; an error is acceptable (oversized frame).
-	_ = pumpResponsesSSE(context.Background(), rec, strings.NewReader(input), false)
+	_ = pumpResponsesSSE(context.Background(), rec, strings.NewReader(input), logger{})
 }
 
 func TestIsResponsesPath(t *testing.T) {

@@ -61,5 +61,5 @@ func NewProxyServer(config *ProxyConfig) (http.Handler, error) {
 // Callers read l.Addr() to discover the assigned port.
 // When certFile and keyFile are both non-empty, the listener serves TLS.
 func StartProxy(handler http.Handler, certFile, keyFile string) (net.Listener, error) {
-	return proxy.Start(handler, certFile, keyFile)
+	return proxy.Start(handler, certFile, keyFile, ProfileName)
 }

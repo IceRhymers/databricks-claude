@@ -59,12 +59,12 @@ func NewProxyServer(config *ProxyConfig) http.Handler {
 // ServeProxy starts the proxy on the given listener.
 // When config.TLSCertFile and config.TLSKeyFile are both set, the listener serves TLS.
 func ServeProxy(config *ProxyConfig, handler http.Handler, ln net.Listener) error {
-	_, err := proxy.Serve(ln, handler, config.TLSCertFile, config.TLSKeyFile)
+	_, err := proxy.Serve(ln, handler, config.TLSCertFile, config.TLSKeyFile, config.ToolName)
 	return err
 }
 
 // StartProxy binds to 127.0.0.1:0, starts serving, and returns the listener.
 // Used in tests and as a fallback when ServeProxy is not applicable.
 func StartProxy(config *ProxyConfig, handler http.Handler) (net.Listener, error) {
-	return proxy.Start(handler, config.TLSCertFile, config.TLSKeyFile)
+	return proxy.Start(handler, config.TLSCertFile, config.TLSKeyFile, config.ToolName)
 }

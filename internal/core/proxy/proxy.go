@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -75,7 +74,12 @@ type Config struct {
 	UCTracesTable string
 	TokenSource   TokenSource
 	Verbose       bool
-	// ToolName identifies this proxy in /health responses (e.g. "databricks-claude").
+	// ToolName identifies the launcher that owns this proxy (e.g.
+	// "databricks-claude"). It serves two roles: it names the tool in /health
+	// responses, and it is the prefix on every log line this package emits —
+	// core is shared by all three launchers, so a hardcoded name would be wrong
+	// for two of them. internal/core/run.go:80 documents its ToolName the same
+	// way. See logger.
 	ToolName string
 	// Version is the build version reported by /health.
 	Version string
@@ -113,11 +117,22 @@ type tokenExpirer interface {
 }
 
 // RecoveryHandler wraps h with panic recovery, returning 502 on panic.
+//
+// Every external caller of this exported form is databricks-claude
+// (cmd/databricks-claude/{proxy.go,serve.go,serve_session.go}), so it labels
+// panics accordingly. Callers that know their own tool name — the in-package
+// NewServer wiring, which serves all three launchers — use recoveryHandler.
 func RecoveryHandler(next http.Handler) http.Handler {
+	return recoveryHandler(next, logger{prefix: "databricks-claude"})
+}
+
+// recoveryHandler wraps h with panic recovery, returning 502 on panic, and
+// attributes the panic to lg's tool.
+func recoveryHandler(next http.Handler, lg logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				log.Printf("databricks-claude: proxy panic recovered: %v", err)
+				lg.Logf("proxy panic recovered: %v", err)
 				http.Error(w, "Internal proxy error", http.StatusBadGateway)
 			}
 		}()
@@ -144,9 +159,11 @@ func isWebSocketUpgrade(r *http.Request) bool {
 // bidirectional piping logic is centralised in this shared package so
 // databricks-codex can import it rather than maintaining its own copy.
 func handleWebSocket(w http.ResponseWriter, r *http.Request, upstream *url.URL, config *Config) {
+	lg := logger{prefix: config.ToolName, verbose: config.Verbose}
+
 	token, err := config.TokenSource.Token(r.Context())
 	if err != nil {
-		log.Printf("databricks-claude: ws token fetch error: %v", err)
+		lg.Logf("ws token fetch error: %v", err)
 		http.Error(w, "token fetch failed", http.StatusBadGateway)
 		return
 	}
@@ -166,9 +183,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upstream *url.URL, 
 		}
 	}
 
-	if config.Verbose {
-		log.Printf("databricks-claude: ws upgrade → %s%s (tls=%v)", upstream.Host, upstreamPath, useTLS)
-	}
+	lg.Vlogf("ws upgrade → %s%s (tls=%v)", upstream.Host, upstreamPath, useTLS)
 
 	// Dial upstream.
 	var upstreamConn net.Conn
@@ -180,7 +195,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upstream *url.URL, 
 		upstreamConn, err = net.Dial("tcp", dialHost)
 	}
 	if err != nil {
-		log.Printf("databricks-claude: ws dial failed: %v", err)
+		lg.Logf("ws dial failed: %v", err)
 		http.Error(w, "upstream dial failed", http.StatusBadGateway)
 		return
 	}
@@ -192,7 +207,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upstream *url.URL, 
 		RawQuery: r.URL.RawQuery,
 	}).RequestURI(), nil)
 	if err != nil {
-		log.Printf("databricks-claude: ws build request failed: %v", err)
+		lg.Logf("ws build request failed: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -211,7 +226,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upstream *url.URL, 
 
 	// Send the upgrade request to the upstream.
 	if err := upgradeReq.Write(upstreamConn); err != nil {
-		log.Printf("databricks-claude: ws write upgrade failed: %v", err)
+		lg.Logf("ws write upgrade failed: %v", err)
 		http.Error(w, "upstream write failed", http.StatusBadGateway)
 		return
 	}
@@ -220,7 +235,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upstream *url.URL, 
 	br := bufio.NewReader(upstreamConn)
 	upstreamResp, err := http.ReadResponse(br, upgradeReq)
 	if err != nil {
-		log.Printf("databricks-claude: ws read response failed: %v", err)
+		lg.Logf("ws read response failed: %v", err)
 		http.Error(w, "upstream response failed", http.StatusBadGateway)
 		return
 	}
@@ -229,7 +244,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upstream *url.URL, 
 	if upstreamResp.StatusCode != http.StatusSwitchingProtocols {
 		body, _ := io.ReadAll(upstreamResp.Body)
 		upstreamResp.Body.Close()
-		log.Printf("databricks-claude: ws upgrade rejected: %d %s", upstreamResp.StatusCode, sanitizeLogOutput(string(body)))
+		lg.Logf("ws upgrade rejected: %d %s", upstreamResp.StatusCode, sanitizeLogOutput(string(body)))
 		w.WriteHeader(upstreamResp.StatusCode)
 		w.Write(body) //nolint:errcheck
 		return
@@ -238,26 +253,24 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upstream *url.URL, 
 	// Hijack the client connection.
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		log.Printf("databricks-claude: ResponseWriter does not support hijacking")
+		lg.Logf("ResponseWriter does not support hijacking")
 		http.Error(w, "hijack not supported", http.StatusInternalServerError)
 		return
 	}
 	clientConn, clientBuf, err := hijacker.Hijack()
 	if err != nil {
-		log.Printf("databricks-claude: ws hijack failed: %v", err)
+		lg.Logf("ws hijack failed: %v", err)
 		return
 	}
 	defer clientConn.Close()
 
 	// Forward the 101 Switching Protocols response to the client.
 	if err := upstreamResp.Write(clientConn); err != nil {
-		log.Printf("databricks-claude: ws write 101 to client failed: %v", err)
+		lg.Logf("ws write 101 to client failed: %v", err)
 		return
 	}
 
-	if config.Verbose {
-		log.Printf("databricks-claude: ws connected, piping data")
-	}
+	lg.Vlogf("ws connected, piping data")
 
 	// Bidirectional pipe. When either direction finishes, close both.
 	done := make(chan struct{}, 2)
@@ -296,9 +309,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request, upstream *url.URL, 
 	upstreamConn.Close()
 	<-done // wait for second goroutine to finish
 
-	if config.Verbose {
-		log.Printf("databricks-claude: ws connection closed")
-	}
+	lg.Vlogf("ws connection closed")
 }
 
 // requireAPIKey returns middleware that validates Authorization: Bearer <key>
@@ -334,15 +345,16 @@ func requireAPIKey(next http.Handler, key string) http.Handler {
 //   - all other paths  → UCMetricsTable header (omitted if the chosen table is empty)
 func NewServer(config *Config) (http.Handler, error) {
 	mux := http.NewServeMux()
+	lg := logger{prefix: config.ToolName, verbose: config.Verbose}
 
 	inferenceUpstream, err := url.Parse(config.InferenceUpstream)
 	if err != nil {
-		return nil, fmt.Errorf("databricks-claude: invalid InferenceUpstream %q: %v", config.InferenceUpstream, err)
+		return nil, fmt.Errorf("invalid InferenceUpstream %q: %v", config.InferenceUpstream, err)
 	}
 
 	otelUpstream, err := url.Parse(config.OTELUpstream)
 	if err != nil {
-		return nil, fmt.Errorf("databricks-claude: invalid OTELUpstream %q: %v", config.OTELUpstream, err)
+		return nil, fmt.Errorf("invalid OTELUpstream %q: %v", config.OTELUpstream, err)
 	}
 
 	// Inference handler — when WebSearch.Enabled is false this is a thin
@@ -358,7 +370,7 @@ func NewServer(config *Config) (http.Handler, error) {
 		Director: func(req *http.Request) {
 			token, err := config.TokenSource.Token(req.Context())
 			if err != nil {
-				log.Printf("databricks-claude: token fetch error (otel): %v", err)
+				lg.Logf("token fetch error (otel): %v", err)
 			}
 			if token != "" {
 				req.Header.Set("Authorization", "Bearer "+token)
@@ -393,9 +405,7 @@ func NewServer(config *Config) (http.Handler, error) {
 			req.URL.Path = basePath + stripped
 			req.URL.RawPath = ""
 
-			if config.Verbose {
-				log.Printf("databricks-claude: otel → %s %s%s", req.Method, req.URL.Host, req.URL.Path)
-			}
+			lg.Vlogf("otel → %s %s%s", req.Method, req.URL.Host, req.URL.Path)
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			if config.Verbose || resp.StatusCode >= 400 {
@@ -406,9 +416,9 @@ func NewServer(config *Config) (http.Handler, error) {
 						snippet = snippet[:500] + "..."
 					}
 					if resp.StatusCode >= 400 {
-						log.Printf("databricks-claude: otel upstream error %d: %s", resp.StatusCode, sanitizeLogOutput(snippet))
+						lg.Logf("otel upstream error %d: %s", resp.StatusCode, sanitizeLogOutput(snippet))
 					} else {
-						log.Printf("databricks-claude: otel ← %d (%d bytes)", resp.StatusCode, len(body))
+						lg.Logf("otel ← %d (%d bytes)", resp.StatusCode, len(body))
 					}
 					resp.Body = io.NopCloser(bytes.NewReader(body))
 				}
@@ -454,12 +464,12 @@ func NewServer(config *Config) (http.Handler, error) {
 	for i, route := range config.Routes {
 		routeUpstream, err := url.Parse(route.Upstream)
 		if err != nil {
-			return nil, fmt.Errorf("databricks-claude: invalid Routes[%d].Upstream %q: %v", i, route.Upstream, err)
+			return nil, fmt.Errorf("invalid Routes[%d].Upstream %q: %v", i, route.Upstream, err)
 		}
-		mux.Handle(route.PathPrefix+"/", RecoveryHandler(newRouteHandler(route, routeUpstream, config)))
+		mux.Handle(route.PathPrefix+"/", recoveryHandler(newRouteHandler(route, routeUpstream, config), lg))
 	}
 
-	mux.Handle("/otel/", RecoveryHandler(otelProxy))
+	mux.Handle("/otel/", recoveryHandler(otelProxy, lg))
 
 	// Daemon mode: explicitly reject /shutdown with 404 so it does not fall
 	// through to the inference catch-all (which would forward POST /shutdown
@@ -471,7 +481,7 @@ func NewServer(config *Config) (http.Handler, error) {
 		})
 	}
 
-	mux.Handle("/", RecoveryHandler(inferenceHandlerHTTP))
+	mux.Handle("/", recoveryHandler(inferenceHandlerHTTP, lg))
 
 	// APIKey check applies to all connections including WebSocket upgrades (used by databricks-codex)
 	return requireAPIKey(mux, config.APIKey), nil
@@ -512,18 +522,21 @@ func ValidateTLSConfig(certFile, keyFile string) error {
 // Start binds to 127.0.0.1:0, starts serving, and returns the listener.
 // Callers read l.Addr() to discover the assigned port.
 // When certFile and keyFile are both non-empty, the listener serves TLS.
-func Start(handler http.Handler, certFile, keyFile string) (net.Listener, error) {
+// toolName labels this proxy's log lines; see Config.ToolName.
+func Start(handler http.Handler, certFile, keyFile, toolName string) (net.Listener, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
-	return Serve(l, handler, certFile, keyFile)
+	return Serve(l, handler, certFile, keyFile, toolName)
 }
 
 // Serve starts the proxy on an existing listener. The listener is wrapped in a
 // TLS listener when certFile and keyFile are both non-empty. Returns the
 // (possibly wrapped) listener that is actively serving.
-func Serve(l net.Listener, handler http.Handler, certFile, keyFile string) (net.Listener, error) {
+// toolName labels this proxy's log lines; see Config.ToolName.
+func Serve(l net.Listener, handler http.Handler, certFile, keyFile, toolName string) (net.Listener, error) {
+	lg := logger{prefix: toolName}
 	useTLS := certFile != "" && keyFile != ""
 
 	if useTLS {
@@ -537,10 +550,10 @@ func Serve(l net.Listener, handler http.Handler, certFile, keyFile string) (net.
 		})
 		go func() {
 			if err := http.Serve(tlsListener, handler); err != nil {
-				log.Printf("databricks-claude: proxy stopped: %v", err)
+				lg.Logf("proxy stopped: %v", err)
 			}
 		}()
-		log.Printf("databricks-claude: listening on https://%s", l.Addr().String())
+		lg.Logf("listening on https://%s", l.Addr().String())
 		return tlsListener, nil
 	}
 
@@ -548,9 +561,9 @@ func Serve(l net.Listener, handler http.Handler, certFile, keyFile string) (net.
 		if err := http.Serve(l, handler); err != nil {
 			// http.Serve returns when the listener is closed; that is expected
 			// during shutdown and not worth logging as an error.
-			log.Printf("databricks-claude: proxy stopped: %v", err)
+			lg.Logf("proxy stopped: %v", err)
 		}
 	}()
-	log.Printf("databricks-claude: listening on http://%s", l.Addr().String())
+	lg.Logf("listening on http://%s", l.Addr().String())
 	return l, nil
 }

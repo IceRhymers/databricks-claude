@@ -88,3 +88,21 @@ func TestRewriteWebFetchTool_Annotated(t *testing.T) {
 		t.Errorf("not annotated")
 	}
 }
+
+// TestAnnotationPrefix_IsWireStable pins AnnotationPrefix to its exact value.
+//
+// The round-trip tests above assert HasPrefix(desc, AnnotationPrefix), which
+// compares the const against itself. They catch a rename of the const alone,
+// because the literals at the RewriteWeb*Tool sites would then disagree — but
+// not a consistent rename of the const and those literals together. That is
+// exactly what renaming this "for consistency" with the log prefixes would do.
+func TestAnnotationPrefix_IsWireStable(t *testing.T) {
+	const want = "[databricks-claude:websearch] "
+	if AnnotationPrefix != want {
+		t.Errorf("AnnotationPrefix = %q, want %q\n"+
+			"This is a wire value, not a log prefix: RewriteWeb*Tool embed it in the "+
+			"model-visible tool description and IsAnnotatedTool matches it back to "+
+			"identify proxy-injected tools. Changing it breaks that round-trip.",
+			AnnotationPrefix, want)
+	}
+}

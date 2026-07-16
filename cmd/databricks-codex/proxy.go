@@ -44,7 +44,7 @@ func NewProxyServer(config *ProxyConfig) (http.Handler, error) {
 // ServeProxy starts the proxy on the given listener.
 // When config.TLSCertFile and config.TLSKeyFile are both set, the listener serves TLS.
 func ServeProxy(config *ProxyConfig, handler http.Handler, ln net.Listener) error {
-	_, err := proxy.Serve(ln, handler, config.TLSCertFile, config.TLSKeyFile)
+	_, err := proxy.Serve(ln, handler, config.TLSCertFile, config.TLSKeyFile, ProfileName)
 	return err
 }
 
@@ -52,5 +52,5 @@ func ServeProxy(config *ProxyConfig, handler http.Handler, ln net.Listener) erro
 // Callers read l.Addr() to discover the assigned port.
 // When certFile and keyFile are both non-empty, the listener serves TLS.
 func StartProxy(handler http.Handler, certFile, keyFile string) (net.Listener, error) {
-	return proxy.Start(handler, certFile, keyFile)
+	return proxy.Start(handler, certFile, keyFile, ProfileName)
 }

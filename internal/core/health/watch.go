@@ -34,7 +34,7 @@ func WatchProxy(port int, handler http.Handler, tlsCert, tlsKey, logPrefix strin
 		if err != nil {
 			continue // another session grabbed it first
 		}
-		if _, err := proxy.Serve(ln, handler, tlsCert, tlsKey); err != nil {
+		if _, err := proxy.Serve(ln, handler, tlsCert, tlsKey, logPrefix); err != nil {
 			ln.Close()
 			continue
 		}

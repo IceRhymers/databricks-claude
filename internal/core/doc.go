@@ -11,7 +11,20 @@
 // the anthropic/v1/messages predicate), pkg/mdmprofile (Desktop MDM/trust), and
 // pkg/websearch (Claude's web-search backends). Note that internal/core/proxy
 // still imports pkg/websearch and still houses the anthropic wire bits
-// (sse_rewriter.go, websearch_handler.go, responses_rewriter.go, anthropic/) —
-// a documented, temporary internal/core -> pkg back-edge that #E resolves when
-// those bits move out with the claude Profile.
+// (sse_rewriter.go, anthropic/) — a documented, temporary
+// internal/core -> pkg back-edge that #E resolves when those bits move out with
+// the claude Profile.
+//
+// Two files in internal/core/proxy look like they belong on that list and do
+// not — both stay in core through #E:
+//
+//   - responses_rewriter.go is the OpenAI Responses-API SSE rewriter. It is
+//     stdlib-only (no pkg/websearch, no proxy/anthropic import) and is enabled
+//     only by databricks-opencode via ResponsesRewrite.Enabled; claude leaves it
+//     false because Claude Code never targets /responses. It is tool-agnostic
+//     engine code.
+//   - websearch_handler.go hosts inferenceHandler, the "/" catch-all that every
+//     launcher's traffic flows through, plus opencode's Responses dispatch and
+//     the generic passthrough copy. Only its ws.Enabled-gated internals are
+//     claude-coupled; the file itself cannot move.
 package core

@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -76,7 +75,7 @@ type responsesEnvelope struct {
 //
 // Returns nil on clean EOF, otherwise the underlying scanner error. Caller owns
 // src.Close.
-func pumpResponsesSSE(ctx context.Context, w http.ResponseWriter, src io.Reader, verbose bool) error {
+func pumpResponsesSSE(ctx context.Context, w http.ResponseWriter, src io.Reader, lg logger) error {
 	flusher, _ := w.(http.Flusher)
 	state := &responsesRewriteState{
 		canonicalByIndex: map[int]string{},
@@ -119,15 +118,13 @@ func pumpResponsesSSE(ctx context.Context, w http.ResponseWriter, src io.Reader,
 			continue
 		}
 
-		out := maybeRewriteResponsesFrame(frame, ev, state, verbose)
+		out := maybeRewriteResponsesFrame(frame, ev, state, lg)
 		if err := emit(out); err != nil {
 			return err
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		if verbose {
-			log.Printf("databricks-claude: responses: SSE scanner error: %v", err)
-		}
+		lg.Vlogf("responses: SSE scanner error: %v", err)
 		return err
 	}
 	return nil
@@ -137,7 +134,7 @@ func pumpResponsesSSE(ctx context.Context, w http.ResponseWriter, src io.Reader,
 // original bytes (the overwhelmingly common case) or a re-serialized frame with
 // a corrected item_id. State (the index->canonical-id cache) is updated as a
 // side effect on output_item.added / output_item.done events.
-func maybeRewriteResponsesFrame(frame []byte, ev sseFrame, state *responsesRewriteState, verbose bool) []byte {
+func maybeRewriteResponsesFrame(frame []byte, ev sseFrame, state *responsesRewriteState, lg logger) []byte {
 	// [DONE] sentinel and anything that isn't a JSON object: pass through.
 	trimmed := bytes.TrimSpace(ev.Data)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
@@ -162,8 +159,8 @@ func maybeRewriteResponsesFrame(frame []byte, ev sseFrame, state *responsesRewri
 			// passthrough — never a panic or unbounded growth).
 			if len(state.canonicalByIndex) < responsesIndexCacheLimit {
 				state.canonicalByIndex[*env.OutputIndex] = env.Item.ID
-			} else if verbose {
-				log.Printf("databricks-claude: responses: index cache at cap (%d); not caching output_index=%d", responsesIndexCacheLimit, *env.OutputIndex)
+			} else {
+				lg.Vlogf("responses: index cache at cap (%d); not caching output_index=%d", responsesIndexCacheLimit, *env.OutputIndex)
 			}
 		}
 		return frame
@@ -203,11 +200,13 @@ func maybeRewriteResponsesFrame(frame []byte, ev sseFrame, state *responsesRewri
 		return frame
 	}
 
-	if verbose {
+	// Guard gates the dedup bookkeeping as well as the log, so it stays an
+	// explicit check rather than folding into Vlogf.
+	if lg.verbose {
 		key := env.ItemID + "@" + strconv.Itoa(*env.OutputIndex)
 		if _, seen := state.warned[key]; !seen {
 			state.warned[key] = struct{}{}
-			log.Printf("databricks-claude: responses: rewrote item_id %q -> %q (output_index=%d, type=%s)",
+			lg.Logf("responses: rewrote item_id %q -> %q (output_index=%d, type=%s)",
 				env.ItemID, canonical, *env.OutputIndex, env.Type)
 		}
 	}
