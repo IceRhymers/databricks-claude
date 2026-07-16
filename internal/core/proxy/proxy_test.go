@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -308,7 +310,7 @@ func TestProxy_SSEStreaming(t *testing.T) {
 		t.Fatalf("NewServer: %v", err)
 	}
 
-	l, err := Start(handler, "", "")
+	l, err := Start(handler, "", "", "databricks-test")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -538,7 +540,7 @@ func TestProxy_WebSocket_UpgradeRejectedByUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	l, err := Start(wsHandler, "", "")
+	l, err := Start(wsHandler, "", "", "databricks-test")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -603,7 +605,7 @@ func TestProxy_Start(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	l, err := Start(handler, "", "")
+	l, err := Start(handler, "", "", "databricks-test")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -1288,4 +1290,55 @@ func (e *expiringTokenSource) Token(_ context.Context) (string, error) {
 
 func (e *expiringTokenSource) Expiry() time.Time {
 	return e.expiry
+}
+
+// TestOTELProxy_LogsUpstreamErrorWhenNotVerbose pins the semantics of the
+// `if config.Verbose || resp.StatusCode >= 400` guard in NewServer's OTEL
+// ModifyResponse. That condition is an OR, not a verbose guard: a >=400
+// upstream response must be logged even when Verbose is false. Folding it into
+// a verbose-only log helper would silently suppress every OTEL upstream error
+// in the default (non-verbose) configuration.
+//
+// It also pins that the log line is attributed to the launcher that actually
+// owns the proxy (Config.ToolName) rather than a hardcoded tool name.
+//
+// No t.Parallel(): log.SetOutput is process-global.
+func TestOTELProxy_LogsUpstreamErrorWhenNotVerbose(t *testing.T) {
+	otel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("boom"))
+	}))
+	defer otel.Close()
+
+	inference := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("inference upstream called unexpectedly for /otel/ request")
+	}))
+	defer inference.Close()
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	cfg := &Config{
+		InferenceUpstream: inference.URL,
+		OTELUpstream:      otel.URL,
+		UCMetricsTable:    "main.t.m",
+		UCLogsTable:       "main.t.l",
+		TokenSource:       warmToken("tok"),
+		ToolName:          "databricks-codex",
+		Verbose:           false,
+	}
+	handler, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/otel/v1/metrics", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	const want = "databricks-codex: otel upstream error 500"
+	if got := buf.String(); !strings.Contains(got, want) {
+		t.Errorf("OTEL upstream error not logged as expected with Verbose=false.\nwant substring: %q\ngot log output: %q", want, got)
+	}
 }

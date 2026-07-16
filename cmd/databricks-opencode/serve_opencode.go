@@ -267,7 +267,7 @@ func runServeSession(a *Args) {
 
 	// --- Start proxy if we own the port ---
 	if isOwner {
-		servedLn, err := proxy.Serve(listener, proxyHandler, a.TLSCert, a.TLSKey)
+		servedLn, err := proxy.Serve(listener, proxyHandler, a.TLSCert, a.TLSKey, ProfileName)
 		if err != nil {
 			log.Fatalf("databricks-opencode: failed to start proxy: %v", err)
 		}
