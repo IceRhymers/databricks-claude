@@ -35,7 +35,7 @@ Monorepo of transparent proxy wrappers that auto-refresh Databricks OAuth tokens
 | `serve_install_windows.go` | Windows Scheduled Task creation via `schtasks.exe` (build tag: `windows`) |
 | `serve_install_other.go` | Stub returning "unsupported platform" for non-darwin/linux/windows (build tag: `!darwin && !windows && !linux`) |
 | `desktop_config_test.go` | Tests for `buildMobileconfig`, `buildRegFile`, `buildDevModeJSON`, `writeDesktopConfigByPath`, `guardDevJSONOutputPath`, `writeFileAtomic`, install-instruction routing, and model-list consistency across all three artifacts |
-| `main_test.go` | Tests for `parseArgs`, `handleHelp`, `handlePrintEnv`, `deriveLogsTable`, `databricksFullSetupEnv`, `/shutdown` + idle-timeout lifecycle, and command-tree/completion parity |
+| `main_test.go` | Tests for `parseArgs`, `handleHelp`, `handlePrintEnv`, `deriveLogsTable`, `databricksFullSetupEnv`, `config write` bootstrap, `/shutdown` + idle-timeout lifecycle, and command-tree/completion parity |
 | `config_test.go` | Tests for `config` subcommand parity, OTEL orchestration matrix, websearch resolver, state-preservation invariant on `config otel disable` |
 | `doctor_test.go` | Tests for `diffModelRouting`'s status matrix (ok/drift/stale-legacy/unresolved/new) |
 | `process_test.go` | Tests for `ForwardSignals` signal forwarding and child exit-code propagation |
