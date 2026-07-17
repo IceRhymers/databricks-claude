@@ -17,7 +17,7 @@ Generic mutex-guarded token cache. Accepts any `TokenFetcher` implementation and
 
 ### Working In This Directory
 - The `TokenFetcher` interface has a single method: `FetchToken(ctx) (token, expiry, err)`.
-- The root package implements `databricksFetcher` (shells out to `databricks auth token`) and passes it to `NewTokenProvider`.
+- `internal/core/dbxauth` implements the Databricks-CLI fetcher (`dbxauth.Fetcher`, shelling out to `databricks auth token`) and passes it to `NewTokenProvider`; `dbxauth.NewProvider(Config{…})` is the constructor launchers actually call. This package stays fetcher-agnostic on purpose — that seam is why `dbxauth` is a separate package rather than an extension of this one (#218), and it is what lets the proxy tests construct a provider with a nil/fake fetcher.
 - **5-minute refresh buffer**: tokens are refreshed when `time.Now()` is within 5 minutes of `expiresAt`. This is critical for avoiding auth failures during long-running sessions.
 - **Graceful degradation**: if refresh fails but a cached token exists, the stale token is returned with a log warning. Only the first fetch can fail hard.
 - `SetCache` is used by `proxy_test.go`'s `warmToken()` helper to pre-load the cache in tests.

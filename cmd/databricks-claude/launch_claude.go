@@ -11,6 +11,7 @@ import (
 
 	"github.com/IceRhymers/databricks-agents/internal/core"
 	"github.com/IceRhymers/databricks-agents/internal/core/authcheck"
+	"github.com/IceRhymers/databricks-agents/internal/core/dbxauth"
 	"github.com/IceRhymers/databricks-agents/internal/core/proxy"
 	"github.com/IceRhymers/databricks-agents/pkg/websearch"
 )
@@ -148,7 +149,7 @@ func buildClaudeLaunchPlan(a *Args) (core.LaunchPlan, error) {
 	}
 
 	// --- Seed token cache ---
-	tp := NewTokenProvider(resolvedProfile, "")
+	tp := dbxauth.NewProvider(dbxauth.Config{Profile: resolvedProfile})
 	if _, err := tp.Token(context.Background()); err != nil {
 		return plan, fmt.Errorf("failed to fetch initial token for profile %q: %v", resolvedProfile, err)
 	}
@@ -159,14 +160,14 @@ func buildClaudeLaunchPlan(a *Args) (core.LaunchPlan, error) {
 		inferenceUpstream = a.Upstream
 		log.Printf("databricks-claude: using explicit upstream: %s", inferenceUpstream)
 		if databricksHost == "" {
-			if h, err := DiscoverHost(resolvedProfile, ""); err == nil {
+			if h, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: resolvedProfile}); err == nil {
 				databricksHost = h
 			}
 		}
 		needsFullSetup = true
 	} else if inferenceUpstream == "" {
 		log.Printf("databricks-claude: no ANTHROPIC_BASE_URL configured — discovering from profile %q", resolvedProfile)
-		host, err := DiscoverHost(resolvedProfile, "")
+		host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: resolvedProfile})
 		if err != nil {
 			return plan, fmt.Errorf("failed to discover host for profile %q: %v\nRun 'databricks auth login --profile %s' first",
 				resolvedProfile, err, resolvedProfile)

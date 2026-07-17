@@ -9,6 +9,7 @@ import (
 
 	"github.com/IceRhymers/databricks-agents/internal/cmd"
 	"github.com/IceRhymers/databricks-agents/internal/core/authcheck"
+	"github.com/IceRhymers/databricks-agents/internal/core/dbxauth"
 )
 
 // runConfigCommand implements the `databricks-opencode config ...` dispatcher.
@@ -74,13 +75,13 @@ func runConfigShow(args []string) {
 		_ = resolvePort(portFlag, saved)
 	}
 
-	host, err := DiscoverHost("", profile)
+	host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: profile})
 	if err != nil {
 		log.Fatalf("databricks-opencode: failed to discover host: %v\nRun 'databricks auth login' first", err)
 	}
 	gatewayURL := ConstructGatewayURL(host)
 
-	tp := NewTokenProvider("", profile)
+	tp := dbxauth.NewProvider(dbxauth.Config{Profile: profile})
 	initialToken, err := tp.Token(context.Background())
 	if err != nil {
 		log.Fatalf("databricks-opencode: failed to fetch initial token: %v", err)

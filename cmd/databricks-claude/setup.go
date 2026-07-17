@@ -7,6 +7,7 @@ import (
 
 	"github.com/IceRhymers/databricks-agents/internal/cmd"
 	"github.com/IceRhymers/databricks-agents/internal/core/authcheck"
+	"github.com/IceRhymers/databricks-agents/internal/core/cli"
 )
 
 // setupExecCommand is the exec.Command factory used by runSetupCommand.
@@ -60,7 +61,7 @@ func runSetupCommand(args []string) {
 		}
 	}
 
-	cliPath := resolveDatabricksCLI(state.DatabricksCLIPath)
+	cliPath := cli.ResolveDatabricksCLI(state.DatabricksCLIPath)
 
 	if !force && authcheck.IsAuthenticated(resolved, state.DatabricksCLIPath) {
 		fmt.Fprintf(os.Stderr, "Already authenticated for profile %q\n", resolved)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/IceRhymers/databricks-agents/internal/core"
 	"github.com/IceRhymers/databricks-agents/internal/core/authcheck"
+	"github.com/IceRhymers/databricks-agents/internal/core/dbxauth"
 	"github.com/IceRhymers/databricks-agents/internal/core/proxy"
 )
 
@@ -129,13 +130,13 @@ func buildOpencodeLaunchPlan(a *Args) (core.LaunchPlan, opencodeSettingsPatcher,
 	}
 
 	// --- Seed token cache ---
-	tp := NewTokenProvider("", profile)
+	tp := dbxauth.NewProvider(dbxauth.Config{Profile: profile})
 	if _, err := tp.Token(context.Background()); err != nil {
 		return plan, patcher, fmt.Errorf("failed to fetch initial token: %v", err)
 	}
 
 	// --- Discover host + construct gateway URLs ---
-	host, err := DiscoverHost("", profile)
+	host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: profile})
 	if err != nil {
 		return plan, patcher, fmt.Errorf("failed to discover host: %v\nRun 'databricks auth login' first", err)
 	}

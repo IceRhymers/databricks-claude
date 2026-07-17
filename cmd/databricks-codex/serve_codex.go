@@ -14,6 +14,7 @@ import (
 
 	"github.com/IceRhymers/databricks-agents/internal/cmd"
 	"github.com/IceRhymers/databricks-agents/internal/core/authcheck"
+	"github.com/IceRhymers/databricks-agents/internal/core/dbxauth"
 	"github.com/IceRhymers/databricks-agents/internal/core/health"
 	"github.com/IceRhymers/databricks-agents/internal/core/lifecycle"
 	"github.com/IceRhymers/databricks-agents/internal/core/portbind"
@@ -204,13 +205,13 @@ func runServeSession(a *Args) {
 	}
 
 	// --- Seed token cache ---
-	tp := NewTokenProvider("", profile)
+	tp := dbxauth.NewProvider(dbxauth.Config{Profile: profile})
 	if _, err := tp.Token(context.Background()); err != nil {
 		log.Fatalf("databricks-codex: failed to fetch initial token: %v", err)
 	}
 
 	// --- Discover host + construct gateway URL ---
-	host, err := DiscoverHost("", profile)
+	host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: profile})
 	if err != nil {
 		log.Fatalf("databricks-codex: failed to discover host: %v\nRun 'databricks auth login' first", err)
 	}

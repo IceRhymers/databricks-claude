@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/IceRhymers/databricks-agents/internal/cmd"
+	"github.com/IceRhymers/databricks-agents/internal/core/dbxauth"
 	"github.com/IceRhymers/databricks-agents/pkg/modeldiscovery"
 )
 
@@ -311,7 +312,7 @@ func runConfigOTELEnable(args []string) {
 	// Validate the profile is reachable. Mirrors --write-claude-config's
 	// guard at main.go:240–243 — empty/unknown profile fails fast with an
 	// actionable error rather than writing a guaranteed-broken settings.json.
-	if _, err := DiscoverHost(profile, ""); err != nil {
+	if _, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: profile}); err != nil {
 		log.Fatalf("databricks-claude: config otel enable: failed to discover host for profile %q: %v\n"+
 			"Run 'databricks auth login --profile %s' first", profile, err, profile)
 	}
@@ -493,7 +494,7 @@ func runConfigWrite(args []string) {
 	port := resolvePort(portFlag, saved)
 	proxyURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 
-	host, err := DiscoverHost(profile, "")
+	host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: profile})
 	if err != nil {
 		log.Fatalf("databricks-claude: config write: failed to discover host for profile %q: %v\n"+
 			"Run 'databricks auth login --profile %s' first", profile, err, profile)
@@ -505,7 +506,7 @@ func runConfigWrite(args []string) {
 	// so the state file and settings.json never diverge — a Fatalf after the
 	// OTEL/websearch saves would otherwise leave state mutated but settings.json
 	// unwritten.
-	tp := NewTokenProvider(profile, "")
+	tp := dbxauth.NewProvider(dbxauth.Config{Profile: profile})
 	token, err := tp.Token(context.Background())
 	if err != nil {
 		log.Fatalf("databricks-claude: config write: failed to fetch token for profile %q: %v", profile, err)
@@ -638,14 +639,14 @@ func runConfigShow(args []string) {
 	portFlag := atoiOrZero(r.Strings["port"])
 	port := resolvePort(portFlag, saved)
 
-	host, err := DiscoverHost(profile, "")
+	host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: profile})
 	if err != nil {
 		log.Fatalf("databricks-claude: config show: failed to discover host for profile %q: %v\n"+
 			"Run 'databricks auth login --profile %s' first", profile, err, profile)
 	}
 	inferenceUpstream := ConstructGatewayURL(host)
 
-	tp := NewTokenProvider(profile, "")
+	tp := dbxauth.NewProvider(dbxauth.Config{Profile: profile})
 	token, err := tp.Token(context.Background())
 	if err != nil {
 		log.Fatalf("databricks-claude: config show: failed to fetch token for profile %q: %v", profile, err)

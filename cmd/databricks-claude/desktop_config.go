@@ -18,6 +18,7 @@ import (
 	"github.com/IceRhymers/databricks-agents/internal/cmd"
 	"github.com/IceRhymers/databricks-agents/internal/core/authcheck"
 	"github.com/IceRhymers/databricks-agents/internal/core/cli"
+	"github.com/IceRhymers/databricks-agents/internal/core/dbxauth"
 	"github.com/IceRhymers/databricks-agents/pkg/mdmprofile"
 	"github.com/IceRhymers/databricks-agents/pkg/modeldiscovery"
 )
@@ -145,11 +146,11 @@ func resolveInferenceModelsJSON(profile string) string {
 // anthropic-capable model-services. It is split out so resolveInferenceModelsJSON
 // can keep a single fallback path.
 func discoverInferenceModels(profile string) ([]modeldiscovery.Model, error) {
-	host, err := DiscoverHost(profile, "")
+	host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: profile})
 	if err != nil {
 		return nil, err
 	}
-	tok, err := NewTokenProvider(profile, "").Token(context.Background())
+	tok, err := dbxauth.NewProvider(dbxauth.Config{Profile: profile}).Token(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -301,12 +302,71 @@ func resolveCredHelperProfile(profile string) string {
 	return resolved
 }
 
-// runCredentialHelper fetches a fresh Databricks OAuth token and writes only
-// the raw token to stdout. Intended to be called by Claude Desktop via the
-// inferenceCredentialHelper MDM key. Stays silent on stderr on success.
+// credentialHelperToken resolves the profile, fetches a token (with one re-auth
+// retry), and returns it. No os.Exit, no stdout writes — callable in-process,
+// which is what makes the credential-helper path testable for the first time (#218).
 //
 // Profile resolution: explicit --profile flag > saved state file (skipping the
 // "DEFAULT" sentinel) > MDM managed preferences > "DEFAULT".
+//
+// loginOut receives the login subprocess's stdout. Production passes os.Stderr;
+// tests pass a buffer. The parameter is the production contract, not a test
+// affordance: authcheck exposes EnsureAuthenticatedWithStdout precisely so that
+// callers owning their stdout for another protocol can keep login output off it,
+// and authcheck's own doc names this credential helper as that caller.
+//
+// SPLIT INVARIANT: log.SetOutput(io.Discard) stays in runCredentialHelper while
+// the tokencache logging it suppresses happens in here. Production ordering is
+// preserved (the caller discards before calling), but "silent stderr on success"
+// is a property of the pair, not of this function, and is not assertable at this
+// seam. The manual Desktop smoke is its only gate.
+//
+// Errors are pre-formatted for the caller's stderr contract: the caller prefixes
+// "databricks-claude: " and appends "\n", reproducing the messages byte-for-byte.
+func credentialHelperToken(profile string, loginOut io.Writer) (string, error) {
+	resolved := resolveCredHelperProfile(profile)
+	state := loadState()
+	helperDebugLog("profile resolved=%q (input=%q) cli_path=%q", resolved, profile, state.DatabricksCLIPath)
+
+	// state.DatabricksCLIPath ("" → fall through to PATH/fallback scan in
+	// cli.ResolveDatabricksCLI) overrides the default "databricks" lookup.
+	tp := dbxauth.NewProvider(dbxauth.Config{Profile: resolved, CLIPath: state.DatabricksCLIPath})
+	helperDebugLog("tp.Token first attempt profile=%q", resolved)
+	tok, err := tp.Token(context.Background())
+	if err != nil {
+		helperDebugLog("tp.Token first attempt FAIL profile=%q err=%v — invoking EnsureAuthenticated", resolved, err)
+		// Route login subprocess stdout to loginOut (production: our stderr) so
+		// Desktop's bare-token contract on our stdout is preserved.
+		if authErr := authcheck.EnsureAuthenticatedWithStdout(resolved, state.DatabricksCLIPath, loginOut); authErr != nil {
+			helperDebugLog("EnsureAuthenticated FAIL profile=%q err=%v", resolved, authErr)
+			return "", fmt.Errorf("credential helper authentication failed: %w", authErr)
+		}
+		helperDebugLog("tp.Token retry profile=%q", resolved)
+		tok, err = tp.Token(context.Background())
+		if err != nil {
+			helperDebugLog("tp.Token retry FAIL profile=%q err=%v", resolved, err)
+			return "", fmt.Errorf("credential helper failed after re-authentication: %w", err)
+		}
+		helperDebugLog("tp.Token retry OK profile=%q", resolved)
+	} else {
+		helperDebugLog("tp.Token first attempt OK profile=%q", resolved)
+	}
+	tok = strings.TrimSpace(tok)
+	if tok == "" {
+		helperDebugLog("FAIL profile=%q empty token", resolved)
+		return "", errors.New("credential helper got empty token")
+	}
+	helperDebugLog("OK profile=%q tok_len=%d tok_prefix=%q", resolved, len(tok), tok[:min(20, len(tok))])
+	return tok, nil
+}
+
+// runCredentialHelper writes only the raw token to stdout and exits. Intended to
+// be called by Claude Desktop via the inferenceCredentialHelper MDM key. Stays
+// silent on stderr on success.
+//
+// It owns everything credentialHelperToken deliberately does not: the global
+// mutations (MDM logger, stdlib log suppression), the process exit codes, and
+// the stdout write. The token fetch itself lives in the seam so it can be tested.
 func runCredentialHelper(profile string) {
 	// Wire the helper-specific MDM logger so the resolution chain's per-tier
 	// outcomes land in ~/Library/Logs/databricks-claude/credential-helper.log.
@@ -321,42 +381,11 @@ func runCredentialHelper(profile string) {
 	helperDebugLog("invoked args=%q HOME=%q PATH=%q USER=%q",
 		os.Args, os.Getenv("HOME"), os.Getenv("PATH"), os.Getenv("USER"))
 
-	resolved := resolveCredHelperProfile(profile)
-	state := loadState()
-	helperDebugLog("profile resolved=%q (input=%q) cli_path=%q", resolved, profile, state.DatabricksCLIPath)
-
-	// state.DatabricksCLIPath ("" → fall through to PATH/fallback scan in
-	// resolveDatabricksCLI) overrides the default "databricks" lookup.
-	tp := NewTokenProvider(resolved, state.DatabricksCLIPath)
-	helperDebugLog("tp.Token first attempt profile=%q", resolved)
-	tok, err := tp.Token(context.Background())
+	tok, err := credentialHelperToken(profile, os.Stderr)
 	if err != nil {
-		helperDebugLog("tp.Token first attempt FAIL profile=%q err=%v — invoking EnsureAuthenticated", resolved, err)
-		// Route login subprocess stdout to our stderr so Desktop's bare-token
-		// contract on our stdout is preserved.
-		if authErr := authcheck.EnsureAuthenticatedWithStdout(resolved, state.DatabricksCLIPath, os.Stderr); authErr != nil {
-			helperDebugLog("EnsureAuthenticated FAIL profile=%q err=%v", resolved, authErr)
-			fmt.Fprintf(os.Stderr, "databricks-claude: credential helper authentication failed: %v\n", authErr)
-			os.Exit(1)
-		}
-		helperDebugLog("tp.Token retry profile=%q", resolved)
-		tok, err = tp.Token(context.Background())
-		if err != nil {
-			helperDebugLog("tp.Token retry FAIL profile=%q err=%v", resolved, err)
-			fmt.Fprintf(os.Stderr, "databricks-claude: credential helper failed after re-authentication: %v\n", err)
-			os.Exit(1)
-		}
-		helperDebugLog("tp.Token retry OK profile=%q", resolved)
-	} else {
-		helperDebugLog("tp.Token first attempt OK profile=%q", resolved)
-	}
-	tok = strings.TrimSpace(tok)
-	if tok == "" {
-		helperDebugLog("FAIL profile=%q empty token", resolved)
-		fmt.Fprintln(os.Stderr, "databricks-claude: credential helper got empty token")
+		fmt.Fprintf(os.Stderr, "databricks-claude: %v\n", err)
 		os.Exit(1)
 	}
-	helperDebugLog("OK profile=%q tok_len=%d tok_prefix=%q", resolved, len(tok), tok[:min(20, len(tok))])
 	// Write raw token, no trailing newline. Desktop reads stdout verbatim.
 	if _, err := io.WriteString(os.Stdout, tok); err != nil {
 		helperDebugLog("FAIL stdout write err=%v", err)
@@ -423,7 +452,7 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databrick
 			fmt.Fprintf(os.Stderr, "databricks-claude: --databricks-cli-path must be absolute, got %q\n", databricksCLIPath)
 			os.Exit(1)
 		}
-		if !isExecutableFile(databricksCLIPath) {
+		if !cli.IsExecutableFile(databricksCLIPath) {
 			fmt.Fprintf(os.Stderr, "databricks-claude: --databricks-cli-path %q is not an executable file\n", databricksCLIPath)
 			os.Exit(1)
 		}
@@ -448,7 +477,7 @@ func runGenerateDesktopConfig(profile, outputPath, binaryPathOverride, databrick
 		}
 		keys = daemonModeKeys(resolvedPort, fakeKey, withOTEL)
 	} else {
-		host, err := DiscoverHost(resolved, "")
+		host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: resolved})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "databricks-claude: failed to discover host for profile %q: %v\n", resolved, err)
 			fmt.Fprintf(os.Stderr, "Run 'databricks auth login --profile %s' first.\n", resolved)

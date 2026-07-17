@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/IceRhymers/databricks-agents/internal/cmd"
+	"github.com/IceRhymers/databricks-agents/internal/core/dbxauth"
 	"github.com/IceRhymers/databricks-agents/pkg/modeldiscovery"
 )
 
@@ -99,13 +100,13 @@ func runDoctor(args []string) {
 	port := resolvePort(portFlag, saved)
 	proxyURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 
-	host, err := DiscoverHost(profile, "")
+	host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: profile})
 	if err != nil {
 		log.Fatalf("databricks-claude: doctor: failed to discover host for profile %q: %v\n"+
 			"Run 'databricks auth login --profile %s' first", profile, err, profile)
 	}
 
-	tp := NewTokenProvider(profile, "")
+	tp := dbxauth.NewProvider(dbxauth.Config{Profile: profile})
 	token, err := tp.Token(context.Background())
 	if err != nil {
 		log.Fatalf("databricks-claude: doctor: failed to fetch token for profile %q: %v", profile, err)

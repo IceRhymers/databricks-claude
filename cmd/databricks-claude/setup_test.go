@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/IceRhymers/databricks-agents/internal/core/authcheck"
+	"github.com/IceRhymers/databricks-agents/internal/core/cli"
 )
 
 // buildAuthMockBinary compiles a minimal "databricks" mock binary.
@@ -162,7 +163,7 @@ func TestSetupCommand_NotAuthed_LoginSucceeds(t *testing.T) {
 	// Simulate setup execution (not-authed branch) without calling os.Exit.
 	st := persistentState{DatabricksCLIPath: bin}
 	if !authcheck.IsAuthenticated("DEFAULT", st.DatabricksCLIPath) {
-		cmd := setupExecCommand(resolveDatabricksCLI(st.DatabricksCLIPath), "auth", "login", "--profile", "DEFAULT")
+		cmd := setupExecCommand(cli.ResolveDatabricksCLI(st.DatabricksCLIPath), "auth", "login", "--profile", "DEFAULT")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
@@ -195,7 +196,7 @@ func TestSetupCommand_Force(t *testing.T) {
 	st := persistentState{DatabricksCLIPath: bin}
 	if force || !authcheck.IsAuthenticated("DEFAULT", st.DatabricksCLIPath) {
 		// --force bypasses the already-authed check.
-		cmd := setupExecCommand(resolveDatabricksCLI(st.DatabricksCLIPath), "auth", "login", "--profile", "DEFAULT")
+		cmd := setupExecCommand(cli.ResolveDatabricksCLI(st.DatabricksCLIPath), "auth", "login", "--profile", "DEFAULT")
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {

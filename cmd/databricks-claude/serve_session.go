@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/IceRhymers/databricks-agents/internal/core/authcheck"
+	"github.com/IceRhymers/databricks-agents/internal/core/dbxauth"
 	"github.com/IceRhymers/databricks-agents/internal/core/health"
 	"github.com/IceRhymers/databricks-agents/internal/core/lifecycle"
 	"github.com/IceRhymers/databricks-agents/internal/core/portbind"
@@ -99,7 +100,7 @@ func runServeSession(args []string) {
 	databricksHost := readDatabricksCfgHost(resolvedProfile)
 	inferenceUpstream := f.upstream
 	if inferenceUpstream == "" {
-		host, err := DiscoverHost(resolvedProfile, "")
+		host, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: resolvedProfile})
 		if err != nil {
 			log.Fatalf("databricks-claude: serve --session-mode: failed to discover host for profile %q: %v\n"+
 				"Run 'databricks auth login --profile %s' first", resolvedProfile, err, resolvedProfile)
@@ -108,7 +109,7 @@ func runServeSession(args []string) {
 		inferenceUpstream = ConstructGatewayURL(host)
 	} else if databricksHost == "" {
 		// Try to discover host for OTEL even when upstream is explicit.
-		if h, err := DiscoverHost(resolvedProfile, ""); err == nil {
+		if h, err := dbxauth.DiscoverHost(dbxauth.Config{Profile: resolvedProfile}); err == nil {
 			databricksHost = h
 		}
 	}
@@ -161,7 +162,7 @@ func runServeSession(args []string) {
 	}
 
 	// Seed token cache.
-	tp := NewTokenProvider(resolvedProfile, "")
+	tp := dbxauth.NewProvider(dbxauth.Config{Profile: resolvedProfile})
 	if _, err := tp.Token(context.Background()); err != nil {
 		log.Fatalf("databricks-claude: serve --session-mode: failed to fetch initial token for profile %q: %v", resolvedProfile, err)
 	}
