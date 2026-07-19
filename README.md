@@ -4,6 +4,8 @@
 
 Transparent proxy wrapper for Claude Code that auto-refreshes Databricks OAuth tokens — so you never manually paste a token again.
 
+> This repo also ships **`databricks-codex`** (for the OpenAI Codex CLI) and **`databricks-opencode`** (for the OpenCode CLI), the same idea for other coding CLIs. Both are smaller tools — no Desktop/MDM surface, no daemon — documented in their own [`databricks-codex`](#databricks-codex) and [`databricks-opencode`](#databricks-opencode) sections below. Everything else on this page is about `databricks-claude`.
+
 ## The Problem
 
 Databricks AI Gateway supports short-lived OAuth tokens. Claude Code only supports a static `ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json`. Without this tool, you'd need to configure long-living credentials with PAT tokens.
@@ -38,8 +40,12 @@ Download the latest release from the [releases page](https://github.com/IceRhyme
 ### From source
 
 ```bash
-go install github.com/IceRhymers/databricks-claude@latest
+go install github.com/IceRhymers/databricks-agents/cmd/databricks-claude@latest
 ```
+
+This module also builds `databricks-codex` (`go install github.com/IceRhymers/databricks-agents/cmd/databricks-codex@latest`) and `databricks-opencode` (`go install github.com/IceRhymers/databricks-agents/cmd/databricks-opencode@latest`) — see [`databricks-codex`](#databricks-codex) and [`databricks-opencode`](#databricks-opencode) below for their own install/usage — plus the [`databricks-agents`](#databricks-agents-multiplexer) multiplexer (`go install github.com/IceRhymers/databricks-agents/cmd/databricks-agents@latest`) that dispatches to all three.
+
+All four binaries are released **lockstep** — a single git tag builds and publishes `databricks-agents`, `databricks-claude`, `databricks-codex`, and `databricks-opencode` for darwin/linux/windows (amd64 + arm64) under one version and one changelog. The [releases page](https://github.com/IceRhymers/databricks-claude/releases) carries every binary as `<name>-<os>-<arch>` assets (e.g. `databricks-agents-darwin-arm64`, `databricks-claude-linux-amd64`, windows are `.exe`). Homebrew and Scoop currently install `databricks-claude` only; grab the other three from the releases page or `go install`.
 
 ## Pick Your Setup
 
@@ -929,7 +935,7 @@ If Claude Code is calling a model you didn't expect (e.g. after Databricks ships
 
 ## Shell Tab Completions
 
-`databricks-claude` includes a completion engine (`pkg/completion`) that generates shell scripts from the binary's own flag definitions, so they stay in sync automatically. If you installed via Homebrew, completions are registered automatically — no manual setup required.
+`databricks-claude` includes a completion engine (`internal/core/completion`) that generates shell scripts from the binary's own flag definitions, so they stay in sync automatically. If you installed via Homebrew, completions are registered automatically — no manual setup required.
 
 ### Manual installation
 
@@ -957,7 +963,7 @@ databricks-claude completion fish | source
 
 ### How the engine works
 
-This section documents the `pkg/completion` package for other projects that import it.
+This section documents the `internal/core/completion` package (promoted from `pkg/completion` in #198) used by the launchers in this module. It is now module-private (`internal/`), so only launchers inside this repo import it — the sibling launchers that fold into the monorepo (epic #196) consume it from here.
 
 The `completion` subcommand is the very first check in `main()`, before any config loading, auth, or state. This makes it safe to call in restricted environments like the Homebrew install sandbox.
 
@@ -989,10 +995,10 @@ Completers are emitted as shell functions embedded in the generated script — n
 
 **Adding a new flag** — add an entry to the `flagDefs` slice. The completion script, `knownFlags` map, and flag parsing all derive from this single slice. Consistency tests enforce that every `FlagDef` appears in `knownFlags` and vice-versa.
 
-**Integrating in another binary** — import `pkg/completion`, define your own `[]FlagDef`, and add the early-exit check to `main()`:
+**Integrating in another launcher** (within this module) — import `internal/core/completion`, define your own `[]FlagDef`, and add the early-exit check to `main()`:
 
 ```go
-import "github.com/IceRhymers/databricks-claude/pkg/completion"
+import "github.com/IceRhymers/databricks-agents/internal/core/completion"
 
 var flagDefs = []completion.FlagDef{ /* ... */ }
 
@@ -1048,6 +1054,290 @@ export DATABRICKS_NO_UPDATE_CHECK=1
 ```
 
 Both suppress the startup check and disable the `update` subcommand.
+
+## databricks-agents (multiplexer)
+
+> **Disclaimer:** Same as above — unofficial, community-built, not supported or endorsed by Databricks. Use at your own risk.
+
+`databricks-agents` is the [`ucode`](https://github.com/databricks/ucode)-style multiplexer: one command that dispatches to the three per-tool binaries. `databricks-agents <agent> [args]` behaves **identically** to running `databricks-<agent> [args]` directly (it locates and hands off to that binary), so every subcommand — `config`, `serve`, `hooks`, `completion`, `desktop`, … — works exactly as documented for the underlying tool. The per-tool binaries remain first-class and are unaffected; use whichever entry point you prefer.
+
+> It's named `databricks-agents` (not `databricks`) on purpose: a binary named `databricks` would shadow the Databricks CLI on your `PATH`, which the wrappers shell out to for OAuth tokens.
+
+### Install
+
+```bash
+go install github.com/IceRhymers/databricks-agents/cmd/databricks-agents@latest
+# and the per-tool binaries it dispatches to:
+go install github.com/IceRhymers/databricks-agents/cmd/databricks-claude@latest
+go install github.com/IceRhymers/databricks-agents/cmd/databricks-codex@latest
+go install github.com/IceRhymers/databricks-agents/cmd/databricks-opencode@latest
+```
+
+`databricks-agents` finds each sibling next to its own binary first (so `make install`, Homebrew, and Scoop layouts that share one bin dir always match versions), then falls back to your `PATH`.
+
+### Usage
+
+```bash
+databricks-agents claude [proxy-flags] [-- claude-args]      # == databricks-claude ...
+databricks-agents codex  [proxy-flags] [-- codex-args]       # == databricks-codex ...
+databricks-agents opencode [proxy-flags] [-- opencode-args]  # == databricks-opencode ...
+
+databricks-agents list                 # enumerate the registered agents
+databricks-agents completion bash      # nested completion (bash|zsh|fish)
+databricks-agents --version            # multiplexer version
+```
+
+Nested shell completion delegates into each agent's own tree — `databricks-agents claude serve <TAB>` completes `install`/`uninstall`/`status`, exactly as `databricks-claude serve <TAB>` does (bash and zsh; fish completes agent names).
+
+## databricks-codex
+
+> **Disclaimer:** Same as above — unofficial, community-built, not supported or endorsed by Databricks or OpenAI. Use at your own risk.
+
+Transparent proxy wrapper for the [OpenAI Codex CLI](https://github.com/openai/codex) that auto-refreshes Databricks OAuth tokens and surgically patches `~/.codex/config.toml` so Codex authenticates through your Databricks AI Gateway. Everything above this section is about `databricks-claude`; `databricks-codex` is a smaller, sibling tool built from the same module (`github.com/IceRhymers/databricks-agents`) and sharing the same underlying proxy engine — but it has **no daemon, no Claude Desktop/MDM surface, no model auto-discovery, and no local web-search fulfilment**. Its config file is TOML (not a settings.json env block), so it's re-patched at the start of every session rather than bootstrapped once.
+
+### Prerequisites
+
+- [Databricks CLI](https://docs.databricks.com/dev-tools/cli/databricks-cli.html) installed and authenticated (`databricks auth login`)
+- [Codex CLI](https://github.com/openai/codex) installed (`codex` on your `PATH`)
+- A Databricks Model Serving endpoint with [AI Gateway](https://docs.databricks.com/aws/en/ai-gateway/) enabled, exposing an OpenAI-compatible model
+- Go 1.22+ (only required if building from source)
+
+### Install
+
+```bash
+go install github.com/IceRhymers/databricks-agents/cmd/databricks-codex@latest
+```
+
+Or clone this repo and `make build` (produces `./databricks-codex` alongside `./databricks-claude`; see [Development](#development)).
+
+### Quick Start
+
+Use it exactly like `codex` — every flag and argument not recognized by the wrapper is forwarded:
+
+```bash
+# Use exactly like codex:
+databricks-codex "explain this codebase"
+
+# With a specific Databricks CLI profile and model:
+databricks-codex --profile my-workspace --model databricks-gpt-5-5 "write tests for auth.py"
+
+# Verbose logging:
+databricks-codex --verbose "fix the bug in main.go"
+```
+
+On each run, `databricks-codex` binds a local proxy, patches `~/.codex/config.toml` to point a `databricks-proxy` model provider at it, and launches `codex` as a child. The first run authenticates you (browser SSO) if needed.
+
+### Session Hooks (recommended)
+
+Like `databricks-claude`, install hooks so every Codex session auto-starts the proxy — no manual `serve` needed:
+
+```bash
+databricks-codex hooks install
+databricks-codex hooks uninstall   # remove later
+```
+
+`hooks install` adds a `SessionStart` entry to `~/.codex/hooks.json` (calls `databricks-codex hooks session-start`, which starts a refcounted background proxy if one isn't already healthy) and flips `[features] hooks = true` in `config.toml` so Codex actually reads `hooks.json`. Idempotent — safe to re-run after upgrades.
+
+**Unlike `databricks-claude`, there is no SessionEnd hook** — the Codex CLI has no session-end event to hook into. The background proxy instead relies entirely on its idle timeout (default 30 minutes, configurable via `serve --idle-timeout`) to exit when nothing is using it.
+
+### `config` Subcommand
+
+Smaller than `databricks-claude`'s: no `config write` (there's no settings.json-style bootstrap to run once — `config.toml` is re-patched automatically at the start of every session) and no `config websearch` (codex has no local web-search/web-fetch fulfilment).
+
+```
+config otel enable  [--metrics-table T] [--logs-table T] [--profile P]
+config otel disable [--metrics] [--logs]      # no flags = disable both
+config show [--profile P]
+```
+
+OTEL table preferences persist to `~/.codex/.databricks-codex.json`; the `[otel]` section in `config.toml` is written or removed by the proxy lifecycle the next time a session starts (codex routes metrics + logs only — no traces signal). `config otel disable` preserves table-name preferences so a later `config otel enable` restores them without re-typing:
+
+```bash
+databricks-codex config otel enable \
+  --metrics-table main.codex_telemetry.codex_otel_metrics \
+  --logs-table   main.codex_telemetry.codex_otel_logs
+
+databricks-codex config otel disable          # both signals off, tables preserved
+databricks-codex config show                  # diagnostic dump (token redacted)
+```
+
+### `serve` Subcommand
+
+`databricks-codex serve` runs the proxy standalone without launching `codex` — used by IDE extensions, external tooling, and the SessionStart hook. Unlike `databricks-claude serve`, codex has **no daemon lifecycle** — `serve` is a single leaf command with no `--session-mode`/`--daemon` split and no `install`/`uninstall`/`status` sub-subcommands, since codex has no LaunchAgent/systemd/schtasks equivalent.
+
+```bash
+databricks-codex serve
+# prints: PROXY_URL=http://127.0.0.1:<port>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--idle-timeout` | `30m` | Idle timeout (`0` disables); e.g. `30s`, `5m`, `1h` |
+| `--profile` | state → `DEFAULT` | Databricks CLI profile |
+| `--port` | state → `49154` | Proxy listen port |
+| `--model` | saved for future sessions | Model name |
+| `--upstream` | auto-discovered | Override the AI Gateway URL |
+| `--log-file` | | Write debug logs to a file |
+| `--verbose`, `-v` | `false` | Enable debug logging to stderr |
+| `--proxy-api-key` | | Require Bearer token auth on all proxy requests |
+| `--tls-cert`, `--tls-key` | | Enable TLS on the proxy listener |
+| `--no-update-check` | | Skip the automatic update check on startup |
+| `--help`, `-h` | | Show this help message |
+
+The proxy exits on SIGINT/SIGTERM, `POST /shutdown`, or when `--idle-timeout` elapses with zero in-flight requests.
+
+### Flags Reference (root wrapper)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--profile` | `DEFAULT` | Databricks CLI profile (saved for future sessions) |
+| `--model` | `databricks-gpt-5-5` | Model name (saved for future sessions) |
+| `--upstream` | auto-discovered | Override the AI Gateway URL |
+| `--verbose`, `-v` | `false` | Enable debug logging to stderr |
+| `--log-file` | | Write debug logs to a file (combinable with `--verbose`) |
+| `--proxy-api-key` | | Require Bearer token auth on all proxy requests |
+| `--port` | `49154` | Fixed proxy port (saved to state) |
+| `--tls-cert`, `--tls-key` | | Enable TLS on the proxy listener |
+| `--no-update-check` | | Skip the automatic update check on startup |
+| `--version` | | Print version and exit |
+| `--help`, `-h` | | Print the wrapper's flags and exit. Use `databricks-codex -- --help` to forward to codex's own `--help`. |
+
+All other flags and args are forwarded to `codex`. As with `databricks-claude`, `DATABRICKS_CONFIG_PROFILE` is intentionally not consulted during profile resolution (flag → saved state → `DEFAULT`), so an injected env var can't silently override your saved choice.
+
+### How It Works
+
+`databricks-codex` wraps the `codex` binary. On every invocation (wrapper mode or `serve`) it:
+
+1. Resolves profile/model (flag → saved state → default) and persists explicit choices to `~/.codex/.databricks-codex.json`.
+2. Authenticates (`authcheck.EnsureAuthenticated`, browser SSO fallback) and discovers your workspace host + AI Gateway URL (`{host}/ai-gateway/openai/v1`).
+3. Binds a local HTTP proxy on the configured port (default `49154`).
+4. Surgically patches `~/.codex/config.toml`: sets the proxy as the top-level default provider — a root `model_provider = "databricks-proxy"` (plus a root `model`), and a `[model_providers.databricks-proxy]` section with `base_url` pointed at the local proxy and `wire_api = "responses"`. The proxy is the default provider (not a named profile selector) because the hooks path runs bare `codex` with no way to inject `--profile`, and because Codex ≥0.134 rejects a root `profile` selector as a hard startup error. Older configs that carried the legacy `profile = "databricks-proxy"` selector and `[profiles.databricks-proxy]` section are migrated automatically — both are removed. A user's own non-proxy root `profile` is left untouched (with a non-fatal warning). Only these managed keys/sections are touched — all other content in `config.toml` is preserved byte-for-byte. If OTEL is enabled, an `[otel]` section is added/updated (removed entirely when both signals are off).
+5. Launches `codex` as a child (wrapper mode only — `serve` doesn't launch anything).
+6. Injects fresh Databricks OAuth tokens on every proxied request (auto-refreshed from `databricks auth token`).
+7. Tracks concurrent sessions with a ref-count; the last session out closes the listener.
+
+### Automatic Update Check
+
+Same mechanism as `databricks-claude` (see [Automatic Update Check](#automatic-update-check) above): a 24-hour cached check on startup, force-checkable via `databricks-codex update`, opt out with `--no-update-check` or `DATABRICKS_NO_UPDATE_CHECK=1`.
+
+## databricks-opencode
+
+> **Disclaimer:** Same as above — unofficial, community-built, not supported or endorsed by Databricks or the OpenCode project. Use at your own risk.
+
+Transparent proxy wrapper for the [OpenCode CLI](https://opencode.ai) that auto-refreshes Databricks OAuth tokens and surgically patches `~/.config/opencode/opencode.json` so OpenCode authenticates through your Databricks AI Gateway. Everything above the [`databricks-codex`](#databricks-codex) section is about `databricks-claude`; `databricks-opencode` is another smaller, sibling tool built from the same module (`github.com/IceRhymers/databricks-agents`) and sharing the same underlying proxy engine — but it has **no daemon, no Claude Desktop/MDM surface, no model auto-discovery, and no OTEL telemetry**. Its config file is JSONC (not a settings.json env block), so it's re-patched at the start of every session rather than bootstrapped once. What's distinctly *larger* than codex: it serves **two upstreams off one local proxy port** — Anthropic on the catch-all `/v1` and Gemini Native on the `/v1beta` route — and turns on a Responses-API SSE rewriter that OpenCode's OpenAI-shaped client needs.
+
+### Prerequisites
+
+- [Databricks CLI](https://docs.databricks.com/dev-tools/cli/databricks-cli.html) installed and authenticated (`databricks auth login`)
+- [OpenCode CLI](https://opencode.ai) installed (`opencode` on your `PATH`)
+- A Databricks Model Serving endpoint with [AI Gateway](https://docs.databricks.com/aws/en/ai-gateway/) enabled, exposing an Anthropic-compatible (and optionally Gemini) model
+- Go 1.22+ (only required if building from source)
+
+### Install
+
+```bash
+go install github.com/IceRhymers/databricks-agents/cmd/databricks-opencode@latest
+```
+
+Or clone this repo and `make build` (produces `./databricks-opencode` alongside `./databricks-claude` and `./databricks-codex`; see [Development](#development)).
+
+### Quick Start
+
+Use it exactly like `opencode` — every flag and argument not recognized by the wrapper is forwarded:
+
+```bash
+# Use exactly like opencode:
+databricks-opencode "explain this codebase"
+
+# With a specific Databricks CLI profile and model:
+databricks-opencode --profile my-workspace --model databricks-claude-opus-4-7 "write tests for auth.py"
+
+# Verbose logging:
+databricks-opencode --verbose "fix the bug in main.go"
+```
+
+On each run, `databricks-opencode` binds a local proxy, patches `~/.config/opencode/opencode.json` to point a `databricks-proxy` (Anthropic) and `databricks-gemini-proxy` (Gemini Native) provider at it, and launches `opencode` as a child. The patch is idempotent — already-configured sessions are a no-op. The first run authenticates you (browser SSO) if needed.
+
+### Session Hooks (recommended)
+
+Like `databricks-claude`, install a plugin so every OpenCode session auto-starts the proxy — no manual `serve` needed:
+
+```bash
+databricks-opencode hooks install
+databricks-opencode hooks uninstall   # remove later
+```
+
+`hooks install` writes a small JS plugin to `~/.config/opencode/plugins/databricks-proxy/index.js` (with the absolute binary path baked in) and registers it in opencode.json's `plugin` array. The plugin runs `databricks-opencode hooks session-start` at session init, which starts a background proxy if one isn't already healthy. Idempotent — safe to re-run after upgrades (re-run after switching install methods so the baked-in path refreshes).
+
+**Unlike `databricks-claude`, there is no SessionEnd hook** — the OpenCode CLI has no session-end event to hook into. The background proxy instead relies entirely on its idle timeout (default 30 minutes, configurable via `serve --idle-timeout`) to exit when nothing is using it. There is also no refcount — the idle timeout is the only shutdown path.
+
+### `config` Subcommand
+
+Smaller than both siblings: **only `config show`** (the read-only `--print-env`-style diagnostic dump). There's no `config write` (opencode.json is re-patched automatically at the start of every session, not bootstrapped once) and no `config otel` (opencode has no OTEL telemetry surface).
+
+```bash
+databricks-opencode config show                  # diagnostic dump (token redacted)
+databricks-opencode config show --profile my-workspace   # override profile for the dump (does not persist)
+```
+
+### `serve` Subcommand
+
+`databricks-opencode serve` runs the proxy standalone without launching `opencode` — used by IDE extensions, external tooling, and the SessionStart plugin. Unlike `databricks-claude serve`, opencode has **no daemon lifecycle** — `serve` is a single leaf command with no `--session-mode`/`--daemon` split and no `install`/`uninstall`/`status` sub-subcommands, since opencode has no LaunchAgent/systemd/schtasks equivalent.
+
+```bash
+databricks-opencode serve
+# prints: PROXY_URL=http://127.0.0.1:<port>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--idle-timeout` | `30m` | Idle timeout (`0` disables); accepts `30s`/`5m`/`1h` or a bare number (= minutes) |
+| `--profile` | state → `DEFAULT` | Databricks CLI profile |
+| `--port` | state → `49156` | Proxy listen port |
+| `--model` | saved for future sessions | Model name |
+| `--upstream` | auto-discovered | Override the Anthropic AI Gateway URL |
+| `--log-file` | | Write debug logs to a file |
+| `--verbose`, `-v` | `false` | Enable debug logging to stderr |
+| `--proxy-api-key` | | Require Bearer token auth on all proxy requests |
+| `--tls-cert`, `--tls-key` | | Enable TLS on the proxy listener |
+| `--no-update-check` | | Skip the automatic update check on startup |
+| `--help`, `-h` | | Show this help message |
+
+The proxy exits on SIGINT/SIGTERM, `POST /shutdown`, or when `--idle-timeout` elapses with zero in-flight requests.
+
+### Flags Reference (root wrapper)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--profile` | `DEFAULT` | Databricks CLI profile (saved for future sessions) |
+| `--model` | `databricks-claude-opus-4-7` | Model name (saved for future sessions) |
+| `--upstream` | auto-discovered | Override the Anthropic AI Gateway URL |
+| `--verbose`, `-v` | `false` | Enable debug logging to stderr |
+| `--log-file` | | Write debug logs to a file (combinable with `--verbose`) |
+| `--proxy-api-key` | | Require Bearer token auth on all proxy requests |
+| `--port` | `49156` | Fixed proxy port (saved to state; `49155` is skipped to avoid the macOS Launcher) |
+| `--tls-cert`, `--tls-key` | | Enable TLS on the proxy listener |
+| `--no-update-check` | | Skip the automatic update check on startup |
+| `--version` | | Print version and exit |
+| `--help`, `-h` | | Print the wrapper's flags and exit. Use `databricks-opencode -- --help` to forward to opencode's own `--help`. |
+
+All other flags and args are forwarded to `opencode`. As with the sibling wrappers, `DATABRICKS_CONFIG_PROFILE` is intentionally not consulted during profile resolution (flag → saved state → `DEFAULT`), so an injected env var can't silently override your saved choice.
+
+### How It Works
+
+`databricks-opencode` wraps the `opencode` binary. On every invocation (wrapper mode or `serve`) it:
+
+1. Resolves profile/model (flag → saved state → default) and persists explicit choices to `~/.config/opencode/.databricks-opencode.json`.
+2. Authenticates (`authcheck.EnsureAuthenticated`, browser SSO fallback) and discovers your workspace host + AI Gateway URLs (Anthropic `{host}/ai-gateway/anthropic`, Gemini Native `{host}/ai-gateway/gemini/v1beta`).
+3. Binds a local HTTP proxy on the configured port (default `49156`) that serves both upstreams — Anthropic on the catch-all `/v1`, Gemini Native on the `/v1beta` path-prefix route — with a Responses-API SSE rewriter enabled (OpenCode is OpenAI-shaped and hits `/v1/responses`).
+4. Surgically patches `~/.config/opencode/opencode.json` (JSONC-aware): injects a `provider.databricks-proxy` block (`@ai-sdk/anthropic`, `baseURL` = proxy `/v1`) and a `provider.databricks-gemini-proxy` block (`@ai-sdk/google`, `baseURL` = proxy `/v1beta`), and sets the active `model`. Only these managed keys are touched — all other content (comments, other providers, agents, MCP servers) is preserved. The patch is `NeedsConfig`-gated, so an already-configured session skips the rewrite. There is **no restore on exit** (patch-and-leave).
+5. Launches `opencode` as a child (wrapper mode only — `serve` doesn't launch anything).
+6. Injects fresh Databricks OAuth tokens on every proxied request (auto-refreshed from `databricks auth token`); the placeholder `apiKey` in opencode.json is overwritten server-side.
+7. Tracks concurrent wrapper sessions with a ref-count; the last session out closes the listener. (`serve`/hook-spawned proxies use no refcount — they exit on idle timeout.)
+
+### Automatic Update Check
+
+Same mechanism as `databricks-claude` (see [Automatic Update Check](#automatic-update-check) above): a 24-hour cached check on startup, force-checkable via `databricks-opencode update`, opt out with `--no-update-check` or `DATABRICKS_NO_UPDATE_CHECK=1`.
 
 ## Development
 
