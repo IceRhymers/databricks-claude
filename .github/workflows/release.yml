@@ -120,10 +120,22 @@ jobs:
             dist/databricks-claude.pkg \
             dist/databricks-claude-trust.mobileconfig
 
+  # `make dist` builds all four binaries, but only the distributed ones are
+  # dispatched. databricks-codex and databricks-opencode are intentionally
+  # absent: their standalone repos are archived and we are not publishing new
+  # artifacts for them, so their tap formulae stay frozen at their last
+  # standalone versions. Dispatching for them would fail the tap's
+  # update-formula.yml on every release forever.
   update-homebrew:
     needs: [release-please, build-and-upload]
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tool:
+          - databricks-agents
+          - databricks-claude
     steps:
       - name: Dispatch formula update to homebrew-tap
         env:
@@ -131,13 +143,22 @@ jobs:
         run: |
           gh api repos/IceRhymers/homebrew-tap/dispatches \
             -f event_type=formula-update \
-            -f "client_payload[tool]=databricks-claude" \
+            -f "client_payload[tool]=${{ matrix.tool }}" \
             -f "client_payload[tag]=${{ needs.release-please.outputs.tag_name }}" \
             -f "client_payload[version]=${{ needs.release-please.outputs.tag_name }}"
   update-scoop:
     needs: [release-please, build-and-upload]
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same freeze as above for codex/opencode. databricks-agents is absent
+        # for a different reason: scoop-bucket has no manifest for the
+        # multiplexer and update-manifests.yml doesn't listen for
+        # update-databricks-agents. Add it here once the bucket does.
+        binary:
+          - databricks-claude
     steps:
       - name: Dispatch manifest update to scoop-bucket
         env:
@@ -146,6 +167,6 @@ jobs:
           VERSION="${{ needs.release-please.outputs.tag_name }}"
           VERSION="${VERSION#v}"
           gh api repos/IceRhymers/scoop-bucket/dispatches \
-            -f event_type=update-databricks-claude \
-            -f "client_payload[binary]=databricks-claude" \
+            -f event_type=update-${{ matrix.binary }} \
+            -f "client_payload[binary]=${{ matrix.binary }}" \
             -f "client_payload[version]=${VERSION}"
